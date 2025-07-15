@@ -65,4 +65,31 @@ router.get('/', async (req, res) => {
   }
 });
 
+   // ✅ Get user balance (used by Flutter HomePage to refresh balance)
+router.post('/get-balance', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ message: 'User ID is required' });
+
+    const user = await User.findById(userId).select('walletBalance');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.status(200).json({ walletBalance: user.walletBalance });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ✅ Fetch user by ID (for balance refresh)
+router.get('/:id', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select('_id fullName email walletBalance');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.status(200).json({ user });
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching user details' });
+  }
+});
+
 module.exports = router;
