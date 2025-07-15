@@ -3,6 +3,8 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 
+console.log("📥 /api/users route file loaded");
+
 // ✅ Register new customer
 router.post('/register', async (req, res) => {
   try {
@@ -55,8 +57,7 @@ router.post('/login', async (req, res) => {
 
 // ✅ Admin: Fetch all users for manual funding
 router.get('/', async (req, res) => {
-     console.log("📥 /api/users route file loaded");
-  try {
+       try {
     const users = await User.find().select('_id fullName email walletBalance');
     res.status(200).json({ users });
   } catch (err) {
