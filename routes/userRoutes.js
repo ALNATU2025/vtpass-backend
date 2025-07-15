@@ -53,4 +53,15 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// ✅ Admin: Fetch all users for manual funding
+router.get('/', async (req, res) => {
+     console.log("📥 /api/users route file loaded");
+  try {
+    const users = await User.find().select('_id fullName email walletBalance');
+    res.status(200).json({ users });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch users' });
+  }
+});
+
 module.exports = router;
