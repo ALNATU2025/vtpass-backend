@@ -65,10 +65,12 @@ router.get('/', async (req, res) => {
   }
 });
 
-   // ✅ Get user balance (used by Flutter HomePage to refresh balance)
+   // ✅ Get user balance by POST
 router.post('/get-balance', async (req, res) => {
   try {
     const { userId } = req.body;
+    console.log("🔄 Balance check for userId:", userId);
+
     if (!userId) return res.status(400).json({ message: 'User ID is required' });
 
     const user = await User.findById(userId).select('walletBalance');
@@ -76,9 +78,11 @@ router.post('/get-balance', async (req, res) => {
 
     res.status(200).json({ walletBalance: user.walletBalance });
   } catch (err) {
+    console.error("❌ Error in /get-balance:", err.message);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
 
 // ✅ Fetch user by ID (for balance refresh)
 router.get('/:id', async (req, res) => {
