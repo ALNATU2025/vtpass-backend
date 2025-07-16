@@ -2,7 +2,7 @@ require('dotenv').config();
 console.log("🛠️ .env loaded...");
 console.log("📦 MONGO_URI:", process.env.MONGO_URI);
 
-
+const vtpassRoutes = require("./routes/vtpassRoutes");
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -20,12 +20,13 @@ app.use('/api/transactions', require('./routes/transactionRoutes'));
 app.use('/api/fund-wallet', require('./routes/fundWalletRoutes'));
 app.use('/api/transfer', require('./routes/transferRoutes'));
 app.use('/api/cabletv', require('./routes/cabletvRoutes'));
+app.use("/api", vtpassRoutes);
 
 app.get('/', (req, res) => {
   res.send('VTpass Backend Running');
 });
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);

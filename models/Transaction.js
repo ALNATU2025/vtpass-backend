@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
 
-const TransactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: { type: String, enum: ['credit', 'debit', 'payment'] },
+const transactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  service: String, // e.g., 'Cable TV'
+  type: String, // 'debit' or 'credit'
   amount: Number,
-  status: { type: String, default: 'pending' },
-  description: String
-}, { timestamps: true });
+  details: Object,
+  createdAt: { type: Date, default: Date.now }
+});
 
-module.exports = mongoose.model('Transaction', TransactionSchema);
+module.exports = mongoose.model('Transaction', transactionSchema);
