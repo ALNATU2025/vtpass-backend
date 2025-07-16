@@ -10,9 +10,15 @@ router.post("/validate-smartcard", async (req, res) => {
     `${process.env.VTPASS_EMAIL}:${process.env.VTPASS_API_KEY}`
   ).toString("base64");
 
+  console.log("📡 Validating smartcard...");
+  console.log("➡️ Email:", process.env.VTPASS_EMAIL);
+  console.log("➡️ API Key:", process.env.VTPASS_API_KEY);
+  console.log("➡️ Base64 Auth:", VTpassAuth);
+  console.log("➡️ Body Sent:", { billersCode, serviceID });
+
   try {
     const response = await axios.post(
-      "https://sandbox.vtpass.com/api/merchant-verify",
+      `${process.env.VTPASS_BASE_URL}/merchant-verify`,
       {
         billersCode,
         serviceID,
@@ -26,9 +32,14 @@ router.post("/validate-smartcard", async (req, res) => {
       }
     );
 
+    console.log("✅ VTpass response:", response.data);
     res.json(response.data);
   } catch (error) {
-    res.status(500).json({ error: "Validation failed", details: error.message });
+    console.error("❌ VTpass Error:", error.response?.data || error.message);
+    res.status(500).json({
+      error: "Validation failed",
+      details: error.response?.data || error.message,
+    });
   }
 });
 
