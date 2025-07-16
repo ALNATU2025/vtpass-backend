@@ -7,14 +7,15 @@ router.post("/validate-smartcard", async (req, res) => {
   const { billersCode, serviceID } = req.body;
 
   const VTpassAuth = Buffer.from(
-    `${process.env.VTPASS_EMAIL}:${process.env.VTPASS_API_KEY}`
-  ).toString("base64");
+  `${process.env.VTPASS_EMAIL}:${process.env.VTPASS_PASSWORD}`
+).toString("base64");
+
 
   console.log("📡 Validating smartcard...");
-  console.log("➡️ Email:", process.env.VTPASS_EMAIL);
-  console.log("➡️ API Key:", process.env.VTPASS_API_KEY);
-  console.log("➡️ Base64 Auth:", VTpassAuth);
-  console.log("➡️ Body Sent:", { billersCode, serviceID });
+console.log("➡️ Email:", process.env.VTPASS_EMAIL);
+console.log("➡️ Password (from .env):", process.env.VTPASS_PASSWORD);
+console.log("➡️ Base64 Auth:", VTpassAuth);
+console.log("➡️ Body Sent:", { billersCode, serviceID });
 
   try {
     const response = await axios.post(
