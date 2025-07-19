@@ -1,4 +1,4 @@
-// models/cableTVTransaction.js
+// models/CableTVTransaction.js
 const mongoose = require('mongoose');
 
 // Define the schema for Cable TV specific transactions

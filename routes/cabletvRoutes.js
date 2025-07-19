@@ -1,8 +1,9 @@
 // routes/cabletvRoutes.js
 const express = require('express');
-const router = express.Router();
+const router = express = require('express');
 const User = require('../models/userModel'); // Ensure this imports the consolidated User model
-const CableTVTransaction = require('../models/cableTVTransaction'); // Import the specific CableTVTransaction model
+// FIX: Explicitly specify .js extension and ensure correct casing
+const CableTVTransaction = require('../models/CableTVTransaction.js'); // Import the specific CableTVTransaction model
 const axios = require("axios"); // For making actual VTpass payment API call
 
 router.post('/pay', async (req, res) => {
