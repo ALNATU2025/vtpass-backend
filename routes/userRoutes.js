@@ -1,7 +1,8 @@
+// routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const User = require('../models/User');
+const User = require('../models/userModel'); // Ensure this imports the consolidated User model
 
 console.log("📥 /api/users route file loaded");
 
@@ -10,8 +11,11 @@ router.post('/register', async (req, res) => {
   try {
     const { fullName, email, phone, password } = req.body;
 
-    const userExists = await User.findOne({ email });
-    if (userExists) return res.status(400).json({ message: 'User already exists' });
+    // Check if user with email or phone already exists
+    const userExists = await User.findOne({ $or: [{ email }, { phone }] });
+    if (userExists) {
+      return res.status(400).json({ message: 'User with this email or phone already exists' });
+    }
 
     const newUser = new User({ fullName, email, phone, password });
     await newUser.save();
@@ -26,6 +30,7 @@ router.post('/register', async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("❌ Error in /register:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -38,7 +43,7 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: 'Invalid credentials' });
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await user.matchPassword(password); // Using the schema method
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
     res.json({
@@ -51,21 +56,23 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("❌ Error in /login:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ Admin: Fetch all users for manual funding
+// ✅ Admin: Fetch all users for manual funding (GET /api/users)
 router.get('/', async (req, res) => {
-       try {
+  try {
     const users = await User.find().select('_id fullName email walletBalance');
     res.status(200).json({ users });
   } catch (err) {
+    console.error("❌ Error in /api/users (GET all):", err.message);
     res.status(500).json({ message: 'Failed to fetch users' });
   }
 });
 
-   // ✅ Get user balance by POST
+// ✅ Get user balance by POST (POST /api/users/get-balance)
 router.post('/get-balance', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -83,8 +90,7 @@ router.post('/get-balance', async (req, res) => {
   }
 });
 
-
-// ✅ Fetch user by ID (for balance refresh)
+// ✅ Fetch user by ID (for balance refresh) (GET /api/users/:id)
 router.get('/:id', async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select('_id fullName email walletBalance');
@@ -92,6 +98,7 @@ router.get('/:id', async (req, res) => {
 
     res.status(200).json({ user });
   } catch (err) {
+    console.error("❌ Error in /api/users/:id (GET by ID):", err.message);
     res.status(500).json({ message: 'Error fetching user details' });
   }
 });
