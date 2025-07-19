@@ -1,6 +1,6 @@
 // routes/cabletvRoutes.js
 const express = require('express');
-const router = express = require('express');
+const router = express.Router(); 
 const User = require('../models/userModel'); // Ensure this imports the consolidated User model
 // FIX: Explicitly specify .js extension and ensure correct casing
 const CableTVTransaction = require('../models/CableTVTransaction.js'); // Import the specific CableTVTransaction model
