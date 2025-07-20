@@ -7,23 +7,25 @@ const axios = require("axios");
 router.post("/validate-smartcard", async (req, res) => {
   const { billersCode, serviceID } = req.body;
 
-  // Basic validation for request body
   if (!billersCode || !serviceID) {
     return res.status(400).json({ success: false, message: 'billersCode and serviceID are required.' });
   }
 
   // Ensure environment variables are set
-  if (!process.env.VTPASS_EMAIL || !process.env.VTPASS_API_KEY || !process.env.VTPASS_BASE_URL) {
-    console.error("❌ VTpass environment variables are not set!");
+  if (!process.env.VTPASS_API_KEY || !process.env.VTPASS_SECRET_KEY || !process.env.VTPASS_BASE_URL) {
+    console.error("❌ VTpass environment variables (API_KEY, SECRET_KEY, BASE_URL) are not set!");
     return res.status(500).json({ success: false, message: 'Server configuration error: VTpass credentials missing.' });
   }
 
-  const VTpassAuth = Buffer.from(
-    `${process.env.VTPASS_EMAIL}:${process.env.VTPASS_API_KEY}`
-  ).toString("base64");
-
   console.log("📡 Validating smartcard with VTpass...");
   console.log("➡️ Body Sent to VTpass:", { billersCode, serviceID });
+
+  // --- START DEBUGGING LOGS ---
+  console.log("🔍 Debugging VTpass Request Headers:");
+  console.log("   VTPASS_API_KEY (from env, masked):", process.env.VTPASS_API_KEY ? process.env.VTPASS_API_KEY.substring(0, 5) + '...' + process.env.VTPASS_API_KEY.substring(process.env.VTPASS_API_KEY.length - 5) : 'N/A');
+  console.log("   VTPASS_SECRET_KEY (from env, masked):", process.env.VTPASS_SECRET_KEY ? process.env.VTPASS_SECRET_KEY.substring(0, 5) + '...' + process.env.VTPASS_SECRET_KEY.substring(process.env.VTPASS_SECRET_KEY.length - 5) : 'N/A');
+  console.log("   VTPASS_BASE_URL (from env):", process.env.VTPASS_BASE_URL);
+  // --- END DEBUGGING LOGS ---
 
   try {
     const response = await axios.post(
@@ -35,7 +37,7 @@ router.post("/validate-smartcard", async (req, res) => {
       {
         headers: {
           "api-key": process.env.VTPASS_API_KEY,
-          "Authorization": `Basic ${VTpassAuth}`,
+          "secret-key": process.env.VTPASS_SECRET_KEY, // FIX: Use secret-key for POST requests
           "Content-Type": "application/json",
         },
       }
@@ -43,20 +45,18 @@ router.post("/validate-smartcard", async (req, res) => {
 
     console.log("✅ VTpass raw response:", response.data);
 
-    // Parse VTpass response and send a consistent format to Flutter
     if (response.data && response.data.response_description === "VALID" && response.data.content) {
       return res.json({
         success: true,
         customerName: response.data.content.Customer_Name,
         message: response.data.response_description,
-        details: response.data.content // Optionally send more details if needed by frontend
+        details: response.data.content
       });
     } else {
-      // Handle cases where VTpass returns an invalid or unsuccessful response
       return res.status(400).json({
         success: false,
         message: response.data.response_description || "Smartcard validation failed.",
-        details: response.data // Send full VTpass response for debugging
+        details: response.data
       });
     }
   } catch (error) {
@@ -64,7 +64,7 @@ router.post("/validate-smartcard", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Validation failed due to server error.",
-      details: error.response?.data || error.message, // Provide error details for debugging
+      details: error.response?.data || error.message,
     });
   }
 });
