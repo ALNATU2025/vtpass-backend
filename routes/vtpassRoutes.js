@@ -44,10 +44,11 @@ router.post("/validate-smartcard", async (req, res) => {
 
     console.log("✅ VTpass raw response for validation:", response.data); // Log the full VTpass response
 
-    // CORRECTED LOGIC: Check for 'code: "000"' and access 'content'
+    // THIS IS THE CRITICAL CHANGE: Check for 'code: "000"' and access 'content'
     if (response.data && response.data.code === '000' && response.data.content && response.data.content.Customer_Name) {
+      // Backend constructs a response for Flutter with 'success: true' and 'details'
       return res.json({
-        success: true, // This will now correctly be true
+        success: true, // This will now correctly be true for Flutter
         customerName: response.data.content.Customer_Name, // Get from content
         message: response.data.message || "Smartcard validated successfully.", // Use message from VTpass response
         details: response.data.content // Pass the full content object as details
@@ -56,7 +57,7 @@ router.post("/validate-smartcard", async (req, res) => {
       // Handle cases where VTpass returns a non-000 code or missing data
       const errorMessage = response.data.message || response.data.response_description || response.data.content?.error || "Smartcard validation failed.";
       return res.status(400).json({
-        success: false,
+        success: false, // This will be false for Flutter if VTpass failed
         message: errorMessage,
         details: response.data // Still pass the full VTpass response for debugging
       });
