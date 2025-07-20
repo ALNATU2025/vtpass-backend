@@ -26,7 +26,6 @@ router.post("/validate-smartcard", async (req, res) => {
   console.log("   VTPASS_API_KEY (from env, masked):", process.env.VTPASS_API_KEY ? process.env.VTPASS_API_KEY.substring(0, 5) + '...' + process.env.VTPASS_API_KEY.substring(process.env.VTPASS_API_KEY.length - 5) : 'N/A');
   console.log("   VTPASS_SECRET_KEY (from env, masked):", process.env.VTPASS_SECRET_KEY ? process.env.VTPASS_SECRET_KEY.substring(0, 5) + '...' + process.env.VTPASS_SECRET_KEY.substring(process.env.VTPASS_SECRET_KEY.length - 5) : 'N/A');
   console.log("   VTPASS_BASE_URL (from env):", process.env.VTPASS_BASE_URL);
-  // No Authorization Header (Basic) here, as per the documentation we found earlier for POST requests
   // --- END DEBUGGING LOGS ---
 
   try {
@@ -39,30 +38,28 @@ router.post("/validate-smartcard", async (req, res) => {
       {
         headers: {
           "api-key": process.env.VTPASS_API_KEY,
-          "secret-key": process.env.VTPASS_SECRET_KEY, // REVERTED: Use secret-key for POST requests
+          "secret-key": process.env.VTPASS_SECRET_KEY,
           "Content-Type": "application/json",
         },
       }
     );
 
-    console.log("✅ VTpass raw response:", response.data);
+    console.log("✅ VTpass raw response for validation:", response.data); // Log the full VTpass response
 
-    // Refined success condition based on VTpass's actual successful response structure
-    // Check if VTpass's top-level 'code' is '000' AND if 'content' exists and contains Customer_Name
-    if (response.data && response.data.code === '000' && response.data.content && response.data.content.Customer_Name) {
+    // CORRECTED: Check for 'success: true' directly from VTpass's response for validation
+    if (response.data && response.data.success === true && response.data.details && response.data.details.Customer_Name) {
       return res.json({
-        success: true,
-        customerName: response.data.content.Customer_Name,
-        message: response.data.response_description || "Smartcard validated successfully.",
-        details: response.data.content
+        success: true, // This will now correctly be true
+        customerName: response.data.customerName, // Use customerName from VTpass response
+        message: response.data.message || "Smartcard validated successfully.", // Use message from VTpass response
+        details: response.data.details // Pass the full details object
       });
     } else {
-      // Handle cases where VTpass returns an error code or unexpected structure
-      const errorMessage = response.data.response_description || response.data.content?.error || "Smartcard validation failed.";
+      const errorMessage = response.data.message || response.data.response_description || response.data.content?.error || "Smartcard validation failed.";
       return res.status(400).json({
         success: false,
         message: errorMessage,
-        details: response.data
+        details: response.data // Still pass the full VTpass response for debugging
       });
     }
   } catch (error) {
