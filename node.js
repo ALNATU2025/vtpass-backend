@@ -1,15 +1,16 @@
-// ✅ Updated `/api/transfer` backend endpoint in Node.js
+// routes/transferRoutes.js (Assuming this is the file name)
 
 const express = require('express');
 const router = express.Router();
-const User = require('../models/userModel');
-const Transaction = require('../models/transactionModel');
-const authMiddleware = require('../middleware/authMiddleware');
+// ✅ CHANGE THIS LINE:
+const User = require('../models/User'); // Changed from '../models/userModel' to '../models/User'
+const Transaction = require('../models/transactionModel'); // Assuming this path is correct
+const authMiddleware = require('../middleware/authMiddleware'); // Assuming this path is correct
 
 // POST /api/transfer
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user._id; // Assuming authMiddleware correctly sets req.user
     const { accountNumber, bank, amount } = req.body;
 
     if (!accountNumber || !bank || !amount) {
