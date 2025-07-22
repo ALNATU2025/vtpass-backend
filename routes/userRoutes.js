@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 // const bcrypt = require('bcryptjs'); // No longer needed directly here if using schema method
-const User = require('../models/user'); // ✅ Corrected import path to '../models/user'
+const User = require('../models/User'); // ✅ Corrected import path to '../models/User'
 const jwt = require('jsonwebtoken'); // Need jwt for token generation in routes if not using controller
 
 // Helper function to generate a JWT token (duplicated from controller, consider centralizing)
