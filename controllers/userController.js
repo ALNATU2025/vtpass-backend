@@ -1,5 +1,6 @@
 // controllers/userController.js
-const User = require('../models/user'); // ✅ Corrected import path to '../models/user'
+// ✅ CHANGE THIS LINE:
+const User = require('../models/User'); // Changed from '../models/user' to '../models/User'
 const jwt = require('jsonwebtoken');
 
 // Helper function to generate a JWT token
