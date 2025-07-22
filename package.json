@@ -2,10 +2,10 @@
   "name": "vtpass-backend",
   "version": "1.0.0",
   "description": "Backend for Dalabapay CableTV and other services",
-  "main": "src/index.js", // ✅ Update this line as well for clarity
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js", // ✅ THIS IS THE CRUCIAL CHANGE
-    "dev": "nodemon src/index.js" // ✅ Consider updating this too for local dev consistency
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
   },
   "keywords": [],
   "author": "",
