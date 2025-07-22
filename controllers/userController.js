@@ -1,7 +1,6 @@
 // controllers/userController.js
-const User = require('../models/userModel'); // Ensure this imports the consolidated User model
+const User = require('../models/user'); // ✅ Corrected import path to '../models/user'
 const jwt = require('jsonwebtoken');
-// No need to import bcryptjs directly if using user.matchPassword()
 
 // Helper function to generate a JWT token
 const generateToken = (id) => {

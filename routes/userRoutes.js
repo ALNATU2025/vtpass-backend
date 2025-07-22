@@ -1,8 +1,16 @@
 // routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs');
-const User = require('../models/userModel'); // Ensure this imports the consolidated User model
+// const bcrypt = require('bcryptjs'); // No longer needed directly here if using schema method
+const User = require('../models/user'); // ✅ Corrected import path to '../models/user'
+const jwt = require('jsonwebtoken'); // Need jwt for token generation in routes if not using controller
+
+// Helper function to generate a JWT token (duplicated from controller, consider centralizing)
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET || 'your_jwt_secret', {
+    expiresIn: '7d',
+  });
+};
 
 console.log("📥 /api/users route file loaded");
 
@@ -17,11 +25,15 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User with this email or phone already exists' });
     }
 
+    // Password hashing is handled by the pre-save hook in the User model
     const newUser = new User({ fullName, email, phone, password });
     await newUser.save();
 
+    const token = generateToken(newUser._id); // Generate token on registration
+
     res.status(201).json({
       message: 'User registered successfully',
+      token, // Include token in response
       user: {
         _id: newUser._id,
         fullName: newUser.fullName,
@@ -46,8 +58,11 @@ router.post('/login', async (req, res) => {
     const isMatch = await user.matchPassword(password); // Using the schema method
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
+    const token = generateToken(user._id); // Generate token on login
+
     res.json({
       message: 'Login successful',
+      token, // Include token in response
       user: {
         _id: user._id,
         fullName: user.fullName,

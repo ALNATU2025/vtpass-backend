@@ -49,8 +49,10 @@ UserSchema.pre('save', async function (next) {
 
 // Method to compare entered password with the hashed password in the database
 UserSchema.methods.matchPassword = async function (enteredPassword) {
+  // 'this.password' refers to the hashed password stored in the database
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Export the schema directly. The model will be created in userModel.js
-module.exports = UserSchema;
+// Export the User model directly
+// Use mongoose.models.User to prevent OverwriteModelError in development/hot-reloading
+module.exports = mongoose.models.User || mongoose.model('User', UserSchema);
