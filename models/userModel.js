@@ -1,30 +1,29 @@
-//models/userModel.js
+// models/userModel.js
 const mongoose = require('mongoose');
-
-const userSchema = new mongoose.Schema({
-  fullName: {
-    type: String,
-    required: true,
-  },
-  phone: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  password: {
-    type: String,
-    required: true,
-  },
-  walletBalance: {
-    type: Number,
-    default: 0,
-  },
-}, { timestamps: true });
-
-// ✅ Avoid OverwriteModelError
-module.exports = mongoose.models.User || mongoose.model('User', userSchema);
+const userSchema = mongoose.Schema(
+    {
+        username: {
+            type: String,
+            required: [true, 'Please add a username'],
+            unique: true,
+        },
+        email: {
+            type: String,
+            required: [true, 'Please add an email'],
+            unique: true,
+        },
+        password: {
+            type: String,
+            required: [true, 'Please add a password'],
+        },
+        // You might add other fields like walletBalance, etc.
+        // walletBalance: {
+        //     type: Number,
+        //     default: 0,
+        // },
+    },
+    {
+        timestamps: true, // Adds createdAt and updatedAt fields
+    }
+);
+module.exports = mongoose.model('User', userSchema);
