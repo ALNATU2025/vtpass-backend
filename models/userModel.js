@@ -1,6 +1,6 @@
 // models/userModel.js
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs'); // Import bcrypt here for schema methods
+const bcrypt = require('bcryptjs'); // Import bcrypt here to use in schema methods
 
 const userSchema = new mongoose.Schema({
     fullName: {
@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Add a method to compare entered password with hashed password in the database
+// This method will be available on user documents (e.g., user.matchPassword(somePassword))
 userSchema.methods.matchPassword = async function (enteredPassword) {
     // 'this.password' refers to the hashed password stored in the user document
     return await bcrypt.compare(enteredPassword, this.password);
