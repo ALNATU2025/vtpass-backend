@@ -25,42 +25,51 @@ const generateToken = (id) => {
  * @access  Public
  */
 const registerUser = async (req, res) => {
-    const { username, email, password } = req.body;
+    // Destructure fullName and phone instead of username
+    const { fullName, phone, email, password } = req.body;
 
-    // Basic validation
-    if (!username || !email || !password) {
-        return res.status(400).json({ message: 'Please enter all fields' });
+    // Basic validation: Check for all required fields
+    if (!fullName || !phone || !email || !password) {
+        return res.status(400).json({ message: 'Please enter all required fields: Full Name, Phone, Email, and Password' });
     }
 
     try {
-        // Check if user already exists
-        const userExists = await User.findOne({ email });
-        if (userExists) {
-            return res.status(400).json({ message: 'User already exists' });
+        // Check if user with this email already exists
+        const userExistsByEmail = await User.findOne({ email });
+        if (userExistsByEmail) {
+            return res.status(400).json({ message: 'User with this email already exists' });
+        }
+
+        // Check if user with this phone number already exists
+        const userExistsByPhone = await User.findOne({ phone });
+        if (userExistsByPhone) {
+            return res.status(400).json({ message: 'User with this phone number already exists' });
         }
 
         // Hash password
         const salt = await bcrypt.genSalt(10); // Generate a salt with 10 rounds
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Create new user
+        // Create new user with fullName and phone
         const user = await User.create({
-            username,
+            fullName, // Using fullName
+            phone,    // Using phone
             email,
             password: hashedPassword,
-            // You might add other default fields here, e.g., walletBalance: 0
+            // walletBalance defaults to 0 as per your userModel
         });
 
         if (user) {
             res.status(201).json({
                 _id: user.id,
-                username: user.username,
+                fullName: user.fullName, // Return fullName
+                phone: user.phone,       // Return phone
                 email: user.email,
                 token: generateToken(user._id),
                 message: 'User registered successfully'
             });
         } else {
-            res.status(400).json({ message: 'Invalid user data' });
+            res.status(400).json({ message: 'Invalid user data provided' });
         }
     } catch (error) {
         console.error('Error during user registration:', error);
@@ -78,7 +87,7 @@ const loginUser = async (req, res) => {
 
     // Basic validation
     if (!email || !password) {
-        return res.status(400).json({ message: 'Please enter all fields' });
+        return res.status(400).json({ message: 'Please enter email and password' });
     }
 
     try {
@@ -89,7 +98,8 @@ const loginUser = async (req, res) => {
         if (user && (await bcrypt.compare(password, user.password))) {
             res.json({
                 _id: user.id,
-                username: user.username,
+                fullName: user.fullName, // Return fullName
+                phone: user.phone,       // Return phone
                 email: user.email,
                 token: generateToken(user._id),
                 message: 'Logged in successfully'
@@ -114,9 +124,10 @@ const getMe = async (req, res) => {
     if (req.user) {
         res.status(200).json({
             _id: req.user.id,
-            username: req.user.username,
+            fullName: req.user.fullName, // Return fullName
+            phone: req.user.phone,       // Return phone
             email: req.user.email,
-            // Add any other user data you want to return, e.g., walletBalance: req.user.walletBalance
+            walletBalance: req.user.walletBalance, // Assuming walletBalance is on the user object
         });
     } else {
         // This case should ideally not be hit if 'protect' middleware is working correctly
