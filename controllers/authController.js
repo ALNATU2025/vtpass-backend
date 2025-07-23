@@ -4,6 +4,7 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // For password hashing
 const User = require('../models/userModel'); // Assuming your User model is here
+const { sendEmail } = require('../utils/emailService'); // Import the email sending utility
 
 // Helper function to generate a JWT token
 const generateToken = (id) => {
@@ -25,7 +26,6 @@ const generateToken = (id) => {
  * @access  Public
  */
 const registerUser = async (req, res) => {
-    // Destructure fullName and phone instead of username
     const { fullName, phone, email, password } = req.body;
 
     // Basic validation: Check for all required fields
@@ -52,18 +52,71 @@ const registerUser = async (req, res) => {
 
         // Create new user with fullName and phone
         const user = await User.create({
-            fullName, // Using fullName
-            phone,    // Using phone
+            fullName,
+            phone,
             email,
             password: hashedPassword,
             // walletBalance defaults to 0 as per your userModel
         });
 
         if (user) {
+            // --- NEW: Send Welcome Email Automatically ---
+            try {
+                const subject = 'Welcome to DalabaPay!';
+                const text = `Hello ${user.fullName},\n\nWelcome to DalaPay! We're excited to have you on board. You can now easily pay bills, buy airtime, and more.\n\nBest regards,\nThe DalaPay Team`;
+                const html = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <style>
+                            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; }
+                            .header { background-color: #007bff; color: white; padding: 10px 20px; border-radius: 8px 8px 0 0; text-align: center; }
+                            .content { padding: 20px; }
+                            .footer { text-align: center; font-size: 0.9em; color: #777; margin-top: 20px; }
+                            .button { display: inline-block; background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+                            .highlight { font-weight: bold; color: #007bff; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="header">
+                                <h2>Welcome to DalabaPay!</h2>
+                            </div>
+                            <div class="content">
+                                <p>Hello ${user.fullName},</p>
+                                <p>We're thrilled to welcome you to the DalabaPay family! 🎉</p>
+                                <p>With DalabaPay, you can conveniently manage all your digital payments in one place:</p>
+                                <ul>
+                                    <li>Effortless bill payments</li>
+                                    <li>Instant airtime and data top-ups</li>
+                                    <li>Seamless utility payments</li>
+                                    <li>And much more!</li>
+                                </ul>
+                                <p>Start exploring our services today and experience the ease of DalabaPay.</p>
+                                <p>If you have any questions or need assistance, our support team is always here to help.</p>
+                                <p>Best regards,<br>The DalaPay Team</p>
+                            </div>
+                            <div class="footer">
+                                <p>&copy; ${new Date().getFullYear()} DalaPay. All rights reserved.</p>
+                            </div>
+                        </div>
+                    </body>
+                    </html>
+                `;
+                await sendEmail(user.email, subject, text, html);
+                console.log(`Welcome email sent to ${user.email} after registration.`);
+            } catch (emailError) {
+                console.error(`Failed to send welcome email to ${user.email}:`, emailError.message);
+                // Important: Do NOT return an error here, as user registration was successful.
+                // Just log the email sending failure.
+            }
+            // --- End New Email Logic ---
+
             res.status(201).json({
                 _id: user.id,
-                fullName: user.fullName, // Return fullName
-                phone: user.phone,       // Return phone
+                fullName: user.fullName,
+                phone: user.phone,
                 email: user.email,
                 token: generateToken(user._id),
                 message: 'User registered successfully'
@@ -95,11 +148,11 @@ const loginUser = async (req, res) => {
         const user = await User.findOne({ email });
 
         // Check password using the matchPassword method from the User model instance
-        if (user && (await user.matchPassword(password))) { // THIS IS THE LINE THAT NEEDS THE METHOD IN USERMODEL
+        if (user && (await user.matchPassword(password))) {
             res.json({
                 _id: user.id,
-                fullName: user.fullName, // Return fullName
-                phone: user.phone,       // Return phone
+                fullName: user.fullName,
+                phone: user.phone,
                 email: user.email,
                 token: generateToken(user._id),
                 message: 'Logged in successfully'
@@ -124,8 +177,8 @@ const getMe = async (req, res) => {
     if (req.user) {
         res.status(200).json({
             _id: req.user.id,
-            fullName: req.user.fullName, // Return fullName
-            phone: req.user.phone,       // Return phone
+            fullName: req.user.fullName,
+            phone: req.user.phone,
             email: req.user.email,
             walletBalance: req.user.walletBalance, // Assuming walletBalance is on the user object
         });
