@@ -109,7 +109,7 @@ router.post('/send-welcome-email', async (req, res) => {
             </div>
             <div class="content">
                 <p>Hello ${userName},</p>
-                <p>We're thrilled to welcome you to the DalaPay family! 🎉</p>
+                <p>We're thrilled to welcome you to the DalabaPay family! 🎉</p>
                 <p>With DalabaPay, you can conveniently manage all your digital payments in one place:</p>
                 <ul>
                     <li>Effortless bill payments</li>
