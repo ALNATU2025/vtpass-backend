@@ -58,7 +58,7 @@ router.post('/login', async (req, res) => {
     if (!user) return res.status(400).json({ message: 'Invalid credentials' });
 
     // Check if user is active
-    if (!user.isActive) { // <<< NEW CHECK: Prevent login if user is inactive
+    if (!user.isActive) {
       return res.status(403).json({ message: 'Your account has been deactivated. Please contact support.' });
     }
 
@@ -85,12 +85,68 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ✅ NEW ROUTE: PUT /api/users/toggle-status/:id - Admin toggles user active status
+// ✅ NEW ROUTE: PUT /api/users/:id - Admin updates user profile and balance
 // This endpoint MUST be protected by admin authorization.
+router.put('/:id', /* auth, authorizeAdmin, */ async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { fullName, email, phone, walletBalance, isActive, isAdmin } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // Update fields if they are provided in the request body
+    if (fullName !== undefined) user.fullName = fullName;
+    if (email !== undefined) {
+      // Check if new email already exists for another user
+      const emailExists = await User.findOne({ email: email, _id: { $ne: userId } });
+      if (emailExists) {
+        return res.status(400).json({ success: false, message: 'Email already in use by another user.' });
+      }
+      user.email = email;
+    }
+    if (phone !== undefined) {
+      // Check if new phone already exists for another user
+      const phoneExists = await User.findOne({ phone: phone, _id: { $ne: userId } });
+      if (phoneExists) {
+        return res.status(400).json({ success: false, message: 'Phone number already in use by another user.' });
+      }
+      user.phone = phone;
+    }
+    if (walletBalance !== undefined) user.walletBalance = walletBalance;
+    if (isActive !== undefined) user.isActive = isActive;
+    if (isAdmin !== undefined) user.isAdmin = isAdmin; // Be cautious allowing this via UI
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'User profile updated successfully.',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        walletBalance: user.walletBalance,
+        isActive: user.isActive,
+        isAdmin: user.isAdmin
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating user profile:', error);
+    res.status(500).json({ success: false, message: 'Server error updating user profile.' });
+  }
+});
+
+
+// ✅ PUT /api/users/toggle-status/:id - Admin toggles user active status (existing route)
 router.put('/toggle-status/:id', /* auth, authorizeAdmin, */ async (req, res) => {
   try {
     const userId = req.params.id;
-    const { isActive } = req.body; // Expecting { isActive: true/false }
+    const { isActive } = req.body;
 
     if (typeof isActive !== 'boolean') {
       return res.status(400).json({ success: false, message: 'Invalid status provided. Must be true or false.' });
@@ -100,11 +156,6 @@ router.put('/toggle-status/:id', /* auth, authorizeAdmin, */ async (req, res) =>
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
-
-    // Prevent admin from deactivating themselves (optional but recommended)
-    // if (req.user.id === userId && isActive === false) { // Requires auth middleware to populate req.user.id
-    //   return res.status(403).json({ success: false, message: 'Admins cannot deactivate their own account.' });
-    // }
 
     user.isActive = isActive;
     await user.save();
@@ -148,11 +199,10 @@ router.post('/change-password', /* auth, */ async (req, res) => {
   }
 });
 
-// ✅ Admin: Fetch all users for manual funding (GET /api/users)
-// This route now includes isActive in the select.
+// ✅ Admin: Fetch all users for manual funding (GET /api/users) (existing route)
 router.get('/', async (req, res) => {
   try {
-    const users = await User.find().select('_id fullName email walletBalance isActive isAdmin phone'); // Include isActive and phone
+    const users = await User.find().select('_id fullName email walletBalance isActive isAdmin phone');
     res.status(200).json({ users });
   } catch (err) {
     console.error("❌ Error in /api/users (GET all):", err.message);
@@ -179,10 +229,9 @@ router.post('/get-balance', async (req, res) => {
 });
 
 // ✅ Fetch user by ID (for balance refresh) (GET /api/users/:id) (existing route)
-// This route now includes isActive in the select.
 router.get('/:id', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('_id fullName email walletBalance isActive isAdmin phone'); // Include isActive and phone
+    const user = await User.findById(req.params.id).select('_id fullName email walletBalance isActive isAdmin phone');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     res.status(200).json({ user });
