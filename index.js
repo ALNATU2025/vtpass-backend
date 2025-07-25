@@ -17,7 +17,8 @@ const transferRoutes = require('./routes/transferRoutes');
 const cabletvRoutes = require('./routes/cabletvRoutes');
 const vtpassRoutes = require("./routes/vtpassRoutes");
 const appSettingsRoutes = require('./routes/appSettingsRoutes');
-const beneficiaryRoutes = require('./routes/beneficiaryRoutes'); // <<< NEW: Import Beneficiary Routes
+const beneficiaryRoutes = require('./routes/beneficiaryRoutes');
+const notificationRoutes = require('./routes/notificationRoutes'); // <<< NEW: Import Notification Routes
 
 // Connect to the database
 connectDB();
@@ -39,7 +40,9 @@ app.use('/api/transfer', transferRoutes);
 app.use('/api/cabletv', cabletvRoutes);
 app.use("/api", vtpassRoutes);
 app.use('/api/settings', appSettingsRoutes);
-app.use('/api/beneficiaries', beneficiaryRoutes); 
+app.use('/api/beneficiaries', beneficiaryRoutes);
+app.use('/api/notifications', notificationRoutes); // <<< NEW: Mount Notification Routes
+
 // Basic route for testing server status
 app.get('/', (req, res) => {
     res.send('VTpass Backend Running');
