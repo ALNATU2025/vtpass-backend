@@ -1,11 +1,11 @@
 // routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs'); // Needed for password comparison and hashing
-const User = require('../models/User'); // ✅ Corrected import path to '../models/User'
-const jwt = require('jsonwebtoken'); // Need jwt for token generation in routes if not using controller
+const bcrypt = require('bcryptjs');
+const User = require('../models/User');
+const jwt = require('jsonwebtoken');
 
-// Helper function to generate a JWT token (duplicated from controller, consider centralizing)
+// Helper function to generate a JWT token
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET || 'your_jwt_secret', {
     expiresIn: '7d',
@@ -38,7 +38,9 @@ router.post('/register', async (req, res) => {
         _id: newUser._id,
         fullName: newUser.fullName,
         email: newUser.email,
-        walletBalance: newUser.walletBalance
+        walletBalance: newUser.walletBalance,
+        isActive: newUser.isActive, // Include isActive in response
+        isAdmin: newUser.isAdmin // Include isAdmin in response
       }
     });
   } catch (err) {
@@ -55,6 +57,11 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: 'Invalid credentials' });
 
+    // Check if user is active
+    if (!user.isActive) { // <<< NEW CHECK: Prevent login if user is inactive
+      return res.status(403).json({ message: 'Your account has been deactivated. Please contact support.' });
+    }
+
     const isMatch = await user.matchPassword(password); // Using the schema method
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
@@ -67,7 +74,9 @@ router.post('/login', async (req, res) => {
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
-        walletBalance: user.walletBalance
+        walletBalance: user.walletBalance,
+        isActive: user.isActive, // Include isActive in response
+        isAdmin: user.isAdmin // Include isAdmin in response
       }
     });
   } catch (err) {
@@ -76,8 +85,39 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ✅ NEW ROUTE: POST /api/users/change-password - Change user's password
-// This endpoint should be protected by authentication middleware if you have one.
+// ✅ NEW ROUTE: PUT /api/users/toggle-status/:id - Admin toggles user active status
+// This endpoint MUST be protected by admin authorization.
+router.put('/toggle-status/:id', /* auth, authorizeAdmin, */ async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { isActive } = req.body; // Expecting { isActive: true/false }
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Invalid status provided. Must be true or false.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // Prevent admin from deactivating themselves (optional but recommended)
+    // if (req.user.id === userId && isActive === false) { // Requires auth middleware to populate req.user.id
+    //   return res.status(403).json({ success: false, message: 'Admins cannot deactivate their own account.' });
+    // }
+
+    user.isActive = isActive;
+    await user.save();
+
+    res.status(200).json({ success: true, message: `User account ${isActive ? 'activated' : 'deactivated'} successfully.`, user: { _id: user._id, fullName: user.fullName, email: user.email, isActive: user.isActive } });
+
+  } catch (error) {
+    console.error('❌ Error toggling user status:', error);
+    res.status(500).json({ success: false, message: 'Server error toggling user status.' });
+  }
+});
+
+// ✅ POST /api/users/change-password - Change user's password (existing route)
 router.post('/change-password', /* auth, */ async (req, res) => {
   try {
     const { userId, currentPassword, newPassword } = req.body;
@@ -91,15 +131,11 @@ router.post('/change-password', /* auth, */ async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // Compare current password with hashed password in DB
-    const isMatch = await user.matchPassword(currentPassword); // Use schema method if available
-    // If you don't have a matchPassword method on your User schema, use:
-    // const isMatch = await bcrypt.compare(currentPassword, user.password);
+    const isMatch = await user.matchPassword(currentPassword);
     if (!isMatch) {
       return res.status(400).json({ success: false, message: 'Incorrect current password.' });
     }
 
-    // Hash the new password
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
     await user.save();
@@ -113,9 +149,10 @@ router.post('/change-password', /* auth, */ async (req, res) => {
 });
 
 // ✅ Admin: Fetch all users for manual funding (GET /api/users)
+// This route now includes isActive in the select.
 router.get('/', async (req, res) => {
   try {
-    const users = await User.find().select('_id fullName email walletBalance');
+    const users = await User.find().select('_id fullName email walletBalance isActive isAdmin phone'); // Include isActive and phone
     res.status(200).json({ users });
   } catch (err) {
     console.error("❌ Error in /api/users (GET all):", err.message);
@@ -123,7 +160,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ✅ Get user balance by POST (POST /api/users/get-balance)
+// ✅ Get user balance by POST (POST /api/users/get-balance) (existing route)
 router.post('/get-balance', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -141,10 +178,11 @@ router.post('/get-balance', async (req, res) => {
   }
 });
 
-// ✅ Fetch user by ID (for balance refresh) (GET /api/users/:id)
+// ✅ Fetch user by ID (for balance refresh) (GET /api/users/:id) (existing route)
+// This route now includes isActive in the select.
 router.get('/:id', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('_id fullName email walletBalance');
+    const user = await User.findById(req.params.id).select('_id fullName email walletBalance isActive isAdmin phone'); // Include isActive and phone
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     res.status(200).json({ user });
