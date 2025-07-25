@@ -1,7 +1,6 @@
-// routes/transactions.js
 const express = require('express');
 const router = express.Router();
-const Transaction = require('../models/Transaction'); // Ensure this path is correct
+const Transaction = require('../models/Transaction'); // Ensure this path is correct relative to this file
 
 // GET /api/transactions/:userId
 router.get('/:userId', async (req, res) => {
