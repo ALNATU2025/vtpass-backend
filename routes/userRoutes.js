@@ -1,7 +1,7 @@
 // routes/userRoutes.js
 const express = require('express');
 const router = express.Router();
-// const bcrypt = require('bcryptjs'); // No longer needed directly here if using schema method
+const bcrypt = require('bcryptjs'); // Needed for password comparison and hashing
 const User = require('../models/User'); // ✅ Corrected import path to '../models/User'
 const jwt = require('jsonwebtoken'); // Need jwt for token generation in routes if not using controller
 
@@ -73,6 +73,42 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error("❌ Error in /login:", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ NEW ROUTE: POST /api/users/change-password - Change user's password
+// This endpoint should be protected by authentication middleware if you have one.
+router.post('/change-password', /* auth, */ async (req, res) => {
+  try {
+    const { userId, currentPassword, newPassword } = req.body;
+
+    if (!userId || !currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'All fields (userId, currentPassword, newPassword) are required.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    // Compare current password with hashed password in DB
+    const isMatch = await user.matchPassword(currentPassword); // Use schema method if available
+    // If you don't have a matchPassword method on your User schema, use:
+    // const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Incorrect current password.' });
+    }
+
+    // Hash the new password
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    res.status(200).json({ success: true, message: 'Password updated successfully.' });
+
+  } catch (error) {
+    console.error('❌ Error changing password for user:', error);
+    res.status(500).json({ success: false, message: 'Server error changing password.' });
   }
 });
 
