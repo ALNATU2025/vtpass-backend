@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/userModel');
-const Transaction = require('../models/Transaction'); // Changed to import the generic Transaction model
+const Transaction = require('../models/transactionModel');
 const axios = require("axios");
 
 router.post('/pay', async (req, res) => {
