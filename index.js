@@ -16,7 +16,8 @@ const fundWalletRoutes = require('./routes/fundWalletRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const cabletvRoutes = require('./routes/cabletvRoutes');
 const vtpassRoutes = require("./routes/vtpassRoutes");
-const appSettingsRoutes = require('./routes/appSettingsRoutes'); // <<< NEW: Import App Settings Routes
+const appSettingsRoutes = require('./routes/appSettingsRoutes');
+const beneficiaryRoutes = require('./routes/beneficiaryRoutes'); // <<< NEW: Import Beneficiary Routes
 
 // Connect to the database
 connectDB();
@@ -37,8 +38,8 @@ app.use('/api/fund-wallet', fundWalletRoutes);
 app.use('/api/transfer', transferRoutes);
 app.use('/api/cabletv', cabletvRoutes);
 app.use("/api", vtpassRoutes);
-app.use('/api/settings', appSettingsRoutes); // <<< NEW: Mount App Settings Routes
-
+app.use('/api/settings', appSettingsRoutes);
+app.use('/api/beneficiaries', beneficiaryRoutes); 
 // Basic route for testing server status
 app.get('/', (req, res) => {
     res.send('VTpass Backend Running');
