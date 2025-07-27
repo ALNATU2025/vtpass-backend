@@ -37,7 +37,7 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    // --- NEW FIELDS FOR VIRTUAL ACCOUNT ---
+    // --- THIS SECTION IS CRITICAL FOR VIRTUAL ACCOUNT ---
     virtualAccount: {
       accountNumber: { type: String, unique: true, sparse: true }, // sparse allows nulls but enforces uniqueness for non-nulls
       bankName: { type: String },
