@@ -1,3 +1,4 @@
+```javascript
 // controllers/authController.js
 // This file contains the core logic for user authentication.
 
@@ -5,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // For password hashing
 const User = require('../models/userModel'); // Assuming your User model is here
 const { sendEmail } = require('../utils/emailService'); // Import the email sending utility
+// <<< NEW: Import the provisionDedicatedAccount function
+const { provisionDedicatedAccount } = require('./paystackController'); // Adjust path if necessary
 
 // Helper function to generate a JWT token
 const generateToken = (id) => {
@@ -57,10 +60,28 @@ const registerUser = async (req, res) => {
             email,
             password: hashedPassword,
             // walletBalance defaults to 0 as per your userModel
+            // virtualAccount will be added by provisionDedicatedAccount
         });
 
         if (user) {
-            // --- NEW: Send Welcome Email Automatically ---
+            // --- NEW: Provision dedicated account after user is saved ---
+            // This is a non-blocking operation for registration success, but critical for functionality.
+            // If it fails, the user can still register, but will need to provision account later.
+            try {
+                // The provisionDedicatedAccount function updates the user object in the DB directly.
+                // It also returns the account details, which we can include in the response.
+                const accountDetails = await provisionDedicatedAccount(user._id, user.email, user.fullName);
+                console.log(`✅ Dedicated account assigned to new user ${user.email}: ${accountDetails.accountNumber}`);
+                // Update the user object in memory for the response, though it's already in DB
+                user.virtualAccount = accountDetails;
+            } catch (accountError) {
+                console.error(`❌ Failed to provision dedicated account for new user ${user.email}:`, accountError.message);
+                // Log the error but do not prevent user registration from completing.
+                // You might want to add a field to User model like `virtualAccountProvisioningStatus: 'pending' | 'failed'`
+                // and a mechanism for users to retry provisioning later.
+            }
+
+            // --- Send Welcome Email Automatically ---
             try {
                 const subject = 'Welcome to DalabaPay!';
                 const text = `Hello ${user.fullName},\n\nWelcome to DalaPay! We're excited to have you on board. You can now easily pay bills, buy airtime, and more.\n\nBest regards,\nThe DalaPay Team`;
@@ -108,8 +129,6 @@ const registerUser = async (req, res) => {
                 console.log(`Welcome email sent to ${user.email} after registration.`);
             } catch (emailError) {
                 console.error(`Failed to send welcome email to ${user.email}:`, emailError.message);
-                // Important: Do NOT return an error here, as user registration was successful.
-                // Just log the email sending failure.
             }
             // --- End New Email Logic ---
 
@@ -118,6 +137,10 @@ const registerUser = async (req, res) => {
                 fullName: user.fullName,
                 phone: user.phone,
                 email: user.email,
+                walletBalance: user.walletBalance, // Include wallet balance
+                isAdmin: user.isAdmin, // Include isAdmin
+                isActive: user.isActive, // Include isActive
+                virtualAccount: user.virtualAccount, // <<< NEW: Include virtual account details
                 token: generateToken(user._id),
                 message: 'User registered successfully'
             });
@@ -154,6 +177,10 @@ const loginUser = async (req, res) => {
                 fullName: user.fullName,
                 phone: user.phone,
                 email: user.email,
+                walletBalance: user.walletBalance, // Include wallet balance
+                isAdmin: user.isAdmin, // Include isAdmin
+                isActive: user.isActive, // Include isActive
+                virtualAccount: user.virtualAccount, // <<< NEW: Include virtual account details on login
                 token: generateToken(user._id),
                 message: 'Logged in successfully'
             });
@@ -174,16 +201,22 @@ const loginUser = async (req, res) => {
 const getMe = async (req, res) => {
     // The 'protect' middleware adds the user object to the request (req.user)
     // We select '-password' in the middleware, so password is not exposed.
-    if (req.user) {
+    // Ensure that your 'protect' middleware populates the virtualAccount if needed,
+    // or fetch the full user object here if it's not already populated.
+    const user = await User.findById(req.user.id).select('-password'); // Fetch full user to get virtualAccount
+
+    if (user) {
         res.status(200).json({
-            _id: req.user.id,
-            fullName: req.user.fullName,
-            phone: req.user.phone,
-            email: req.user.email,
-            walletBalance: req.user.walletBalance, // Assuming walletBalance is on the user object
+            _id: user.id,
+            fullName: user.fullName,
+            phone: user.phone,
+            email: user.email,
+            walletBalance: user.walletBalance,
+            isAdmin: user.isAdmin,
+            isActive: user.isActive,
+            virtualAccount: user.virtualAccount, // <<< NEW: Include virtual account details
         });
     } else {
-        // This case should ideally not be hit if 'protect' middleware is working correctly
         res.status(401).json({ message: 'Not authorized, user data not found' });
     }
 };
@@ -193,3 +226,4 @@ module.exports = {
     loginUser,
     getMe,
 };
+```

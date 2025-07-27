@@ -33,9 +33,18 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    isActive: { // <<< NEW FIELD: User account status
+    isActive: {
       type: Boolean,
-      default: true, // New users are active by default
+      default: true,
+    },
+    // --- NEW FIELDS FOR VIRTUAL ACCOUNT ---
+    virtualAccount: {
+      accountNumber: { type: String, unique: true, sparse: true }, // sparse allows nulls but enforces uniqueness for non-nulls
+      bankName: { type: String },
+      accountName: { type: String },
+      reference: { type: String, unique: true, sparse: true }, // Paystack's dedicated account reference
+      assigned: { type: Boolean, default: false }, // Flag to check if account is assigned
+      // You might store more details like currency, collection_channel etc.
     },
   },
   {

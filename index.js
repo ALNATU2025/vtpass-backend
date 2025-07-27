@@ -19,6 +19,7 @@ const vtpassRoutes = require("./routes/vtpassRoutes");
 const appSettingsRoutes = require('./routes/appSettingsRoutes');
 const beneficiaryRoutes = require('./routes/beneficiaryRoutes');
 const notificationRoutes = require('./routes/notificationRoutes'); // <<< NEW: Import Notification Routes
+const paystackController = require('./controllers/paystackController'); // <<< NEW: Import Paystack controller
 
 // Connect to the database
 connectDB();
@@ -42,6 +43,8 @@ app.use("/api", vtpassRoutes);
 app.use('/api/settings', appSettingsRoutes);
 app.use('/api/beneficiaries', beneficiaryRoutes);
 app.use('/api/notifications', notificationRoutes); // <<< NEW: Mount Notification Routes
+app.post('/api/paystack-webhook', paystackController.handleWebhook);
+
 
 // Basic route for testing server status
 app.get('/', (req, res) => {
