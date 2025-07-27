@@ -1,14 +1,14 @@
 // routes/fundWalletRoutes.js
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User'); // <<< CORRECTED: Import from '../models/User'
+const User = require('../models/User'); // Corrected: Import from '../models/User'
 const Transaction = require('../models/transactionModel'); // Assuming this path is correct
-const protect = require('../middleware/authMiddleware'); // Assuming your auth middleware
+const { protect } = require('../middleware/authMiddleware'); // <<< FIXED: Destructure 'protect' from the export
 
 // @desc    Fund user wallet
 // @route   POST /api/fund-wallet
 // @access  Private (requires authentication)
-router.post('/', protect, async (req, res) => { // Added 'protect' middleware
+router.post('/', protect, async (req, res) => { // Line 11 is here, 'protect' needs to be a function
     const { userId, amount, type } = req.body; // 'type' could be 'credit', 'manual_deposit', etc.
 
     if (!userId || !amount || amount <= 0) {
