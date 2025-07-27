@@ -3,7 +3,7 @@
 
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs'); // For password hashing
-const User = require('../models/userModel'); // Assuming your User model is here
+const User = require('../models/User'); // Assuming your User model is here
 const { sendEmail } = require('../utils/emailService'); // Import the email sending utility
 // <<< NEW: Import the provisionDedicatedAccount function
 const { provisionDedicatedAccount } = require('./paystackController'); // Adjust path if necessary
