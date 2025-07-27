@@ -1,4 +1,3 @@
-```javascript
 // controllers/authController.js
 // This file contains the core logic for user authentication.
 
@@ -71,11 +70,12 @@ const registerUser = async (req, res) => {
                 // The provisionDedicatedAccount function updates the user object in the DB directly.
                 // It also returns the account details, which we can include in the response.
                 const accountDetails = await provisionDedicatedAccount(user._id, user.email, user.fullName);
-                console.log(`✅ Dedicated account assigned to new user ${user.email}: ${accountDetails.accountNumber}`);
+                // Removed emoji from console.log to fix SyntaxError
+                console.log(`Dedicated account assigned to new user ${user.email}: ${accountDetails.accountNumber}`);
                 // Update the user object in memory for the response, though it's already in DB
                 user.virtualAccount = accountDetails;
             } catch (accountError) {
-                console.error(`❌ Failed to provision dedicated account for new user ${user.email}:`, accountError.message);
+                console.error(`Failed to provision dedicated account for new user ${user.email}:`, accountError.message);
                 // Log the error but do not prevent user registration from completing.
                 // You might want to add a field to User model like `virtualAccountProvisioningStatus: 'pending' | 'failed'`
                 // and a mechanism for users to retry provisioning later.
@@ -226,4 +226,3 @@ module.exports = {
     loginUser,
     getMe,
 };
-```
