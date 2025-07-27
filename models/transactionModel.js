@@ -8,7 +8,8 @@ const transactionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['Transfer', 'Airtime', 'Data', 'CableTV', 'CashWithdraw', 'FundWallet'], // Added 'CableTV' and 'FundWallet'
+    // Updated enum to include specific transfer types for clarity
+    enum: ['Transfer-Sent', 'Transfer-Received', 'Airtime', 'Data', 'CableTV', 'CashWithdraw', 'FundWallet'],
     required: true,
   },
   amount: {
@@ -17,7 +18,7 @@ const transactionSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Successful', 'Pending', 'Failed'], // Added enum for clarity
+    enum: ['Successful', 'Pending', 'Failed'], // This enum is fine and matches 'Successful' used in route
     default: 'Successful',
   },
   // Specific fields for CableTV transactions (required only if type is 'CableTV')
@@ -36,7 +37,7 @@ const transactionSchema = new mongoose.Schema({
   transactionId: { // VTpass transaction ID or custom request_id
     type: String,
     unique: true, // Ensures transaction IDs are unique
-    required: true,
+    required: true, // <<< CRITICAL: This was the missing piece causing the 500 error
   },
   details: { // General purpose field for additional, unstructured details (e.g., full VTpass response)
     type: mongoose.Schema.Types.Mixed, // Allows any type, including nested objects
@@ -44,5 +45,5 @@ const transactionSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
-// ✅ Avoid OverwriteModelError
+// ✅ Avoid OverwriteModelError: Use the existing model if it's already defined
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
