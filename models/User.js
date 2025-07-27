@@ -35,9 +35,8 @@ const userSchema = mongoose.Schema(
     },
     isActive: {
       type: Boolean,
-      default: true,
+      default: true, // <--- THIS IS CRITICAL AND MUST BE TRUE
     },
-    // --- THIS SECTION IS CRITICAL FOR VIRTUAL ACCOUNT ---
     virtualAccount: {
       accountNumber: { type: String, unique: true, sparse: true }, // sparse allows nulls but enforces uniqueness for non-nulls
       bankName: { type: String },
