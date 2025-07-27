@@ -6,7 +6,7 @@ const User = require('../models/User'); // Ensure correct path to your User mode
 const jwt = require('jsonwebtoken');
 const { sendEmail } = require('../utils/emailService'); // Assuming this utility exists
 const { provisionDedicatedAccount } = require('../controllers/paystackController'); // Import Paystack provisioning
-const protect = require('../middleware/authMiddleware'); // Assuming your auth middleware
+const { protect } = require('../middleware/authMiddleware'); // <<< FIXED: Destructure 'protect' from the export
 
 // Helper function to generate a JWT token
 const generateToken = (id) => {
