@@ -52,26 +52,42 @@ const userSchema = mongoose.Schema(
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
-  // --- DEBUG LOGS FOR PRE-SAVE START ---
-  console.log(`DEBUG (User Model Pre-Save): isModified('password'): ${this.isModified('password')}`);
-  if (this.isModified('password')) {
-    console.log(`DEBUG (User Model Pre-Save): Raw password before hashing (masked): ${this.password ? '********' : 'N/A'}`);
+  // Check if password field is being modified or if it's a new document
+  if (this.isModified('password') || this.isNew) {
+    // --- DEBUG LOGS FOR PRE-SAVE START ---
+    console.log(`DEBUG (User Model Pre-Save): isModified('password'): ${this.isModified('password')}`);
+    console.log(`DEBUG (User Model Pre-Save): isNew document: ${this.isNew}`);
+    console.log(`DEBUG (User Model Pre-Save): Raw password length before hashing: ${this.password ? this.password.length : 'N/A'}`);
+    console.log(`DEBUG (User Model Pre-Save): Raw password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`); // Show first few chars
+    // --- DEBUG LOGS FOR PRE-SAVE END ---
+
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-    console.log(`DEBUG (User Model Pre-Save): Hashed password after bcrypt (masked): ${this.password ? '********' : 'N/A'}`);
+
+    // --- DEBUG LOGS FOR PRE-SAVE AFTER HASHING ---
+    console.log(`DEBUG (User Model Pre-Save): Hashed password length after bcrypt: ${this.password ? this.password.length : 'N/A'}`);
+    console.log(`DEBUG (User Model Pre-Save): Hashed password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`); // Show first few chars
+    // --- DEBUG LOGS FOR PRE-SAVE AFTER HASHING END ---
+  } else {
+    console.log(`DEBUG (User Model Pre-Save): Password not modified, skipping hashing.`);
   }
-  // --- DEBUG LOGS FOR PRE-SAVE END ---
   next();
 });
 
 // Method to compare entered password with hashed password
 userSchema.methods.matchPassword = async function (enteredPassword) {
   // --- DEBUG LOGS FOR MATCH PASSWORD START ---
-  console.log(`DEBUG (User Model MatchPassword): Entered password (masked): ${enteredPassword ? '********' : 'N/A'}`);
-  console.log(`DEBUG (User Model MatchPassword): Stored hashed password (masked): ${this.password ? '********' : 'N/A'}`);
-  const isMatch = await bcrypt.compare(enteredPassword, this.password);
-  console.log(`DEBUG (User Model MatchPassword): Result of bcrypt.compare: ${isMatch}`);
+  console.log(`DEBUG (User Model MatchPassword): Entered password length: ${enteredPassword ? enteredPassword.length : 'N/A'}`);
+  console.log(`DEBUG (User Model MatchPassword): Entered password content (first 5 chars, masked): ${enteredPassword ? enteredPassword.substring(0, Math.min(enteredPassword.length, 5)) + '...' : 'N/A'}`);
+  console.log(`DEBUG (User Model MatchPassword): Stored hashed password length: ${this.password ? this.password.length : 'N/A'}`);
+  console.log(`DEBUG (User Model MatchPassword): Stored hashed password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`);
   // --- DEBUG LOGS FOR MATCH PASSWORD END ---
+
+  const isMatch = await bcrypt.compare(enteredPassword, this.password);
+
+  // --- DEBUG LOGS FOR MATCH PASSWORD RESULT ---
+  console.log(`DEBUG (User Model MatchPassword): Result of bcrypt.compare: ${isMatch}`);
+  // --- DEBUG LOGS FOR MATCH PASSWORD RESULT END ---
   return isMatch;
 };
 
