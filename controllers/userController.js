@@ -1,9 +1,9 @@
 // controllers/userController.js
-const User = require('../models/User'); // <<< ENSURE THIS IS '../models/User'
+const User = require('../models/User'); // Ensure correct path to your User model
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { sendEmail } = require('../utils/emailService');
-const { provisionDedicatedAccount } = require('./paystackController');
+const { sendEmail } = require('../utils/emailService'); // Assuming this utility exists
+const { provisionDedicatedAccount } = require('./paystackController'); // Import Paystack provisioning
 
 // Helper function to generate a JWT token
 const generateToken = (id) => {
@@ -13,7 +13,7 @@ const generateToken = (id) => {
         throw new Error('JWT secret is not configured.');
     }
     return jwt.sign({ id }, jwtSecret, {
-        expiresIn: '30d',
+        expiresIn: '30d', // Token expires in 30 days
     });
 };
 
@@ -24,10 +24,19 @@ const generateToken = (id) => {
  */
 const registerUser = async (req, res) => {
     const { fullName, email, password, phone } = req.body;
+
+    // --- DEBUG LOGS FOR REGISTRATION START ---
+    console.log(`DEBUG (Register): Attempting to register user: ${email}`);
+    console.log(`DEBUG (Register): Raw password received (masked): ${password ? '********' : 'N/A'}`);
+    // --- DEBUG LOGS FOR REGISTRATION END ---
+
+    // Basic validation: Check for all required fields
     if (!fullName || !phone || !email || !password) {
         return res.status(400).json({ message: 'Please enter all required fields: Full Name, Phone, Email, and Password' });
     }
+
     try {
+        // Check if user with given email or phone already exists
         const userExists = await User.findOne({ $or: [{ email }, { phone }] });
         if (userExists) {
             if (userExists.email === email) {
@@ -36,37 +45,107 @@ const registerUser = async (req, res) => {
                 return res.status(400).json({ message: 'User with this phone number already exists' });
             }
         }
+
+        // Password hashing
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
+
+        // --- DEBUG LOGS FOR REGISTRATION START ---
+        console.log(`DEBUG (Register): Salt generated: ${salt}`);
+        console.log(`DEBUG (Register): Hashed password (masked): ${hashedPassword ? '********' : 'N/A'}`);
+        // --- DEBUG LOGS FOR REGISTRATION END ---
+
+        // Create new user - EXPLICITLY SET isActive: true HERE
         const newUser = new User({
             fullName,
             phone,
             email,
             password: hashedPassword,
-            isActive: true, // <--- EXPLICITLY SET isActive to true
+            isActive: true, // <--- THIS IS THE CRITICAL LINE: EXPLICITLY SET isActive to true
+            // walletBalance and isAdmin will use their default values from schema (default: 0, false)
         });
-        await newUser.save();
+        await newUser.save(); // Save user first to get an _id
 
+        // --- DEBUG LOGS FOR REGISTRATION START ---
+        console.log(`DEBUG (Register): User saved to DB. User ID: ${newUser._id}, isActive: ${newUser.isActive}`);
+        // --- DEBUG LOGS FOR REGISTRATION END ---
+
+        // --- Provision dedicated account after user is saved ---
         let virtualAccountDetails = null;
         try {
             virtualAccountDetails = await provisionDedicatedAccount(newUser._id, newUser.email, newUser.fullName);
             console.log(`Dedicated account assigned to new user ${newUser.email}: ${virtualAccountDetails.accountNumber}`);
+            // Update the newUser object in memory for the response
             newUser.virtualAccount = virtualAccountDetails;
         } catch (accountError) {
             console.error(`Failed to provision dedicated account for new user ${newUser.email}:`, accountError.message);
+            // Log the error but do NOT prevent user registration from completing.
+            // The user will see the "Generate My Account" button in the app if provisioning failed.
         }
 
-        const token = generateToken(newUser._id);
+        // --- Send Welcome Email Automatically ---
+        try {
+            const subject = 'Welcome to DalabaPay!';
+            const text = `Hello ${newUser.fullName},\n\nWelcome to DalaPay! We're excited to have you on board. You can now easily pay bills, buy airtime, and more.\n\nBest regards,\nThe DalaPay Team`;
+            const html = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <style>
+                        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                        .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; }
+                        .header { background-color: #007bff; color: white; padding: 10px 20px; border-radius: 8px 8px 0 0; text-align: center; }
+                        .content { padding: 20px; }
+                        .footer { text-align: center; font-size: 0.9em; color: #777; margin-top: 20px; }
+                        .button { display: inline-block; background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }
+                        .highlight { font-weight: bold; color: #007bff; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="header">
+                            <h2>Welcome to DalabaPay!</h2>
+                        </div>
+                        <div class="content">
+                            <p>Hello ${newUser.fullName},</p>
+                            <p>We're thrilled to welcome you to the DalabaPay family! 🎉</p>
+                            <p>With DalabaPay, you can conveniently manage all your digital payments in one place:</p>
+                            <ul>
+                                <li>Effortless bill payments</li>
+                                <li>Instant airtime and data top-ups</li>
+                                <li>Seamless utility payments</li>
+                                <li>And much more!</li>
+                            </ul>
+                            <p>Start exploring our services today and experience the ease of DalabaPay.</p>
+                            <p>If you have any questions or need assistance, our support team is always here to help.</p>
+                            <p>Best regards,<br>The DalaPay Team</p>
+                        </div>
+                        <div class="footer">
+                            <p>&copy; ${new Date().getFullYear()} DalaPay. All rights reserved.</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `;
+            await sendEmail(newUser.email, subject, text, html);
+            console.log(`Welcome email sent to ${newUser.email} after registration.`);
+        } catch (emailError) {
+            console.error(`Failed to send welcome email to ${newUser.email}:`, emailError.message);
+        }
+        // --- End New Email Logic ---
+
+        const token = generateToken(newUser._id); // Generate token on registration
+
         res.status(201).json({
             message: 'User registered successfully',
-            token,
+            token, // Include token in response
             user: {
                 _id: newUser._id,
                 fullName: newUser.fullName,
                 email: newUser.email,
                 phone: newUser.phone,
                 walletBalance: newUser.walletBalance,
-                isActive: newUser.isActive,
+                isActive: newUser.isActive, // This will now be explicitly true
                 isAdmin: newUser.isAdmin,
                 virtualAccount: newUser.virtualAccount,
             }
@@ -84,22 +163,47 @@ const registerUser = async (req, res) => {
  */
 const loginUser = async (req, res) => {
     const { email, password } = req.body;
+
+    // --- DEBUG LOGS FOR LOGIN START ---
+    console.log(`DEBUG (Login): Attempting to log in user: ${email}`);
+    console.log(`DEBUG (Login): Raw password received (masked): ${password ? '********' : 'N/A'}`);
+    // --- DEBUG LOGS FOR LOGIN END ---
+
+    // Basic validation
     if (!email || !password) {
         return res.status(400).json({ message: 'Please enter email and password' });
     }
+
     try {
+        // Check for user email
         const user = await User.findOne({ email });
+
+        // --- DEBUG LOGS FOR LOGIN START ---
+        console.log(`DEBUG (Login): User found in DB: ${user ? user.email : 'None'}`);
+        // --- DEBUG LOGS FOR LOGIN END ---
+
         if (!user) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
+
+        // Check if user is active
         if (!user.isActive) {
+            console.log(`DEBUG (Login): User ${user.email} is deactivated. isActive: ${user.isActive}`); // Added log
             return res.status(403).json({ message: 'Your account has been deactivated. Please contact support.' });
         }
-        const isMatch = await user.matchPassword(password);
+
+        const isMatch = await user.matchPassword(password); // Using the schema method
+
+        // --- DEBUG LOGS FOR LOGIN START ---
+        console.log(`DEBUG (Login): Password match result for ${user.email}: ${isMatch}`);
+        // --- DEBUG LOGS FOR LOGIN END ---
+
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
+
         const token = generateToken(user._id);
+
         res.status(200).json({
             message: 'Login successful',
             token,
