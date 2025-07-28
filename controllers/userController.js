@@ -162,7 +162,7 @@ const registerUser = async (req, res) => {
  * @access  Public
  */
 const loginUser = async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password } = req.body; // 'email' here is the input from the frontend
 
     // --- DEBUG LOGS FOR LOGIN START ---
     console.log(`DEBUG (Login): Attempting to log in user: ${email}`);
@@ -175,12 +175,18 @@ const loginUser = async (req, res) => {
     }
 
     try {
-        // Check for user email
-        const user = await User.findOne({ email });
+        // Determine if the input is likely an email or a phone number
+        const isEmail = email.includes('@');
 
-        // --- DEBUG LOGS FOR LOGIN START ---
-        console.log(`DEBUG (Login): User found in DB: ${user ? user.email : 'None'}`);
-        // --- DEBUG LOGS FOR LOGIN END ---
+        let user;
+        if (isEmail) {
+            user = await User.findOne({ email });
+            console.log(`DEBUG (Login): Searching by email. User found: ${user ? user.email : 'None'}`);
+        } else {
+            // Assuming the input is a phone number if it doesn't contain '@'
+            user = await User.findOne({ phone: email }); // Search by phone field
+            console.log(`DEBUG (Login): Searching by phone. User found: ${user ? user.phone : 'None'}`);
+        }
 
         if (!user) {
             return res.status(400).json({ message: 'Invalid credentials' });
@@ -188,14 +194,14 @@ const loginUser = async (req, res) => {
 
         // Check if user is active
         if (!user.isActive) {
-            console.log(`DEBUG (Login): User ${user.email} is deactivated. isActive: ${user.isActive}`); // Added log
+            console.log(`DEBUG (Login): User ${user.email} is deactivated. isActive: ${user.isActive}`);
             return res.status(403).json({ message: 'Your account has been deactivated. Please contact support.' });
         }
 
         const isMatch = await user.matchPassword(password); // Using the schema method
 
         // --- DEBUG LOGS FOR LOGIN START ---
-        console.log(`DEBUG (Login): Password match result for ${user.email}: ${isMatch}`);
+        console.log(`DEBUG (Login): Password match result for ${user.email || user.phone}: ${isMatch}`);
         // --- DEBUG LOGS FOR LOGIN END ---
 
         if (!isMatch) {
