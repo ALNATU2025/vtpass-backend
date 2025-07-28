@@ -1,7 +1,7 @@
 // controllers/userController.js
 const User = require('../models/User'); // Ensure correct path to your User model
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcryptjs'); // Still needed for matchPassword in User model
 const { sendEmail } = require('../utils/emailService'); // Assuming this utility exists
 const { provisionDedicatedAccount } = require('./paystackController'); // Import Paystack provisioning
 
@@ -28,6 +28,7 @@ const registerUser = async (req, res) => {
     // --- DEBUG LOGS FOR REGISTRATION START ---
     console.log(`DEBUG (Register): Attempting to register user: ${email}`);
     console.log(`DEBUG (Register): Raw password received (masked): ${password ? '********' : 'N/A'}`);
+    console.log(`DEBUG (Register): Raw password length: ${password ? password.length : 'N/A'}`);
     // --- DEBUG LOGS FOR REGISTRATION END ---
 
     // Basic validation: Check for all required fields
@@ -46,41 +47,31 @@ const registerUser = async (req, res) => {
             }
         }
 
-        // Password hashing
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // --- DEBUG LOGS FOR REGISTRATION START ---
-        console.log(`DEBUG (Register): Salt generated: ${salt}`);
-        console.log(`DEBUG (Register): Hashed password (masked): ${hashedPassword ? '********' : 'N/A'}`);
-        // --- DEBUG LOGS FOR REGISTRATION END ---
-
-        // Create new user - EXPLICITLY SET isActive: true HERE
+        // --- IMPORTANT CHANGE: Pass the raw password directly to the User model.
+        // The hashing will now be handled by the userSchema.pre('save') hook.
         const newUser = new User({
             fullName,
             phone,
             email,
-            password: hashedPassword,
-            isActive: true, // <--- THIS IS THE CRITICAL LINE: EXPLICITLY SET isActive to true
-            // walletBalance and isAdmin will use their default values from schema (default: 0, false)
+            password: password, // <<< PASSING RAW PASSWORD HERE
+            isActive: true,
         });
-        await newUser.save(); // Save user first to get an _id
+        await newUser.save(); // The pre-save hook in User model will hash it here.
 
-        // --- DEBUG LOGS FOR REGISTRATION START ---
+        // --- DEBUG LOGS FOR REGISTRATION AFTER SAVE ---
         console.log(`DEBUG (Register): User saved to DB. User ID: ${newUser._id}, isActive: ${newUser.isActive}`);
-        // --- DEBUG LOGS FOR REGISTRATION END ---
+        console.log(`DEBUG (Register): Hashed password in DB (masked): ${newUser.password ? '********' : 'N/A'}`);
+        console.log(`DEBUG (Register): Hashed password length in DB: ${newUser.password ? newUser.password.length : 'N/A'}`);
+        // --- DEBUG LOGS FOR REGISTRATION AFTER SAVE END ---
 
         // --- Provision dedicated account after user is saved ---
         let virtualAccountDetails = null;
         try {
             virtualAccountDetails = await provisionDedicatedAccount(newUser._id, newUser.email, newUser.fullName);
             console.log(`Dedicated account assigned to new user ${newUser.email}: ${virtualAccountDetails.accountNumber}`);
-            // Update the newUser object in memory for the response
             newUser.virtualAccount = virtualAccountDetails;
         } catch (accountError) {
             console.error(`Failed to provision dedicated account for new user ${newUser.email}:`, accountError.message);
-            // Log the error but do NOT prevent user registration from completing.
-            // The user will see the "Generate My Account" button in the app if provisioning failed.
         }
 
         // --- Send Welcome Email Automatically ---
@@ -167,6 +158,7 @@ const loginUser = async (req, res) => {
     // --- DEBUG LOGS FOR LOGIN START ---
     console.log(`DEBUG (Login): Attempting to log in user: ${email}`);
     console.log(`DEBUG (Login): Raw password received (masked): ${password ? '********' : 'N/A'}`);
+    console.log(`DEBUG (Login): Raw password length: ${password ? password.length : 'N/A'}`);
     // --- DEBUG LOGS FOR LOGIN END ---
 
     // Basic validation
@@ -200,7 +192,7 @@ const loginUser = async (req, res) => {
 
         const isMatch = await user.matchPassword(password); // Using the schema method
 
-        // --- DEBUG LOGS FOR LOGIN START ---
+        // --- DEBUG LOGS FOR LOGIN END ---
         console.log(`DEBUG (Login): Password match result for ${user.email || user.phone}: ${isMatch}`);
         // --- DEBUG LOGS FOR LOGIN END ---
 

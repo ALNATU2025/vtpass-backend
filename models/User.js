@@ -52,13 +52,12 @@ const userSchema = mongoose.Schema(
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
-  // Check if password field is being modified or if it's a new document
+  // Only hash if the password field is new or has been modified
   if (this.isModified('password') || this.isNew) {
     // --- DEBUG LOGS FOR PRE-SAVE START ---
     console.log(`DEBUG (User Model Pre-Save): isModified('password'): ${this.isModified('password')}`);
     console.log(`DEBUG (User Model Pre-Save): isNew document: ${this.isNew}`);
     console.log(`DEBUG (User Model Pre-Save): Raw password length before hashing: ${this.password ? this.password.length : 'N/A'}`);
-    console.log(`DEBUG (User Model Pre-Save): Raw password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`); // Show first few chars
     // --- DEBUG LOGS FOR PRE-SAVE END ---
 
     const salt = await bcrypt.genSalt(10);
@@ -66,7 +65,6 @@ userSchema.pre('save', async function (next) {
 
     // --- DEBUG LOGS FOR PRE-SAVE AFTER HASHING ---
     console.log(`DEBUG (User Model Pre-Save): Hashed password length after bcrypt: ${this.password ? this.password.length : 'N/A'}`);
-    console.log(`DEBUG (User Model Pre-Save): Hashed password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`); // Show first few chars
     // --- DEBUG LOGS FOR PRE-SAVE AFTER HASHING END ---
   } else {
     console.log(`DEBUG (User Model Pre-Save): Password not modified, skipping hashing.`);
@@ -78,9 +76,7 @@ userSchema.pre('save', async function (next) {
 userSchema.methods.matchPassword = async function (enteredPassword) {
   // --- DEBUG LOGS FOR MATCH PASSWORD START ---
   console.log(`DEBUG (User Model MatchPassword): Entered password length: ${enteredPassword ? enteredPassword.length : 'N/A'}`);
-  console.log(`DEBUG (User Model MatchPassword): Entered password content (first 5 chars, masked): ${enteredPassword ? enteredPassword.substring(0, Math.min(enteredPassword.length, 5)) + '...' : 'N/A'}`);
   console.log(`DEBUG (User Model MatchPassword): Stored hashed password length: ${this.password ? this.password.length : 'N/A'}`);
-  console.log(`DEBUG (User Model MatchPassword): Stored hashed password content (first 5 chars, masked): ${this.password ? this.password.substring(0, Math.min(this.password.length, 5)) + '...' : 'N/A'}`);
   // --- DEBUG LOGS FOR MATCH PASSWORD END ---
 
   const isMatch = await bcrypt.compare(enteredPassword, this.password);
