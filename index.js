@@ -66,7 +66,6 @@ try {
     console.log('✅ routes/notificationRoutes loaded.');
 } catch (e) { console.error('❌ Failed to load routes/notificationRoutes:', e.message); }
 
-// NEW: Airtime and Data Routes with logging
 try {
     airtimeRoutes = require('./routes/airtime');
     console.log('✅ routes/airtime loaded.');
@@ -78,17 +77,25 @@ try {
 } catch (e) { console.error('❌ Failed to load routes/data:', e.message); }
 
 
-const paystackController = require('./controllers/paystackController'); // This one is a controller, not a route module itself
+const paystackController = require('./controllers/paystackController');
 
 // --- Firebase Admin SDK Initialization ---
 try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    
+    // IMPORTANT CHANGE: Removed storageBucket from initialization
+    // Firebase Storage requires a project to be on the Blaze (pay-as-you-go) plan.
+    // If you need Firebase Storage, please upgrade your Firebase project's billing plan.
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
-        storageBucket: process.env.FIREBASE_STORAGE_BUCKET_URL
+        // storageBucket: process.env.FIREBASE_STORAGE_BUCKET_URL // <-- This line is now commented out/removed
     });
-    console.log('✅ Firebase Admin SDK initialized successfully.');
-    initializeFirebase(admin.firestore(), admin.storage().bucket());
+    console.log('✅ Firebase Admin SDK initialized successfully (without Storage bucket).');
+
+    // Pass null for the storage bucket if it's not configured or not needed
+    // This assumes initializeFirebase in chatService.js can handle a null/undefined bucket.
+    initializeFirebase(admin.firestore(), null); // Pass null for storage bucket
+
 } catch (error) {
     console.error('❌ Failed to initialize Firebase Admin SDK:', error);
     console.error('Please ensure FIREBASE_SERVICE_ACCOUNT environment variable is set and valid JSON.');
