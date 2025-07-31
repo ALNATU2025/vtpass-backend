@@ -11,8 +11,7 @@ const connectDB = require('./db');
 
 // --- Import all route modules ---
 let emailRoutes, userRoutes, transactionRoutes, fundWalletRoutes, transferRoutes,
-    cabletvRoutes, vtpassRoutes, appSettingsRoutes, beneficiaryRoutes,
-    notificationRoutes, airtimeRoutes, dataRoutes;
+    vtpassRoutes, appSettingsRoutes, beneficiaryRoutes, notificationRoutes;
 
 try {
     emailRoutes = require('./routes/emailRoutes');
@@ -40,11 +39,7 @@ try {
 } catch (e) { console.error('❌ Failed to load routes/transferRoutes:', e.message); }
 
 try {
-    cabletvRoutes = require('./routes/cabletvRoutes');
-    console.log('✅ routes/cabletvRoutes loaded.');
-} catch (e) { console.error('❌ Failed to load routes/cabletvRoutes:', e.message); }
-
-try {
+    // Only load the single, comprehensive vtpassRoutes file
     vtpassRoutes = require("./routes/vtpassRoutes");
     console.log('✅ routes/vtpassRoutes loaded.');
 } catch (e) { console.error('❌ Failed to load routes/vtpassRoutes:', e.message); }
@@ -64,16 +59,8 @@ try {
     console.log('✅ routes/notificationRoutes loaded.');
 } catch (e) { console.error('❌ Failed to load routes/notificationRoutes:', e.message); }
 
-try {
-    airtimeRoutes = require('./routes/airtime');
-    console.log('✅ routes/airtime loaded.');
-} catch (e) { console.error('❌ Failed to load routes/airtime:', e.message); }
-
-try {
-    dataRoutes = require('./routes/data');
-    console.log('✅ routes/data loaded.');
-} catch (e) { console.error('❌ Failed to load routes/data:', e.message); }
-
+// Note: The redundant routes (cabletv, airtime, data) have been removed
+// as they are now all handled by the single vtpassRoutes file.
 
 const paystackController = require('./controllers/paystackController');
 
@@ -94,16 +81,12 @@ if (userRoutes) app.use('/api/users', userRoutes);
 if (transactionRoutes) app.use('/api/transactions', transactionRoutes);
 if (fundWalletRoutes) app.use('/api/fund-wallet', fundWalletRoutes);
 if (transferRoutes) app.use('/api/transfer', transferRoutes);
-if (cabletvRoutes) app.use('/api/cabletv', cabletvRoutes);
-if (vtpassRoutes) app.use("/api", vtpassRoutes);
+if (vtpassRoutes) app.use("/api/vtpass", vtpassRoutes); // Updated mount path
 if (appSettingsRoutes) app.use('/api/settings', appSettingsRoutes);
 if (beneficiaryRoutes) app.use('/api/beneficiaries', beneficiaryRoutes);
 if (notificationRoutes) app.use('/api/notifications', notificationRoutes);
 app.post('/api/paystack-webhook', paystackController.handleWebhook);
 
-// NEW: Mount the new airtime and data routes separately
-if (airtimeRoutes) app.use('/api/airtime', airtimeRoutes);
-if (dataRoutes) app.use('/api/data', dataRoutes);
 
 app.get('/', (req, res) => {
     res.send('DalabaPay Backend Running');
