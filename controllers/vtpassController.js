@@ -52,9 +52,10 @@ const getVtpassServiceId = (network, type) => {
   return map[type]?.[network];
 };
 
-// ✅ Validate Smartcard
+// ✅ Validate Smartcard (GET method with query params)
 const validateSmartCard = async (req, res, next) => {
-  const { serviceID, billersCode } = req.body;
+  const { serviceID, billersCode } = req.query; // ✅ use query for GET request
+
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
   }
