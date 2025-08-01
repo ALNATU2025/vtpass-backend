@@ -9,9 +9,13 @@ router.post('/airtime/purchase', vtpassController.buyAirtime);
 router.post('/data/purchase', vtpassController.buyData);
 router.post('/cabletv/purchase', vtpassController.buyCableTV);
 
+// This is the new route for validating a smart card before a purchase.
+// It uses a GET request because it's only fetching data (validation status),
+// not submitting data to create a new resource.
+router.get('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
+
 // Helper function to map user-friendly names to VTpass service IDs
-// This is a good place to define this mapping.
-// You can also create a separate file for this utility.
+// For cleaner code, this function could be moved to the controller file or a separate 'utils' file.
 const getVtpassServiceId = (network, type) => {
     const serviceMap = {
         'airtime': {
