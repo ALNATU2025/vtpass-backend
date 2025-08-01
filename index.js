@@ -9,12 +9,13 @@ const http = require('http');
 const connectDB = require('./db');
 
 // --- Import all route modules ---
+// NOTE: I've removed the redundant data and airtime routes here.
 const emailRoutes = require('./routes/emailRoutes');
 const userRoutes = require('./routes/userRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
 const fundWalletRoutes = require('./routes/fundWalletRoutes');
 const transferRoutes = require('./routes/transferRoutes');
-const vtpassRoutes = require("./routes/vtpassRoutes");
+const vtpassRoutes = require("./routes/vtpassRoutes"); // All VTpass endpoints now handled here
 const appSettingsRoutes = require('./routes/appSettingsRoutes');
 const beneficiaryRoutes = require('./routes/beneficiaryRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
