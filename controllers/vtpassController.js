@@ -49,7 +49,7 @@ const getVtpassServiceId = (network, type) => {
 
 // Validate Smartcard
 const validateSmartCard = async (req, res, next) => {
-  const { serviceID, billersCode } = req.query;
+  const { serviceID, billersCode } = req.body;
 
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
