@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
 const User = require('../models/User'); // <<< ENSURE THIS IS '../models/User'
-const Transaction = require('../models/transactionModel'); // Adjust path if necessary
+const Transaction = require('../models/Transaction'); // Adjust path if necessary
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
