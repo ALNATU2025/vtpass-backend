@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User'); // Ensure correct path to your User model
-const Transaction = require('../models/transactionModel'); // <<< FIXED: Corrected path to transactionModel.js
+const Transaction = require('../models/Transaction');
 const { v4: uuidv4 } = require('uuid'); // Import uuid for unique transaction IDs
 
 // Middleware to protect routes (if you have one, uncomment and use)

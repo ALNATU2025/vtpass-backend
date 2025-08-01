@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const Transaction = require('../models/transactionModel'); // Ensure this path is correct: '../models/transactionModel'
+const Transaction = require('../models/Transaction');
 
 // ✅ NEW ROUTE: GET /api/transactions
 // This route fetches ALL transactions.
