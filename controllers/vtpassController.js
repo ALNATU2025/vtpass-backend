@@ -56,8 +56,7 @@ const validateSmartCard = async (req, res, next) => {
   }
 
   try {
-    const payload = { serviceID, billersCode };
-    const data = await makeVtpassPostOnlyRequest(`/merchant-verify`, payload);
+    const data = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
     res.status(200).json({ success: true, data });
   } catch (err) {
     next({
