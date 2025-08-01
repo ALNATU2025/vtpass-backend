@@ -6,6 +6,7 @@ const vtpassController = require('../controllers/vtpassController');
 router.post('/airtime/purchase', vtpassController.buyAirtime);
 router.post('/data/purchase', vtpassController.buyData);
 router.post('/cabletv/purchase', vtpassController.buyCableTV);
+router.post('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
 
 // Validate Smartcard
 router.get('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
