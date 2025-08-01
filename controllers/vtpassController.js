@@ -1,25 +1,23 @@
-// controllers/vtpassController.js
-
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 
 // Environment variables
-const VTPASS_EMAIL = process.env.VTPASS_EMAIL;
 const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
+const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;
 const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL || 'https://vtpass.com/api';
 const VTPASS_TIMEOUT = 20000;
 
-if (!VTPASS_EMAIL || !VTPASS_API_KEY || !VTPASS_BASE_URL) {
+if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY || !VTPASS_BASE_URL) {
   console.error('❌ VTpass credentials missing in .env');
 }
 
-// Encode Basic Auth Header
+// ✅ New VTpass Header with API and SECRET key
 const getAuthHeader = () => {
-  const token = Buffer.from(`${VTPASS_EMAIL}:${VTPASS_API_KEY}`).toString('base64');
   return {
-    Authorization: `Basic ${token}`,
+    'api-key': VTPASS_API_KEY,
+    'secret-key': VTPASS_SECRET_KEY,
     'Content-Type': 'application/json',
   };
 };
