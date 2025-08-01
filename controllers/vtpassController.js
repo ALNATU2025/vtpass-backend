@@ -22,17 +22,7 @@ const getAuthHeader = () => {
   };
 };
 
-// ✅ GET Request to VTpass (Smartcard validation, etc.)
-const makeVtpassGetRequest = async (endpoint) => {
-  const headers = getAuthHeader();
-  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
-};
-
-// ✅ POST Request to VTpass (pay for services)
+// ✅ POST Request (VTpass expects POST for merchant-verify and pay)
 const makeVtpassPostRequest = async (endpoint, payload) => {
   const headers = getAuthHeader();
   const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
@@ -42,7 +32,7 @@ const makeVtpassPostRequest = async (endpoint, payload) => {
   return response.data;
 };
 
-// Map user-friendly names to VTpass service IDs
+// ✅ Service ID mapper
 const getVtpassServiceId = (network, type) => {
   const map = {
     airtime: { MTN: 'mtn', Glo: 'glo', Airtel: 'airtel', '9mobile': '9mobile' },
@@ -52,27 +42,27 @@ const getVtpassServiceId = (network, type) => {
   return map[type]?.[network];
 };
 
-// ✅ Validate Smartcard (GET method with query params)
+// ✅ Smartcard validation (POST method)
 const validateSmartCard = async (req, res, next) => {
-  const { serviceID, billersCode } = req.query; // ✅ use query for GET request
+  const { serviceID, billersCode } = req.body;
 
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
   }
 
   try {
-    const data = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
-    res.status(200).json({ success: true, data });
+    const data = await makeVtpassPostRequest(`/merchant-verify`, { serviceID, billersCode });
+    return res.status(200).json({ success: true, data });
   } catch (err) {
     next({
       statusCode: 500,
       message: 'Smartcard validation failed',
-      errorDetails: err.message
+      errorDetails: err.message,
     });
   }
 };
 
-// ✅ Generic purchase handler (airtime, data, cable)
+// ✅ Generic service purchase handler
 const buyService = async (req, res, next, type) => {
   const { userId, network, amount, phone, billersCode, variationCode } = req.body;
 
@@ -125,7 +115,7 @@ const buyService = async (req, res, next, type) => {
   }
 };
 
-// Exported handlers
+// ✅ Exports
 const buyAirtime = (req, res, next) => buyService(req, res, next, 'airtime');
 const buyData = (req, res, next) => buyService(req, res, next, 'data');
 const buyCableTV = (req, res, next) => buyService(req, res, next, 'cabletv');
