@@ -24,15 +24,8 @@ const getAuthHeader = () => {
   };
 };
 
-// GET Request to VTpass (e.g., smartcard verification)
-const makeVtpassGetRequest = async (endpoint) => {
-  const headers = getAuthHeader();
-  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
-};
+
+
 
 // POST Request to VTpass (e.g., pay for services)
 const makeVtpassPostRequest = async (endpoint, payload) => {
@@ -57,15 +50,21 @@ const getVtpassServiceId = (network, type) => {
 // Validate Smartcard
 const validateSmartCard = async (req, res, next) => {
   const { serviceID, billersCode } = req.query;
+
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
   }
 
   try {
-    const data = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
+    const payload = { serviceID, billersCode };
+    const data = await makeVtpassPostOnlyRequest(`/merchant-verify`, payload);
     res.status(200).json({ success: true, data });
   } catch (err) {
-    next({ statusCode: 500, message: 'Smartcard validation failed', errorDetails: err.message });
+    next({
+      statusCode: 500,
+      message: 'Smartcard validation failed',
+      errorDetails: err.message
+    });
   }
 };
 
