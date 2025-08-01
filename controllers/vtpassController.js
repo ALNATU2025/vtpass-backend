@@ -1,3 +1,5 @@
+// controllers/vtpassController.js
+
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../models/User');
@@ -6,7 +8,7 @@ const Transaction = require('../models/Transaction');
 // Environment variables
 const VTPASS_EMAIL = process.env.VTPASS_EMAIL;
 const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
-const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL;
+const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL || 'https://vtpass.com/api';
 const VTPASS_TIMEOUT = 20000;
 
 if (!VTPASS_EMAIL || !VTPASS_API_KEY || !VTPASS_BASE_URL) {
@@ -22,7 +24,17 @@ const getAuthHeader = () => {
   };
 };
 
-// ✅ POST Request (VTpass expects POST for merchant-verify and pay)
+// GET request (e.g., smartcard verification)
+const makeVtpassGetRequest = async (endpoint) => {
+  const headers = getAuthHeader();
+  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
+    headers,
+    timeout: VTPASS_TIMEOUT,
+  });
+  return response.data;
+};
+
+// POST request (e.g., payments)
 const makeVtpassPostRequest = async (endpoint, payload) => {
   const headers = getAuthHeader();
   const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
@@ -32,7 +44,7 @@ const makeVtpassPostRequest = async (endpoint, payload) => {
   return response.data;
 };
 
-// ✅ Service ID mapper
+// Map VTpass service IDs
 const getVtpassServiceId = (network, type) => {
   const map = {
     airtime: { MTN: 'mtn', Glo: 'glo', Airtel: 'airtel', '9mobile': '9mobile' },
@@ -42,27 +54,27 @@ const getVtpassServiceId = (network, type) => {
   return map[type]?.[network];
 };
 
-// ✅ Smartcard validation (POST method)
+// ✅ Smartcard validation
 const validateSmartCard = async (req, res, next) => {
-  const { serviceID, billersCode } = req.body;
+  const { serviceID, billersCode } = req.query;
 
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
   }
 
   try {
-    const data = await makeVtpassPostRequest(`/merchant-verify`, { serviceID, billersCode });
+    const data = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
     return res.status(200).json({ success: true, data });
   } catch (err) {
-    next({
-      statusCode: 500,
+    return next({
+      statusCode: err.response?.status || 500,
       message: 'Smartcard validation failed',
-      errorDetails: err.message,
+      errorDetails: err.response?.data || err.message,
     });
   }
 };
 
-// ✅ Generic service purchase handler
+// ✅ Generic purchase handler
 const buyService = async (req, res, next, type) => {
   const { userId, network, amount, phone, billersCode, variationCode } = req.body;
 
@@ -111,11 +123,15 @@ const buyService = async (req, res, next, type) => {
       return res.status(400).json({ success: false, message: result.response_description });
     }
   } catch (err) {
-    next({ statusCode: 500, message: `VTpass ${type} failed`, errorDetails: err.message });
+    return next({
+      statusCode: err.response?.status || 500,
+      message: `VTpass ${type} failed`,
+      errorDetails: err.response?.data || err.message,
+    });
   }
 };
 
-// ✅ Exports
+// Exported handlers
 const buyAirtime = (req, res, next) => buyService(req, res, next, 'airtime');
 const buyData = (req, res, next) => buyService(req, res, next, 'data');
 const buyCableTV = (req, res, next) => buyService(req, res, next, 'cabletv');

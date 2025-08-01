@@ -1,15 +1,20 @@
+// routes/vtpassRoutes.js
+
 const express = require('express');
 const router = express.Router();
-const vtpassController = require('../controllers/vtpassController');
+const {
+  validateSmartCard,
+  buyAirtime,
+  buyData,
+  buyCableTV,
+} = require('../controllers/vtpassController');
 
-// Purchases
-router.post('/airtime/purchase', vtpassController.buyAirtime);
-router.post('/data/purchase', vtpassController.buyData);
-router.post('/cabletv/purchase', vtpassController.buyCableTV);
-router.post('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
+// Smartcard validation (GET)
+router.get('/cabletv/validate-smartcard', validateSmartCard);
 
-// Validate Smartcard
-router.get('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
-router.post('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
+// Purchase services (POST)
+router.post('/airtime', buyAirtime);
+router.post('/data', buyData);
+router.post('/cabletv', buyCableTV);
 
 module.exports = router;
