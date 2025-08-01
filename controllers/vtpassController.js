@@ -45,7 +45,12 @@ const makeVtpassPostRequest = async (endpoint, payload, type) => {
             throw new Error(`The request to the VTpass API timed out. Please try again.`);
         }
         console.error(`[${type}] VTpass API Error:`, error.response ? error.response.data : error.message);
-        throw new Error(`Failed to process with VTpass. Details: ${error.response ? JSON.stringify(error.response.data) : error.message}`);
+        // Ensure error response data is always a string to prevent JSON.stringify from failing
+        const errorDetail = typeof error.response?.data === 'object' 
+            ? JSON.stringify(error.response.data) 
+            : error.response?.data || error.message;
+
+        throw new Error(`Failed to process with VTpass. Details: ${errorDetail}`);
     }
 };
 
@@ -75,7 +80,12 @@ const makeVtpassGetRequest = async (endpoint) => {
             throw new Error(`The request to the VTpass API timed out. Please try again.`);
         }
         console.error(`VTpass API GET Error:`, error.response ? error.response.data : error.message);
-        throw new Error(`Failed to fetch data from VTpass. Details: ${error.response ? JSON.stringify(error.response.data) : error.message}`);
+        // Ensure error response data is always a string to prevent JSON.stringify from failing
+        const errorDetail = typeof error.response?.data === 'object' 
+            ? JSON.stringify(error.response.data) 
+            : error.response?.data || error.message;
+
+        throw new Error(`Failed to fetch data from VTpass. Details: ${errorDetail}`);
     }
 };
 
@@ -106,10 +116,7 @@ const getVtpassServiceId = (network, type) => {
 /**
  * Handles smart card validation before a cable TV purchase.
  */
-const validateSmartCard = async (req, res) => {
-    // Note: The original code used req.query, which is correct for GET requests.
-    // The previous conversation assumed a POST with req.body, but we'll stick to the correct
-    // implementation based on your existing code.
+const validateSmartCard = async (req, res, next) => {
     const { serviceID, billersCode } = req.query;
 
     if (!serviceID || !billersCode) {
@@ -117,30 +124,23 @@ const validateSmartCard = async (req, res) => {
     }
 
     try {
-        // Use the common GET request function which now has a timeout and error handling.
         const vtpassResponse = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
 
-        // Check if the VTpass API returned a known error structure
         if (vtpassResponse.content && vtpassResponse.content.error) {
             return res.status(400).json({ success: false, message: vtpassResponse.content.error });
         }
         
-        // Check for a successful validation with customer details
         if (vtpassResponse.content && vtpassResponse.content.customer) {
             return res.status(200).json({ success: true, customer: vtpassResponse.content.customer });
         }
 
-        // If neither of the above, it's an unexpected response
         return res.status(500).json({ success: false, message: 'Unexpected response from VTpass.' });
 
     } catch (error) {
-        // The makeVtpassGetRequest function now throws a more descriptive error
         console.error('Error during smart card validation:', error.message);
-        return res.status(500).json({
-            success: false,
-            message: 'Failed to validate smart card.',
-            error: error.message
-        });
+        // This is the crucial change: We now pass the error to the global handler.
+        error.statusCode = 500;
+        next(error); 
     }
 };
 
@@ -149,7 +149,6 @@ const validateSmartCard = async (req, res) => {
  * Handles the purchase of airtime.
  */
 const buyAirtime = async (req, res) => {
-    const { userId, network, phoneNumber, amount } = req.body;
     // ... (rest of buyAirtime logic remains the same)
 };
 
@@ -157,7 +156,6 @@ const buyAirtime = async (req, res) => {
  * Handles the purchase of data.
  */
 const buyData = async (req, res) => {
-    const { userId, network, phoneNumber, plan, amount } = req.body;
     // ... (rest of buyData logic remains the same)
 };
 
@@ -165,7 +163,6 @@ const buyData = async (req, res) => {
  * Handles the purchase of a cable TV subscription.
  */
 const buyCableTV = async (req, res) => {
-    const { userId, serviceID, smartCardNumber, variation_code, amount, phone } = req.body;
     // ... (rest of buyCableTV logic remains the same)
 };
 

@@ -9,13 +9,12 @@ const http = require('http');
 const connectDB = require('./db');
 
 // --- Import all route modules ---
-// NOTE: I've removed the redundant data and airtime routes here.
 const emailRoutes = require('./routes/emailRoutes');
 const userRoutes = require('./routes/userRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
 const fundWalletRoutes = require('./routes/fundWalletRoutes');
 const transferRoutes = require('./routes/transferRoutes');
-const vtpassRoutes = require("./routes/vtpassRoutes"); // All VTpass endpoints now handled here
+const vtpassRoutes = require("./routes/vtpassRoutes");
 const appSettingsRoutes = require('./routes/appSettingsRoutes');
 const beneficiaryRoutes = require('./routes/beneficiaryRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
@@ -41,7 +40,7 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/transactions', transactionRoutes);
 apiRouter.use('/fund-wallet', fundWalletRoutes);
 apiRouter.use('/transfer', transferRoutes);
-apiRouter.use('/vtpass', vtpassRoutes); // All VTpass endpoints are now under /api/vtpass
+apiRouter.use('/vtpass', vtpassRoutes);
 apiRouter.use('/settings', appSettingsRoutes);
 apiRouter.use('/beneficiaries', beneficiaryRoutes);
 apiRouter.use('/notifications', notificationRoutes);
@@ -55,10 +54,22 @@ app.get('/', (req, res) => {
     res.send('DalabaPay Backend Running');
 });
 
-// Generic error handling middleware
+// --- NEW: Custom JSON-based error handling middleware ---
+// This function will catch any error passed to next() and format it as a JSON response.
 app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
+    console.error('Caught an error:', err.stack);
+
+    // Default status code and message
+    const statusCode = err.statusCode || 500;
+    const message = err.message || 'Internal Server Error';
+    const errorDetails = err.errorDetails || null; // Add a field for more details
+
+    // Send a JSON response
+    res.status(statusCode).json({
+        success: false,
+        message: message,
+        error: errorDetails
+    });
 });
 
 const PORT = process.env.PORT || 5000;
