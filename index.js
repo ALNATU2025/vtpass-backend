@@ -49,8 +49,6 @@ apiRouter.post('/paystack-webhook', paystackController.handleWebhook);
 // Mount the main API router at /api
 app.use('/api', apiRouter);
 
-app.use(express.json());
-
 
 // Root route
 app.get('/', (req, res) => {
