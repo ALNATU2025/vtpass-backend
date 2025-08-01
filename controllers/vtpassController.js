@@ -1,5 +1,3 @@
-// controllers/vtpassController.js
-
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../models/User');
@@ -24,10 +22,17 @@ const getAuthHeader = () => {
   };
 };
 
+// ✅ GET Request to VTpass (Smartcard validation, etc.)
+const makeVtpassGetRequest = async (endpoint) => {
+  const headers = getAuthHeader();
+  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
+    headers,
+    timeout: VTPASS_TIMEOUT,
+  });
+  return response.data;
+};
 
-
-
-// POST Request to VTpass (e.g., pay for services)
+// ✅ POST Request to VTpass (pay for services)
 const makeVtpassPostRequest = async (endpoint, payload) => {
   const headers = getAuthHeader();
   const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
@@ -37,7 +42,7 @@ const makeVtpassPostRequest = async (endpoint, payload) => {
   return response.data;
 };
 
-// Helper: Map user-friendly names to VTpass service IDs
+// Map user-friendly names to VTpass service IDs
 const getVtpassServiceId = (network, type) => {
   const map = {
     airtime: { MTN: 'mtn', Glo: 'glo', Airtel: 'airtel', '9mobile': '9mobile' },
@@ -47,10 +52,9 @@ const getVtpassServiceId = (network, type) => {
   return map[type]?.[network];
 };
 
-// Validate Smartcard
+// ✅ Validate Smartcard
 const validateSmartCard = async (req, res, next) => {
   const { serviceID, billersCode } = req.body;
-
   if (!serviceID || !billersCode) {
     return res.status(400).json({ message: 'Missing serviceID or billersCode' });
   }
@@ -67,7 +71,7 @@ const validateSmartCard = async (req, res, next) => {
   }
 };
 
-// Generic service purchase (airtime, data, cabletv)
+// ✅ Generic purchase handler (airtime, data, cable)
 const buyService = async (req, res, next, type) => {
   const { userId, network, amount, phone, billersCode, variationCode } = req.body;
 
@@ -96,7 +100,6 @@ const buyService = async (req, res, next, type) => {
     const result = await makeVtpassPostRequest('/pay', payload);
 
     if (result.code === '000') {
-      // Deduct wallet & save transaction
       user.wallet -= amount;
       await user.save();
 
@@ -121,7 +124,7 @@ const buyService = async (req, res, next, type) => {
   }
 };
 
-// Exported service functions
+// Exported handlers
 const buyAirtime = (req, res, next) => buyService(req, res, next, 'airtime');
 const buyData = (req, res, next) => buyService(req, res, next, 'data');
 const buyCableTV = (req, res, next) => buyService(req, res, next, 'cabletv');
