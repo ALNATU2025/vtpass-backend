@@ -10,5 +10,6 @@ router.post('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
 
 // Validate Smartcard
 router.get('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
+router.post('/cabletv/validate-smartcard', vtpassController.validateSmartCard);
 
 module.exports = router;
