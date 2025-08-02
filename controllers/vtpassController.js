@@ -24,24 +24,36 @@ const getAuthHeader = () => {
   };
 };
 
-// GET request (e.g., smartcard verification)
+// GET request
 const makeVtpassGetRequest = async (endpoint) => {
   const headers = getAuthHeader();
-  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
+  try {
+    const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
+      headers,
+      timeout: VTPASS_TIMEOUT,
+    });
+    return response.data;
+  } catch (err) {
+    // ⚠️ CRITICAL DEBUGGING: Log the full response data, even if it's not JSON
+    console.error('❌ VTpass GET Request Error:', err.response?.data || err.message);
+    throw err;
+  }
 };
 
-// POST request (e.g., payments)
+// POST request
 const makeVtpassPostRequest = async (endpoint, payload) => {
   const headers = getAuthHeader();
-  const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
+  try {
+    const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
+      headers,
+      timeout: VTPASS_TIMEOUT,
+    });
+    return response.data;
+  } catch (err) {
+    // ⚠️ CRITICAL DEBUGGING: Log the full response data, even if it's not JSON
+    console.error('❌ VTpass POST Request Error:', err.response?.data || err.message);
+    throw err;
+  }
 };
 
 // Map VTpass service IDs
@@ -69,8 +81,7 @@ const getVtpassServiceId = (network, type) => {
 };
 
 // ====================================================================
-// ✅ UPDATED: SMARTCARD VALIDATION
-// ⚠️ FIX: Changed to POST request as per VTpass API docs and added response check.
+// ✅ UPDATED: SMARTCARD VALIDATION with improved error logging
 // ====================================================================
 const validateSmartCard = async (req, res, next) => {
   const {
@@ -90,14 +101,14 @@ const validateSmartCard = async (req, res, next) => {
   }
 
   try {
-    // ⚠️ CRITICAL FIX: The VTpass API uses a POST method for this endpoint.
     const payload = {
       serviceID,
       billersCode,
     };
     const data = await makeVtpassPostRequest('/merchant-verify', payload);
 
-    // ✅ Added a check to ensure the response indicates success.
+    console.log('VTpass Smartcard Validation API Response:', JSON.stringify(data, null, 2));
+
     if (data.code === '000' && data.content?.Customer_Name) {
       return res.status(200).json({
         success: true,
@@ -107,11 +118,13 @@ const validateSmartCard = async (req, res, next) => {
     } else {
       return res.status(400).json({
         success: false,
-        message: data.response_description || 'Smartcard validation failed.',
+        message: 'Smartcard validation failed. Check your serviceID and billersCode.',
         errorDetails: data,
       });
     }
   } catch (err) {
+    // This will now print the raw HTML response if that's what was received
+    console.error('❌ Smartcard validation Failed:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
       message: 'Smartcard validation failed',
@@ -120,9 +133,9 @@ const validateSmartCard = async (req, res, next) => {
   }
 };
 
+
 // ====================================================================
-// ✅ UPDATED: AIRTIME PURCHASE
-// ⚠️ FIX: Ensured the payload is correctly structured for airtime.
+// ✅ UPDATED: AIRTIME PURCHASE with improved error logging
 // ====================================================================
 const buyAirtime = async (req, res, next) => {
   const {
@@ -164,13 +177,14 @@ const buyAirtime = async (req, res, next) => {
       serviceID,
       amount,
       phone,
-      billersCode: phone, // ✅ FIX: Correctly mapping phone to billersCode
+      billersCode: phone,
     };
 
     const result = await makeVtpassPostRequest('/pay', payload);
 
-    // ✅ FIX: More robust success check for both `code` and `response_description`
-    if (result.code === '000' || result.response_description?.includes('successful')) {
+    console.log('VTpass Airtime API Response:', JSON.stringify(result, null, 2));
+
+    if (result.code === '000') {
       user.wallet -= amount;
       await user.save();
 
@@ -193,10 +207,13 @@ const buyAirtime = async (req, res, next) => {
     } else {
       return res.status(400).json({
         success: false,
-        message: result.response_description || 'Airtime transaction failed.'
+        message: result.response_description || 'Airtime transaction failed with an unexpected format.',
+        errorDetails: result,
       });
     }
   } catch (err) {
+    // This will now print the raw HTML response if that's what was received
+    console.error('❌ Airtime purchase error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
       message: 'VTpass airtime failed',
@@ -205,9 +222,9 @@ const buyAirtime = async (req, res, next) => {
   }
 };
 
+
 // ====================================================================
-// ✅ UPDATED: DATA PURCHASE
-// ⚠️ FIX: Ensured the payload is correctly structured for data and removed redundant amount field from VTpass payload.
+// ✅ UPDATED: DATA PURCHASE with specific validation message
 // ====================================================================
 const buyData = async (req, res, next) => {
   const {
@@ -220,7 +237,7 @@ const buyData = async (req, res, next) => {
 
   if (!userId || !network || !amount || !phone || !variationCode) {
     return res.status(400).json({
-      message: 'Missing required fields: userId, network, amount, phone, or variationCode.'
+      message: 'Missing one or more required fields. Ensure you send userId, network, amount, phone, and variationCode.'
     });
   }
 
@@ -248,14 +265,14 @@ const buyData = async (req, res, next) => {
     const payload = {
       request_id: requestId,
       serviceID,
-      billersCode: phone, // ✅ FIX: Correctly mapping phone to billersCode
+      billersCode: phone,
       variation_code: variationCode,
       phone,
     };
 
     const result = await makeVtpassPostRequest('/pay', payload);
+    console.log('VTpass Data API Response:', JSON.stringify(result, null, 2));
 
-    // ✅ FIX: More robust success check for both `code` and `response_description`
     if (result.code === '000' || result.response_description?.includes('successful')) {
       user.wallet -= amount;
       await user.save();
@@ -284,6 +301,8 @@ const buyData = async (req, res, next) => {
       });
     }
   } catch (err) {
+    // This will now print the raw HTML response if that's what was received
+    console.error('❌ Data Purchase Error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
       message: 'VTpass data failed',
@@ -292,9 +311,9 @@ const buyData = async (req, res, next) => {
   }
 };
 
+
 // ====================================================================
 // ✅ UPDATED: CABLETV PURCHASE
-// ⚠️ FIX: Ensured the payload is correctly structured for cabletv.
 // ====================================================================
 const buyCableTV = async (req, res, next) => {
   const {
@@ -343,8 +362,8 @@ const buyCableTV = async (req, res, next) => {
     };
 
     const result = await makeVtpassPostRequest('/pay', payload);
+    console.log('VTpass Cable TV API Response:', JSON.stringify(result, null, 2));
 
-    // ✅ FIX: More robust success check for both `code` and `response_description`
     if (result.code === '000' || result.response_description?.includes('successful')) {
       user.wallet -= amount;
       await user.save();
@@ -374,6 +393,8 @@ const buyCableTV = async (req, res, next) => {
       });
     }
   } catch (err) {
+    // This will now print the raw HTML response if that's what was received
+    console.error('❌ Cable TV Purchase Error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
       message: 'VTpass cable TV failed',
