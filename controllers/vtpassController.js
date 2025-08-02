@@ -5,8 +5,8 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid'); // Import uuid for generating unique IDs
 
 // Assuming you have a database connection and models set up
-const Transaction = require('./models/Transaction'); // Import the Transaction model
-const User = require('./models/User'); // Import the User model
+const Transaction = require('../models/Transaction'); // Import the Transaction model
+const User = require('../models/User'); // Import the User model
 
 const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL;
 const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;

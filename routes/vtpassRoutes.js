@@ -1,5 +1,4 @@
 // vtpassRoutes.js
-
 const express = require('express');
 const router = express.Router();
 const vtpassController = require('../controllers/vtpassController');
