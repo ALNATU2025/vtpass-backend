@@ -116,7 +116,7 @@ const admin = (req, res, next) => {
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
-  baseUrl: 'https://vtpass.com/api',
+  baseUrl: 'https://sandbox.vtpass.com/api',
 };
 
 // Helper function for VTpass API calls
