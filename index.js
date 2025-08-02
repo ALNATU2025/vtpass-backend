@@ -40,10 +40,11 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/transactions', transactionRoutes);
 apiRouter.use('/fund-wallet', fundWalletRoutes);
 apiRouter.use('/transfer', transferRoutes);
-// ✅ FINAL FIX: The vtpassRoutes are now mounted without a specific path.
-// This allows endpoints like '/airtime/purchase' and '/validate-smartcard'
-// to be handled correctly, matching the requests coming from your Flutter app.
-apiRouter.use(vtpassRoutes);
+// ✅ FINAL FIX: Mounting the vtpassRoutes at the '/vtpass' path.
+// The routes inside the vtpassRoutes.js file should now not contain
+// the '/api' or '/vtpass' prefixes. This is the correct way to handle
+// nested routers in Express.
+apiRouter.use('/vtpass', vtpassRoutes);
 apiRouter.use('/settings', appSettingsRoutes);
 apiRouter.use('/beneficiaries', beneficiaryRoutes);
 apiRouter.use('/notifications', notificationRoutes);
