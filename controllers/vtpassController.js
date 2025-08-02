@@ -1,142 +1,166 @@
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
-const User = require('../models/User');
+const Wallet = require('../models/Wallet');
 const Transaction = require('../models/Transaction');
+const User = require('../models/User');
 
-// Environment variables
-const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
-const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;
-const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL || 'https://vtpass.com/api';
-const VTPASS_TIMEOUT = 20000;
-
-if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY || !VTPASS_BASE_URL) {
-  console.error('❌ VTpass credentials missing in .env');
-}
-
-// ✅ New VTpass Header with API and SECRET key
-const getAuthHeader = () => {
-  return {
-    'api-key': VTPASS_API_KEY,
-    'secret-key': VTPASS_SECRET_KEY,
-    'Content-Type': 'application/json',
-  };
+const API_BASE_URL = process.env.VTPASS_BASE_URL;
+const VTPASS_AUTH = process.env.VTPASS_AUTH;
+const headers = {
+  'Authorization': `Basic ${VTPASS_AUTH}`,
+  'Content-Type': 'application/json'
 };
 
-// GET request (e.g., smartcard verification)
-const makeVtpassGetRequest = async (endpoint) => {
-  const headers = getAuthHeader();
-  const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
-};
-
-// POST request (e.g., payments)
-const makeVtpassPostRequest = async (endpoint, payload) => {
-  const headers = getAuthHeader();
-  const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
-    headers,
-    timeout: VTPASS_TIMEOUT,
-  });
-  return response.data;
-};
-
-// Map VTpass service IDs
-const getVtpassServiceId = (network, type) => {
-  const map = {
-    airtime: { MTN: 'mtn', Glo: 'glo', Airtel: 'airtel', '9mobile': '9mobile' },
-    data: { MTN: 'mtn-data', Glo: 'glo-data', Airtel: 'airtel-data', '9mobile': '9mobile-data' },
-    cabletv: { DSTV: 'dstv', GOTV: 'gotv', Startimes: 'startimes' },
-  };
-  return map[type]?.[network];
-};
-
-// ✅ Smartcard validation
-const validateSmartCard = async (req, res, next) => {
-  const { serviceID, billersCode } = req.query;
-
-  if (!serviceID || !billersCode) {
-    return res.status(400).json({ message: 'Missing serviceID or billersCode' });
-  }
-
+/**
+ * Handles the purchase of airtime.
+ * Checks for required arguments and user wallet balance before proceeding.
+ * It now returns more specific error messages for easier debugging.
+ */
+exports.purchaseAirtime = async (req, res, next) => {
   try {
-    const data = await makeVtpassGetRequest(`/merchant-verify?serviceID=${serviceID}&billersCode=${billersCode}`);
-    return res.status(200).json({ success: true, data });
-  } catch (err) {
-    return next({
-      statusCode: err.response?.status || 500,
-      message: 'Smartcard validation failed',
-      errorDetails: err.response?.data || err.message,
-    });
-  }
-};
+    const { phone, amount, serviceID, request_id } = req.body;
+    const userId = req.user._id;
 
-// ✅ Generic purchase handler
-const buyService = async (req, res, next, type) => {
-  const { userId, network, amount, phone, billersCode, variationCode } = req.body;
+    // --- Start: More Specific Validation Checks ---
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "Missing 'phone' in request body" });
+    }
+    if (!amount) {
+      return res.status(400).json({ success: false, message: "Missing 'amount' in request body" });
+    }
+    if (!serviceID) {
+      return res.status(400).json({ success: false, message: "Missing 'serviceID' in request body" });
+    }
+    if (!request_id) {
+      return res.status(400).json({ success: false, message: "Missing 'request_id' in request body" });
+    }
+    // --- End: More Specific Validation Checks ---
 
-  if (!userId || !amount || !network) {
-    return res.status(400).json({ message: 'Missing required fields' });
-  }
-
-  try {
     const user = await User.findById(userId);
-    if (!user || user.wallet < amount) {
-      return res.status(400).json({ message: 'Insufficient wallet balance' });
+    const wallet = await Wallet.findOne({ user: userId });
+
+    if (!user || !wallet) {
+      return res.status(404).json({ success: false, message: 'User or Wallet not found' });
     }
 
-    const serviceID = getVtpassServiceId(network, type);
-    const requestId = uuidv4();
+    if (wallet.balance < amount) {
+      return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
+    }
 
+    // Prepare the request payload for VTpass
     const payload = {
-      request_id: requestId,
       serviceID,
       amount,
       phone,
-      billersCode,
-      variation_code: variationCode,
+      request_id
     };
 
-    const result = await makeVtpassPostRequest('/pay', payload);
+    // Make the API call to VTpass
+    const response = await axios.post(`${API_BASE_URL}/pay`, payload, { headers });
 
-    if (result.code === '000') {
-      user.wallet -= amount;
-      await user.save();
+    if (response.data.code === '000') {
+      // Update the user's wallet
+      wallet.balance -= amount;
+      await wallet.save();
 
-      await Transaction.create({
-        userId,
-        requestId,
-        type,
-        amount,
-        phone,
-        billersCode,
-        serviceID,
-        status: 'success',
-        details: result,
+      // Create a new transaction record
+      const transaction = new Transaction({
+        user: userId,
+        type: 'airtime_purchase',
+        amount: amount,
+        status: 'completed',
+        description: `Airtime purchase for ${phone}`,
+        provider: serviceID,
+        provider_reference: response.data.response_id,
+        balance_after: wallet.balance
       });
+      await transaction.save();
 
-      return res.status(200).json({ success: true, message: 'Transaction successful', result });
+      res.status(200).json({
+        success: true,
+        message: 'Airtime purchase successful',
+        transaction: transaction
+      });
     } else {
-      return res.status(400).json({ success: false, message: result.response_description });
+      res.status(400).json({ success: false, message: response.data.response_description, details: response.data });
     }
-  } catch (err) {
-    return next({
-      statusCode: err.response?.status || 500,
-      message: `VTpass ${type} failed`,
-      errorDetails: err.response?.data || err.message,
-    });
+  } catch (error) {
+    next(error);
   }
 };
 
-// Exported handlers
-const buyAirtime = (req, res, next) => buyService(req, res, next, 'airtime');
-const buyData = (req, res, next) => buyService(req, res, next, 'data');
-const buyCableTV = (req, res, next) => buyService(req, res, next, 'cabletv');
+/**
+ * Handles the purchase of data.
+ * The validation and logic are similar to the airtime purchase function.
+ */
+exports.purchaseData = async (req, res, next) => {
+  try {
+    const { serviceID, phone, amount, request_id, variation_code } = req.body;
+    const userId = req.user._id;
 
-module.exports = {
-  validateSmartCard,
-  buyAirtime,
-  buyData,
-  buyCableTV,
+    // --- Start: More Specific Validation Checks ---
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "Missing 'phone' in request body" });
+    }
+    if (!amount) {
+      return res.status(400).json({ success: false, message: "Missing 'amount' in request body" });
+    }
+    if (!serviceID) {
+      return res.status(400).json({ success: false, message: "Missing 'serviceID' in request body" });
+    }
+    if (!request_id) {
+      return res.status(400).json({ success: false, message: "Missing 'request_id' in request body" });
+    }
+    if (!variation_code) {
+      return res.status(400).json({ success: false, message: "Missing 'variation_code' in request body" });
+    }
+    // --- End: More Specific Validation Checks ---
+
+    const user = await User.findById(userId);
+    const wallet = await Wallet.findOne({ user: userId });
+
+    if (!user || !wallet) {
+      return res.status(404).json({ success: false, message: 'User or Wallet not found' });
+    }
+
+    if (wallet.balance < amount) {
+      return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
+    }
+
+    const payload = {
+      serviceID,
+      variation_code,
+      amount,
+      phone,
+      request_id
+    };
+
+    const response = await axios.post(`${API_BASE_URL}/pay`, payload, { headers });
+
+    if (response.data.code === '000') {
+      wallet.balance -= amount;
+      await wallet.save();
+
+      const transaction = new Transaction({
+        user: userId,
+        type: 'data_purchase',
+        amount: amount,
+        status: 'completed',
+        description: `Data purchase for ${phone}`,
+        provider: serviceID,
+        provider_reference: response.data.response_id,
+        balance_after: wallet.balance
+      });
+      await transaction.save();
+
+      res.status(200).json({
+        success: true,
+        message: 'Data purchase successful',
+        transaction: transaction
+      });
+    } else {
+      res.status(400).json({ success: false, message: response.data.response_description, details: response.data });
+    }
+  } catch (error) {
+    next(error);
+  }
 };
