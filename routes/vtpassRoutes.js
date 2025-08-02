@@ -2,7 +2,8 @@
 
 const express = require('express');
 const router = express.Router();
-const vtpassController = require('./vtpassController');
+const vtpassController = require('../controllers/vtpassController');
+
 
 // Define API endpoints for VTpass services
 router.post('/api/vtpass/airtime/purchase', vtpassController.purchaseAirtime);

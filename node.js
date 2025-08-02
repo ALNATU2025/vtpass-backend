@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 // ✅ CHANGE THIS LINE:
 const User = require('../models/User'); // Changed from '../models/userModel' to '../models/User'
-const Transaction = require('../models/transactionModel'); // Assuming this path is correct
+const Transaction = require('../models/Transaction'); // Assuming this path is correct
 const authMiddleware = require('../middleware/authMiddleware'); // Assuming this path is correct
 
 // POST /api/transfer
