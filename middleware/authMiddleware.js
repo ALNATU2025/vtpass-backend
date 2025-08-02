@@ -1,7 +1,6 @@
 // middleware/authMiddleware.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User'); // <<< CORRECTED: Import from '../models/User'
-// const User = require('../models/userModel'); // <<< REMOVE OR COMMENT OUT THIS LINE IF IT EXISTS
 
 /**
  * @desc    Protect routes - Authenticate user with JWT

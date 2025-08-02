@@ -1,7 +1,7 @@
 // controllers/transferController.js
 
 const User = require('../models/User');
-const Transaction = require('../models/transactionModel');
+const Transaction = require('../models/Transaction');
 
 const transferMoney = async (req, res) => {
   try {

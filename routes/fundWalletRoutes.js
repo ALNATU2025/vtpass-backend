@@ -2,7 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User'); // Corrected: Import from '../models/User'
-const Transaction = require('../models/Transaction');const { protect } = require('../middleware/authMiddleware'); // <<< FIXED: Destructure 'protect' from the export
+const Transaction = require('../models/Transaction');
+const { protect } = require('../middleware/authMiddleware'); 
 
 // @desc    Fund user wallet
 // @route   POST /api/fund-wallet
