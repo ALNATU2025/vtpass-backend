@@ -40,7 +40,9 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/transactions', transactionRoutes);
 apiRouter.use('/fund-wallet', fundWalletRoutes);
 apiRouter.use('/transfer', transferRoutes);
-apiRouter.use('/vtpass', vtpassRoutes);
+// ❌ FIXED: The vtpassRoutes are now mounted without a specific path,
+// which allows endpoints like '/airtime/purchase' to be handled correctly.
+apiRouter.use(vtpassRoutes);
 apiRouter.use('/settings', appSettingsRoutes);
 apiRouter.use('/beneficiaries', beneficiaryRoutes);
 apiRouter.use('/notifications', notificationRoutes);
