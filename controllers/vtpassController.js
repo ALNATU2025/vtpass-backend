@@ -64,7 +64,15 @@ async function postToVtpass(endpoint, data, res, userId, transactionAmount, serv
     });
 
   } catch (error) {
+    // 💡 BEGIN DEBUGGING LOGS 💡
     console.error(`🚨 Error during API call to ${endpoint}:`, error.message);
+    if (error.response) {
+      console.error('Raw API Response Status:', error.response.status);
+      console.error('Raw API Response Data:', error.response.data);
+    } else {
+      console.error('No response received from API:', error.request);
+    }
+    // 💡 END DEBUGGING LOGS 💡
     const statusCode = error.response?.status || 500;
     const errorMessage = error.response?.data?.response_description || 'An unknown error occurred with the VTpass API.';
 
@@ -136,6 +144,15 @@ exports.validateSmartcard = async (req, res) => {
       data: response.data
     });
   } catch (error) {
+    // 💡 BEGIN DEBUGGING LOGS 💡
+    console.error('🚨 Error validating smartcard:', error.message);
+    if (error.response) {
+      console.error('Raw API Response Status:', error.response.status);
+      console.error('Raw API Response Data:', error.response.data);
+    } else {
+      console.error('No response received from API:', error.request);
+    }
+    // 💡 END DEBUGGING LOGS 💡
     const statusCode = error.response?.status || 500;
     const errorMessage = error.response?.data?.response_description || 'An unknown error occurred with the VTpass API.';
     res.status(statusCode).json({
