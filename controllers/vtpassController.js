@@ -17,6 +17,13 @@ if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY || !VTPASS_BASE_URL) {
 
 // ✅ VTpass Header with API and SECRET key
 const getAuthHeader = () => {
+  // ⚠️ CRITICAL DEBUGGING: This line will print the keys to your server logs.
+  // Check the logs on Render after deployment to confirm they are not empty.
+  console.log('Using VTpass Keys:', {
+    apiKey: VTPASS_API_KEY ? '******' : 'Empty',
+    secretKey: VTPASS_SECRET_KEY ? '******' : 'Empty'
+  });
+
   return {
     'api-key': VTPASS_API_KEY,
     'secret-key': VTPASS_SECRET_KEY,
@@ -34,7 +41,6 @@ const makeVtpassGetRequest = async (endpoint) => {
     });
     return response.data;
   } catch (err) {
-    // ⚠️ CRITICAL DEBUGGING: Log the full response data, even if it's not JSON
     console.error('❌ VTpass GET Request Error:', err.response?.data || err.message);
     throw err;
   }
@@ -50,7 +56,6 @@ const makeVtpassPostRequest = async (endpoint, payload) => {
     });
     return response.data;
   } catch (err) {
-    // ⚠️ CRITICAL DEBUGGING: Log the full response data, even if it's not JSON
     console.error('❌ VTpass POST Request Error:', err.response?.data || err.message);
     throw err;
   }
@@ -123,7 +128,6 @@ const validateSmartCard = async (req, res, next) => {
       });
     }
   } catch (err) {
-    // This will now print the raw HTML response if that's what was received
     console.error('❌ Smartcard validation Failed:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
@@ -212,7 +216,6 @@ const buyAirtime = async (req, res, next) => {
       });
     }
   } catch (err) {
-    // This will now print the raw HTML response if that's what was received
     console.error('❌ Airtime purchase error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
@@ -301,7 +304,6 @@ const buyData = async (req, res, next) => {
       });
     }
   } catch (err) {
-    // This will now print the raw HTML response if that's what was received
     console.error('❌ Data Purchase Error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
@@ -393,7 +395,6 @@ const buyCableTV = async (req, res, next) => {
       });
     }
   } catch (err) {
-    // This will now print the raw HTML response if that's what was received
     console.error('❌ Cable TV Purchase Error:', err.response?.data || err.message);
     return next({
       statusCode: err.response?.status || 500,
