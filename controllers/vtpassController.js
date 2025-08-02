@@ -1,412 +1,171 @@
+const express = require('express');
 const axios = require('axios');
-const {
-  v4: uuidv4
-} = require('uuid');
-const User = require('../models/User');
-const Transaction = require('../models/Transaction');
+const crypto = require('crypto');
+const app = express();
+const cors = require('cors');
 
-// Environment variables
+// Load environment variables from .env file
+require('dotenv').config();
+
+app.use(express.json());
+app.use(cors());
+
 const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
 const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;
-const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL || 'https://vtpass.com/api';
-const VTPASS_TIMEOUT = 20000;
+const BASE_URL = 'https://sandbox.vtpass.com/api'; // Use sandbox for testing
 
-if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY || !VTPASS_BASE_URL) {
-  console.error('❌ VTpass credentials missing in .env');
-}
-
-// ✅ VTpass Header with API and SECRET key
+// Function to generate the Authorization header
 const getAuthHeader = () => {
-  // ⚠️ CRITICAL DEBUGGING: This line will print the keys to your server logs.
-  // Check the logs on Render after deployment to confirm they are not empty.
-  console.log('Using VTpass Keys:', {
-    apiKey: VTPASS_API_KEY ? '******' : 'Empty',
-    secretKey: VTPASS_SECRET_KEY ? '******' : 'Empty'
-  });
+    // Log the keys to the console for debugging. This should be removed in production.
+    console.log(`[DEBUG] API Key: ${VTPASS_API_KEY ? 'Loaded' : 'NOT loaded'}`);
+    console.log(`[DEBUG] Secret Key: ${VTPASS_SECRET_KEY ? 'Loaded' : 'NOT loaded'}`);
 
-  return {
-    'api-key': VTPASS_API_KEY,
-    'secret-key': VTPASS_SECRET_KEY,
-    'Content-Type': 'application/json',
-  };
+    if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY) {
+        console.error('API keys are missing.');
+        return null;
+    }
+
+    const authString = `${VTPASS_API_KEY}:${VTPASS_SECRET_KEY}`;
+    const base64Auth = Buffer.from(authString).toString('base64');
+    return `Basic ${base64Auth}`;
 };
 
-// GET request
-const makeVtpassGetRequest = async (endpoint) => {
-  const headers = getAuthHeader();
-  try {
-    const response = await axios.get(`${VTPASS_BASE_URL}${endpoint}`, {
-      headers,
-      timeout: VTPASS_TIMEOUT,
-    });
-    return response.data;
-  } catch (err) {
-    console.error('❌ VTpass GET Request Error:', err.response?.data || err.message);
-    throw err;
-  }
-};
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).send('Something broke!');
+});
 
-// POST request
-const makeVtpassPostRequest = async (endpoint, payload) => {
-  const headers = getAuthHeader();
-  try {
-    const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, payload, {
-      headers,
-      timeout: VTPASS_TIMEOUT,
-    });
-    return response.data;
-  } catch (err) {
-    console.error('❌ VTpass POST Request Error:', err.response?.data || err.message);
-    throw err;
-  }
-};
+// Middleware to check for API keys
+app.use((req, res, next) => {
+    if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY) {
+        return res.status(500).json({ error: 'VTpass API keys are not configured.' });
+    }
+    next();
+});
 
-// Map VTpass service IDs
-const getVtpassServiceId = (network, type) => {
-  const map = {
-    airtime: {
-      MTN: 'mtn',
-      Glo: 'glo',
-      Airtel: 'airtel',
-      '9mobile': '9mobile'
-    },
-    data: {
-      MTN: 'mtn-data',
-      Glo: 'glo-data',
-      Airtel: 'airtel-data',
-      '9mobile': '9mobile-data'
-    },
-    cabletv: {
-      DSTV: 'dstv',
-      GOTV: 'gotv',
-      Startimes: 'startimes'
-    },
-  };
-  return map[type]?.[network];
-};
+// 1. Get a list of supported services for a category
+app.get('/services/:category', async (req, res) => {
+    const { category } = req.params;
+    const url = `${BASE_URL}/services?category=${category}`;
+    console.log(`[DEBUG] Requesting services from URL: ${url}`);
+    
+    try {
+        const authHeader = getAuthHeader();
+        if (!authHeader) {
+            return res.status(500).json({ error: 'Authentication failed.' });
+        }
+        const response = await axios.get(url, {
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            }
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error fetching services:', error.response ? error.response.data : error.message);
+        res.status(error.response?.status || 500).json({ error: 'Failed to fetch services.', details: error.message });
+    }
+});
 
-// ====================================================================
-// ✅ UPDATED: SMARTCARD VALIDATION with improved error logging
-// ====================================================================
-const validateSmartCard = async (req, res, next) => {
-  const {
-    serviceID,
-    billersCode
-  } = req.query;
+// 2. Get a list of variations for a specific service (e.g., MTN, Glo, etc.)
+app.get('/variations/:serviceId', async (req, res) => {
+    const { serviceId } = req.params;
+    const url = `${BASE_URL}/service-variations?serviceID=${serviceId}`;
+    console.log(`[DEBUG] Requesting variations from URL: ${url}`);
+    
+    try {
+        const authHeader = getAuthHeader();
+        if (!authHeader) {
+            return res.status(500).json({ error: 'Authentication failed.' });
+        }
+        const response = await axios.get(url, {
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            }
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error fetching variations:', error.response ? error.response.data : error.message);
+        res.status(error.response?.status || 500).json({ error: 'Failed to fetch service variations.', details: error.message });
+    }
+});
 
-  if (!serviceID) {
-    return res.status(400).json({
-      message: 'Missing serviceID'
-    });
-  }
-  if (!billersCode) {
-    return res.status(400).json({
-      message: 'Missing billersCode'
-    });
-  }
+// 3. Validate smartcard or meter number
+app.post('/validate', async (req, res) => {
+    const { serviceID, billersCode, type } = req.body;
+    const url = `${BASE_URL}/merchant-verify`;
+    console.log(`[DEBUG] Validating smartcard/meter from URL: ${url}`);
+    
+    if (!serviceID || !billersCode || !type) {
+        return res.status(400).json({ error: 'Missing required fields: serviceID, billersCode, and type.' });
+    }
 
-  try {
+    try {
+        const authHeader = getAuthHeader();
+        if (!authHeader) {
+            return res.status(500).json({ error: 'Authentication failed.' });
+        }
+        
+        const response = await axios.post(url, {
+            serviceID,
+            billersCode,
+            type
+        }, {
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            }
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error validating smartcard/meter:', error.response ? error.response.data : error.message);
+        res.status(error.response?.status || 500).json({ error: 'Failed to validate smartcard/meter.', details: error.message });
+    }
+});
+
+// 4. Send a transaction to purchase a product
+app.post('/purchase', async (req, res) => {
+    const { serviceID, amount, phone, variation_code, billersCode } = req.body;
+    const url = `${BASE_URL}/pay`;
+    console.log(`[DEBUG] Purchasing a product from URL: ${url}`);
+    
+    if (!serviceID || !amount || !phone || !variation_code) {
+        return res.status(400).json({ error: 'Missing required fields: serviceID, amount, phone, and variation_code.' });
+    }
+
+    const request_id = crypto.randomUUID(); // Use UUID for request_id
+
     const payload = {
-      serviceID,
-      billersCode,
-    };
-    const data = await makeVtpassPostRequest('/merchant-verify', payload);
-
-    console.log('VTpass Smartcard Validation API Response:', JSON.stringify(data, null, 2));
-
-    if (data.code === '000' && data.content?.Customer_Name) {
-      return res.status(200).json({
-        success: true,
-        data: data.content,
-        message: 'Smartcard validated successfully.'
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Smartcard validation failed. Check your serviceID and billersCode.',
-        errorDetails: data,
-      });
-    }
-  } catch (err) {
-    console.error('❌ Smartcard validation Failed:', err.response?.data || err.message);
-    return next({
-      statusCode: err.response?.status || 500,
-      message: 'Smartcard validation failed',
-      errorDetails: err.response?.data || err.message,
-    });
-  }
-};
-
-
-// ====================================================================
-// ✅ UPDATED: AIRTIME PURCHASE with improved error logging
-// ====================================================================
-const buyAirtime = async (req, res, next) => {
-  const {
-    userId,
-    network,
-    amount,
-    phone
-  } = req.body;
-
-  if (!userId || !network || !amount || !phone) {
-    return res.status(400).json({
-      message: 'Missing required fields: userId, network, amount, or phone.'
-    });
-  }
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found'
-      });
-    }
-    if (user.wallet < amount) {
-      return res.status(400).json({
-        message: 'Insufficient wallet balance'
-      });
-    }
-
-    const serviceID = getVtpassServiceId(network, 'airtime');
-    if (!serviceID) {
-      return res.status(400).json({
-        message: 'Invalid network provided'
-      });
-    }
-
-    const requestId = uuidv4();
-    const payload = {
-      request_id: requestId,
-      serviceID,
-      amount,
-      phone,
-      billersCode: phone,
-    };
-
-    const result = await makeVtpassPostRequest('/pay', payload);
-
-    console.log('VTpass Airtime API Response:', JSON.stringify(result, null, 2));
-
-    if (result.code === '000') {
-      user.wallet -= amount;
-      await user.save();
-
-      await Transaction.create({
-        userId,
-        requestId,
-        type: 'airtime',
+        request_id,
+        serviceID,
         amount,
         phone,
-        serviceID,
-        status: 'success',
-        details: result,
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: 'Airtime transaction successful',
-        result
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: result.response_description || 'Airtime transaction failed with an unexpected format.',
-        errorDetails: result,
-      });
-    }
-  } catch (err) {
-    console.error('❌ Airtime purchase error:', err.response?.data || err.message);
-    return next({
-      statusCode: err.response?.status || 500,
-      message: 'VTpass airtime failed',
-      errorDetails: err.response?.data || err.message,
-    });
-  }
-};
-
-
-// ====================================================================
-// ✅ UPDATED: DATA PURCHASE with specific validation message
-// ====================================================================
-const buyData = async (req, res, next) => {
-  const {
-    userId,
-    network,
-    amount,
-    phone,
-    variationCode
-  } = req.body;
-
-  if (!userId || !network || !amount || !phone || !variationCode) {
-    return res.status(400).json({
-      message: 'Missing one or more required fields. Ensure you send userId, network, amount, phone, and variationCode.'
-    });
-  }
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found'
-      });
-    }
-    if (user.wallet < amount) {
-      return res.status(400).json({
-        message: 'Insufficient wallet balance'
-      });
-    }
-
-    const serviceID = getVtpassServiceId(network, 'data');
-    if (!serviceID) {
-      return res.status(400).json({
-        message: 'Invalid network provided'
-      });
-    }
-
-    const requestId = uuidv4();
-    const payload = {
-      request_id: requestId,
-      serviceID,
-      billersCode: phone,
-      variation_code: variationCode,
-      phone,
+        variation_code,
+        billersCode
     };
 
-    const result = await makeVtpassPostRequest('/pay', payload);
-    console.log('VTpass Data API Response:', JSON.stringify(result, null, 2));
+    try {
+        const authHeader = getAuthHeader();
+        if (!authHeader) {
+            return res.status(500).json({ error: 'Authentication failed.' });
+        }
 
-    if (result.code === '000' || result.response_description?.includes('successful')) {
-      user.wallet -= amount;
-      await user.save();
-
-      await Transaction.create({
-        userId,
-        requestId,
-        type: 'data',
-        amount,
-        phone,
-        serviceID,
-        variationCode,
-        status: 'success',
-        details: result,
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: 'Data transaction successful',
-        result
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: result.response_description || 'Data transaction failed.'
-      });
+        const response = await axios.post(url, payload, {
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            }
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error with purchase transaction:', error.response ? error.response.data : error.message);
+        res.status(error.response?.status || 500).json({ error: 'Failed to complete transaction.', details: error.message });
     }
-  } catch (err) {
-    console.error('❌ Data Purchase Error:', err.response?.data || err.message);
-    return next({
-      statusCode: err.response?.status || 500,
-      message: 'VTpass data failed',
-      errorDetails: err.response?.data || err.message,
-    });
-  }
-};
+});
 
-
-// ====================================================================
-// ✅ UPDATED: CABLETV PURCHASE
-// ====================================================================
-const buyCableTV = async (req, res, next) => {
-  const {
-    userId,
-    network,
-    amount,
-    phone,
-    billersCode,
-    variationCode
-  } = req.body;
-
-  if (!userId || !network || !amount || !phone || !billersCode || !variationCode) {
-    return res.status(400).json({
-      message: 'Missing required fields for cable TV purchase.'
-    });
-  }
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found'
-      });
-    }
-    if (user.wallet < amount) {
-      return res.status(400).json({
-        message: 'Insufficient wallet balance'
-      });
-    }
-
-    const serviceID = getVtpassServiceId(network, 'cabletv');
-    if (!serviceID) {
-      return res.status(400).json({
-        message: 'Invalid network provided'
-      });
-    }
-
-    const requestId = uuidv4();
-    const payload = {
-      request_id: requestId,
-      serviceID,
-      amount,
-      phone,
-      billersCode,
-      variation_code: variationCode,
-    };
-
-    const result = await makeVtpassPostRequest('/pay', payload);
-    console.log('VTpass Cable TV API Response:', JSON.stringify(result, null, 2));
-
-    if (result.code === '000' || result.response_description?.includes('successful')) {
-      user.wallet -= amount;
-      await user.save();
-
-      await Transaction.create({
-        userId,
-        requestId,
-        type: 'cabletv',
-        amount,
-        phone,
-        billersCode,
-        serviceID,
-        variationCode,
-        status: 'success',
-        details: result,
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: 'Cable TV transaction successful',
-        result
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: result.response_description || 'Cable TV transaction failed.'
-      });
-    }
-  } catch (err) {
-    console.error('❌ Cable TV Purchase Error:', err.response?.data || err.message);
-    return next({
-      statusCode: err.response?.status || 500,
-      message: 'VTpass cable TV failed',
-      errorDetails: err.response?.data || err.message,
-    });
-  }
-};
-
-module.exports = {
-  validateSmartCard,
-  buyAirtime,
-  buyData,
-  buyCableTV,
-};
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
