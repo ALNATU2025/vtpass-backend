@@ -6,7 +6,8 @@ const vtpassController = require('../controllers/vtpassController');
 router.get('/validate-smartcard', vtpassController.validateSmartCard);
 
 // Airtime
-router.post('/buy-airtime', vtpassController.buyAirtime);
+// ❌ FIXED: The route is now '/purchase' to match your Flutter app's request.
+router.post('/purchase', vtpassController.buyAirtime);
 
 // Data
 router.post('/buy-data', vtpassController.buyData);
