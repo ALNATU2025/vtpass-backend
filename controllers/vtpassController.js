@@ -1,171 +1,213 @@
-const express = require('express');
-const axios = require('axios');
-const crypto = require('crypto');
-const app = express();
-const cors = require('cors');
+// vtpassController.js
 
-// Load environment variables from .env file
 require('dotenv').config();
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid'); // Import uuid for generating unique IDs
 
-app.use(express.json());
-app.use(cors());
+// Assuming you have a database connection and models set up
+const Transaction = require('./models/Transaction'); // Import the Transaction model
+const User = require('./models/User'); // Import the User model
 
-const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
+const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL;
 const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;
-const BASE_URL = 'https://sandbox.vtpass.com/api'; // Use sandbox for testing
+const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
 
-// Function to generate the Authorization header
-const getAuthHeader = () => {
-    // Log the keys to the console for debugging. This should be removed in production.
-    console.log(`[DEBUG] API Key: ${VTPASS_API_KEY ? 'Loaded' : 'NOT loaded'}`);
-    console.log(`[DEBUG] Secret Key: ${VTPASS_SECRET_KEY ? 'Loaded' : 'NOT loaded'}`);
+// Check if keys are loaded
+if (!VTPASS_SECRET_KEY || !VTPASS_API_KEY) {
+  console.error("🚨 VTPASS API keys not found in .env file. Please add them to proceed.");
+}
 
-    if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY) {
-        console.error('API keys are missing.');
-        return null;
+// Reusable function to make a post request to the VTpass API
+// This function now handles user wallet debit, credit, and transaction logging.
+async function postToVtpass(endpoint, data, res, userId, transactionAmount, serviceType) {
+  let transactionId;
+  let transactionStatus = 'pending';
+
+  try {
+    // 1. Check if the user exists and has enough funds
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+    if (user.wallet < transactionAmount) {
+      return res.status(400).json({ success: false, message: 'Insufficient funds.' });
     }
 
-    const authString = `${VTPASS_API_KEY}:${VTPASS_SECRET_KEY}`;
-    const base64Auth = Buffer.from(authString).toString('base64');
-    return `Basic ${base64Auth}`;
+    // 2. Debit the user's wallet before making the API call
+    user.wallet -= transactionAmount;
+    await user.save();
+
+    // 3. Make the VTpass API call
+    const response = await axios.post(`${VTPASS_BASE_URL}${endpoint}`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${Buffer.from(`${VTPASS_API_KEY}:${VTPASS_SECRET_KEY}`).toString('base64')}`
+      }
+    });
+
+    // 4. Update the transaction status and save to the database on success
+    transactionStatus = 'success';
+    await Transaction.create({
+      userId,
+      amount: transactionAmount,
+      service: serviceType,
+      vtpassRequestId: data.request_id,
+      vtpassTransactionId: response.data.content.transactions.transactionId,
+      status: transactionStatus,
+      responseDetails: response.data
+    });
+
+    // Return a success response
+    res.status(response.status).json({
+      success: true,
+      data: response.data
+    });
+
+  } catch (error) {
+    console.error(`🚨 Error during API call to ${endpoint}:`, error.message);
+    const statusCode = error.response?.status || 500;
+    const errorMessage = error.response?.data?.response_description || 'An unknown error occurred with the VTpass API.';
+
+    // 5. If VTpass call fails, credit the amount back to the user's wallet
+    if (userId) {
+      const user = await User.findById(userId);
+      if (user) {
+        user.wallet += transactionAmount;
+        await user.save();
+      }
+    }
+
+    // 6. Log the failed transaction
+    transactionStatus = 'failed';
+    await Transaction.create({
+      userId,
+      amount: transactionAmount,
+      service: serviceType,
+      vtpassRequestId: data.request_id,
+      status: transactionStatus,
+      responseDetails: error.response?.data || { message: error.message }
+    });
+
+    // Return a structured error response
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      errorDetails: error.response?.data || { message: error.message }
+    });
+  }
+}
+
+// Controller functions for different VTpass services
+exports.purchaseAirtime = async (req, res) => {
+  // Assuming a user ID is available from a preceding authentication middleware
+  const userId = req.userId;
+  const { serviceID, amount, phone, billersCode } = req.body;
+  const request_id = uuidv4(); // Use uuid to generate a unique request ID
+  const data = {
+    request_id,
+    serviceID,
+    amount,
+    phone,
+    billersCode
+  };
+  await postToVtpass('/pay', data, res, userId, amount, 'Airtime Purchase');
 };
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
-});
+exports.validateSmartcard = async (req, res) => {
+  const { serviceID, smartcard_number } = req.body;
+  const data = {
+    serviceID,
+    smartcard_number,
+    billersCode: smartcard_number
+  };
+  // Note: This is a validation endpoint and does not involve a transaction
+  // Therefore, we use the original postToVtpass logic without wallet/transaction handling.
+  // This is a simple request, so we will use a simplified version of the function
+  // to avoid unnecessary logic.
+  try {
+    const response = await axios.post(`${VTPASS_BASE_URL}/merchant-verify`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${Buffer.from(`${VTPASS_API_KEY}:${VTPASS_SECRET_KEY}`).toString('base64')}`
+      }
+    });
+    res.status(response.status).json({
+      success: true,
+      data: response.data
+    });
+  } catch (error) {
+    const statusCode = error.response?.status || 500;
+    const errorMessage = error.response?.data?.response_description || 'An unknown error occurred with the VTpass API.';
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      errorDetails: error.response?.data || { message: error.message }
+    });
+  }
+};
 
-// Middleware to check for API keys
-app.use((req, res, next) => {
-    if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY) {
-        return res.status(500).json({ error: 'VTpass API keys are not configured.' });
-    }
-    next();
-});
+exports.purchaseData = async (req, res) => {
+  const userId = req.userId;
+  const { serviceID, amount, phone, variation_code } = req.body;
+  const request_id = uuidv4();
+  const data = {
+    request_id,
+    serviceID,
+    amount,
+    phone,
+    variation_code
+  };
+  await postToVtpass('/pay', data, res, userId, amount, 'Data Purchase');
+};
 
-// 1. Get a list of supported services for a category
-app.get('/services/:category', async (req, res) => {
-    const { category } = req.params;
-    const url = `${BASE_URL}/services?category=${category}`;
-    console.log(`[DEBUG] Requesting services from URL: ${url}`);
-    
-    try {
-        const authHeader = getAuthHeader();
-        if (!authHeader) {
-            return res.status(500).json({ error: 'Authentication failed.' });
-        }
-        const response = await axios.get(url, {
-            headers: {
-                'Authorization': authHeader,
-                'Content-Type': 'application/json'
-            }
-        });
-        res.json(response.data);
-    } catch (error) {
-        console.error('Error fetching services:', error.response ? error.response.data : error.message);
-        res.status(error.response?.status || 500).json({ error: 'Failed to fetch services.', details: error.message });
-    }
-});
+exports.purchaseElectricity = async (req, res) => {
+  const userId = req.userId;
+  const { serviceID, amount, phone, billersCode, variation_code } = req.body;
+  const request_id = uuidv4();
+  const data = {
+    request_id,
+    serviceID,
+    amount,
+    phone,
+    billersCode,
+    variation_code
+  };
+  await postToVtpass('/pay', data, res, userId, amount, 'Electricity Purchase');
+};
 
-// 2. Get a list of variations for a specific service (e.g., MTN, Glo, etc.)
-app.get('/variations/:serviceId', async (req, res) => {
-    const { serviceId } = req.params;
-    const url = `${BASE_URL}/service-variations?serviceID=${serviceId}`;
-    console.log(`[DEBUG] Requesting variations from URL: ${url}`);
-    
-    try {
-        const authHeader = getAuthHeader();
-        if (!authHeader) {
-            return res.status(500).json({ error: 'Authentication failed.' });
-        }
-        const response = await axios.get(url, {
-            headers: {
-                'Authorization': authHeader,
-                'Content-Type': 'application/json'
-            }
-        });
-        res.json(response.data);
-    } catch (error) {
-        console.error('Error fetching variations:', error.response ? error.response.data : error.message);
-        res.status(error.response?.status || 500).json({ error: 'Failed to fetch service variations.', details: error.message });
-    }
-});
+exports.purchaseTvSubscription = async (req, res) => {
+  const userId = req.userId;
+  const { serviceID, amount, phone, billersCode, variation_code, subscription_type } = req.body;
+  const request_id = uuidv4();
+  const data = {
+    request_id,
+    serviceID,
+    amount,
+    phone,
+    billersCode,
+    variation_code,
+    subscription_type
+  };
+  await postToVtpass('/pay', data, res, userId, amount, 'TV Subscription');
+};
 
-// 3. Validate smartcard or meter number
-app.post('/validate', async (req, res) => {
-    const { serviceID, billersCode, type } = req.body;
-    const url = `${BASE_URL}/merchant-verify`;
-    console.log(`[DEBUG] Validating smartcard/meter from URL: ${url}`);
-    
-    if (!serviceID || !billersCode || !type) {
-        return res.status(400).json({ error: 'Missing required fields: serviceID, billersCode, and type.' });
-    }
+exports.getServices = async (req, res) => {
+  const { serviceID } = req.body;
+  const data = { serviceID };
+  // No transaction involved, so we use a simplified post request
+  await postToVtpass('/services', data, res, null, 0, null);
+};
 
-    try {
-        const authHeader = getAuthHeader();
-        if (!authHeader) {
-            return res.status(500).json({ error: 'Authentication failed.' });
-        }
-        
-        const response = await axios.post(url, {
-            serviceID,
-            billersCode,
-            type
-        }, {
-            headers: {
-                'Authorization': authHeader,
-                'Content-Type': 'application/json'
-            }
-        });
-        res.json(response.data);
-    } catch (error) {
-        console.error('Error validating smartcard/meter:', error.response ? error.response.data : error.message);
-        res.status(error.response?.status || 500).json({ error: 'Failed to validate smartcard/meter.', details: error.message });
-    }
-});
+exports.getVariations = async (req, res) => {
+  const { serviceID } = req.body;
+  const data = { serviceID };
+  // No transaction involved, so we use a simplified post request
+  await postToVtpass('/variations', data, res, null, 0, null);
+};
 
-// 4. Send a transaction to purchase a product
-app.post('/purchase', async (req, res) => {
-    const { serviceID, amount, phone, variation_code, billersCode } = req.body;
-    const url = `${BASE_URL}/pay`;
-    console.log(`[DEBUG] Purchasing a product from URL: ${url}`);
-    
-    if (!serviceID || !amount || !phone || !variation_code) {
-        return res.status(400).json({ error: 'Missing required fields: serviceID, amount, phone, and variation_code.' });
-    }
-
-    const request_id = crypto.randomUUID(); // Use UUID for request_id
-
-    const payload = {
-        request_id,
-        serviceID,
-        amount,
-        phone,
-        variation_code,
-        billersCode
-    };
-
-    try {
-        const authHeader = getAuthHeader();
-        if (!authHeader) {
-            return res.status(500).json({ error: 'Authentication failed.' });
-        }
-
-        const response = await axios.post(url, payload, {
-            headers: {
-                'Authorization': authHeader,
-                'Content-Type': 'application/json'
-            }
-        });
-        res.json(response.data);
-    } catch (error) {
-        console.error('Error with purchase transaction:', error.response ? error.response.data : error.message);
-        res.status(error.response?.status || 500).json({ error: 'Failed to complete transaction.', details: error.message });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+exports.revalidateTransaction = async (req, res) => {
+  const { request_id } = req.body;
+  const data = { request_id };
+  // No new transaction, just a revalidation
+  await postToVtpass('/re-validate', data, res, null, 0, null);
+};

@@ -1,30 +1,17 @@
+// vtpassRoutes.js
+
 const express = require('express');
 const router = express.Router();
-const vtpassController = require('../controllers/vtpassController');
+const vtpassController = require('./vtpassController');
 
-// ====================================================================
-// ✅ CORRECTED ROUTE: Smartcard Validation
-// ⚠️ CRITICAL FIX: Changed from a GET to a POST route.
-// The controller now uses a POST request to send data to the VTpass API.
-// ====================================================================
-// Full Endpoint: /api/validate-smartcard
-router.post('/validate-smartcard', vtpassController.validateSmartCard);
-
-// ====================================================================
-// ✅ VTPASS SERVICE PURCHASE ROUTES
-// These routes and their methods are correct and do not need to be changed.
-// ====================================================================
-
-// Airtime Purchase
-// Full Endpoint: /api/airtime/purchase
-router.post('/airtime/purchase', vtpassController.buyAirtime);
-
-// Data Purchase
-// Full Endpoint: /api/data/purchase
-router.post('/data/purchase', vtpassController.buyData);
-
-// CableTV Purchase
-// Full Endpoint: /api/cabletv/buy-cabletv
-router.post('/cabletv/buy-cabletv', vtpassController.buyCableTV);
+// Define API endpoints for VTpass services
+router.post('/api/vtpass/airtime/purchase', vtpassController.purchaseAirtime);
+router.post('/api/vtpass/validate-smartcard', vtpassController.validateSmartcard);
+router.post('/api/vtpass/data/purchase', vtpassController.purchaseData);
+router.post('/api/vtpass/electricity/purchase', vtpassController.purchaseElectricity);
+router.post('/api/vtpass/tv/purchase', vtpassController.purchaseTvSubscription);
+router.post('/api/vtpass/services', vtpassController.getServices);
+router.post('/api/vtpass/variations', vtpassController.getVariations);
+router.post('/api/vtpass/re-validate', vtpassController.revalidateTransaction);
 
 module.exports = router;
