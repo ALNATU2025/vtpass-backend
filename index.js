@@ -40,8 +40,9 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/transactions', transactionRoutes);
 apiRouter.use('/fund-wallet', fundWalletRoutes);
 apiRouter.use('/transfer', transferRoutes);
-// ❌ FIXED: The vtpassRoutes are now mounted without a specific path,
-// which allows endpoints like '/airtime/purchase' to be handled correctly.
+// ❌ FIXED: vtpassRoutes are now mounted without a specific path.
+// This allows endpoints like '/airtime/purchase' to be handled correctly,
+// matching the requests coming from your Flutter app.
 apiRouter.use(vtpassRoutes);
 apiRouter.use('/settings', appSettingsRoutes);
 apiRouter.use('/beneficiaries', beneficiaryRoutes);
