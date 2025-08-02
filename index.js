@@ -40,10 +40,6 @@ apiRouter.use('/users', userRoutes);
 apiRouter.use('/transactions', transactionRoutes);
 apiRouter.use('/fund-wallet', fundWalletRoutes);
 apiRouter.use('/transfer', transferRoutes);
-// ✅ FINAL FIX: Mounting the vtpassRoutes at the '/vtpass' path.
-// The routes inside the vtpassRoutes.js file should now not contain
-// the '/api' or '/vtpass' prefixes. This is the correct way to handle
-// nested routers in Express.
 apiRouter.use('/vtpass', vtpassRoutes);
 apiRouter.use('/settings', appSettingsRoutes);
 apiRouter.use('/beneficiaries', beneficiaryRoutes);
@@ -53,13 +49,23 @@ apiRouter.post('/paystack-webhook', paystackController.handleWebhook);
 // Mount the main API router at /api
 app.use('/api', apiRouter);
 
-
 // Root route
 app.get('/', (req, res) => {
     res.send('DalabaPay Backend Running');
 });
 
-// --- NEW: Custom JSON-based error handling middleware ---
+// ✅ NEW: 404 Not Found Middleware
+// This middleware must be placed AFTER all your routes.
+// It will catch any request that has not been handled by the routes above
+// and respond with a consistent JSON 404 error.
+app.use((req, res, next) => {
+    res.status(404).json({
+        success: false,
+        message: `API endpoint not found: ${req.originalUrl}`
+    });
+});
+
+// --- Custom JSON-based error handling middleware ---
 // This function will catch any error passed to next() and format it as a JSON response.
 app.use((err, req, res, next) => {
     console.error('Caught an error:', err.stack);
