@@ -90,22 +90,39 @@ const Setting = mongoose.model('Setting', settingsSchema);
 
 // --- Middleware ---
 
-// JWT Middleware
+// JWT Middleware (Updated for better error handling and single response)
 const protect = async (req, res, next) => {
   let token;
+
+  // 1) Check if the authorization header is present and correctly formatted
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
+      // 2) Extract the token
       token = req.headers.authorization.split(' ')[1];
+
+      // 3) Verify the token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // 4) Find the user
       req.user = await User.findById(decoded.id).select('-password');
+
+      // 5) If no user is found, deny access
+      if (!req.user) {
+        console.error('JWT verification failed: User not found for token ID.');
+        return res.status(401).json({ message: 'Not authorized, user for token not found' });
+      }
+
+      // 6) Proceed to the next middleware/route handler
       next();
     } catch (error) {
+      // Catch and handle errors during token verification or user lookup
       console.error('JWT verification error:', error);
-      res.status(401).json({ message: 'Not authorized, token failed' });
+      return res.status(401).json({ message: 'Not authorized, token is invalid or expired' });
     }
-  }
-  if (!token) {
-    res.status(401).json({ message: 'Not authorized, no token' });
+  } else {
+    // If no authorization header or token is present, deny access
+    console.error('Authorization header missing or malformed.');
+    return res.status(401).json({ message: 'Not authorized, no token' });
   }
 };
 
