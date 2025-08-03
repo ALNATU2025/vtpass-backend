@@ -39,8 +39,16 @@ const transactionSchema = new mongoose.Schema({
   reference: { type: String, required: true, unique: true },
 }, { timestamps: true });
 
+const notificationSchema = new mongoose.Schema({
+  recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  isRead: { type: Boolean, default: false },
+}, { timestamps: true });
+
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
+const Notification = mongoose.model('Notification', notificationSchema);
 
 // Database Connection
 const connectDB = async () => {
@@ -242,7 +250,16 @@ app.post('/api/users/login', async (req, res) => {
 // @access  Private
 app.post('/api/users/get-balance', protect, async (req, res) => {
   try {
-    const user = req.user;
+    // The frontend sends the userId in the body, so we read it from there.
+    const { userId } = req.body; 
+    
+    // Ensure the authenticated user is requesting their own balance
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to balance' });
+    }
+    
+    const user = await User.findById(userId);
+
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -255,6 +272,7 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
@@ -318,11 +336,17 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
 
 
 // @desc    Get user's transactions
-// @route   GET /api/transactions/:userId
+// @route   GET /api/transactions
 // @access  Private
-app.get('/api/transactions/:userId', protect, async (req, res) => {
+// Corrected to use a query parameter (?userId=...) to match the frontend
+app.get('/api/transactions', protect, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
+    }
+
     // Ensure the authenticated user is requesting their own transactions
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
@@ -339,9 +363,10 @@ app.get('/api/transactions/:userId', protect, async (req, res) => {
 });
 
 // @desc    Get all transactions (Admin only)
-// @route   GET /api/transactions
+// @route   GET /api/transactions/all
 // @access  Private/Admin
-app.get('/api/transactions', adminProtect, async (req, res) => {
+// Renamed the route to prevent conflicts with the user's transaction endpoint
+app.get('/api/transactions/all', adminProtect, async (req, res) => {
   try {
     const transactions = await Transaction.find({}).sort({ createdAt: -1 }).populate('userId', 'fullName email');
     res.json({ success: true, transactions });
@@ -611,6 +636,34 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
+  }
+});
+
+
+// @desc    Get user's notifications
+// @route   GET /api/notifications
+// @access  Private
+// Corrected to use a query parameter (?userId=...) to match the frontend
+app.get('/api/notifications', protect, async (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
+    }
+
+    // Ensure the authenticated user is requesting their own notifications
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    const notifications = await Notification.find({ recipientId: userId }).sort({ createdAt: -1 });
+    res.json({
+      success: true,
+      notifications
+    });
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
