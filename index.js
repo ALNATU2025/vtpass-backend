@@ -1,4 +1,5 @@
 
+//index file 
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -94,8 +95,6 @@ const protect = async (req, res, next) => {
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
-  // The VTPass base URL has been explicitly defined here.
-  // For production, it's recommended to use a .env file.
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
 
@@ -111,6 +110,8 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
       timeout: 15000
     });
     console.log(`VTPass API call to ${endpoint} successful.`);
+    // Log the full VTPass response data for debugging purposes
+    console.log('VTPass API Response Data:', JSON.stringify(response.data, null, 2));
     return { success: true, data: response.data };
   } catch (error) {
     console.error(`--- VTPass API Error to ${endpoint} ---`);
@@ -120,12 +121,12 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
       return {
         success: false,
         status: error.response.status,
-        message: error.response.data.message || 'Error from VTpass API',
+        message: error.response.data.message || 'Error from VTPass API',
         details: error.response.data
       };
     } else if (error.request) {
       console.error('No response received from VTPass API:', error.request);
-      return { success: false, status: 504, message: 'Timeout: No response from VTpass API' };
+      return { success: false, status: 504, message: 'Timeout: No response from VTPass API' };
     } else {
       console.error('Error setting up request:', error.message);
       return { success: false, status: 500, message: error.message || 'Internal Server Error' };
@@ -231,6 +232,10 @@ app.post('/api/users/login', async (req, res) => {
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
 app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
+  // NEW: Log incoming request for TV purchase
+  console.log('Received TV purchase request.');
+  console.log('Request Body:', req.body);
+  
   const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
   const reference = uuidv4();
   const session = await mongoose.startSession();
@@ -255,6 +260,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       phone,
       request_id: reference,
     });
+    
+    // NEW: Log the full VTPass response for TV purchase for debugging purposes
+    console.log('VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
 
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
@@ -310,10 +318,8 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
 app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
-  // --- New logging added here ---
   console.log('Received airtime purchase request.');
   console.log('Request Body:', req.body);
-  // --- End of new logging ---
   
   const { userId, network, phone, amount } = req.body;
   const serviceID = network.toLowerCase();
@@ -333,6 +339,10 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     }
 
     const vtpassResult = await callVtpassApi('/pay', { serviceID, phone, amount, request_id: reference });
+    
+    // Log the full VTPass response data for debugging purposes
+    console.log('VTPass Response:', JSON.stringify(vtpassResult, null, 2));
+
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
@@ -375,7 +385,7 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Error in airtime purchase:', error); // This will log any unexpected errors.
+    console.error('Error in airtime purchase:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
