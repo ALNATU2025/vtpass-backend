@@ -227,9 +227,9 @@ app.post('/api/users/login', async (req, res) => {
 });
 
 // @desc    Get user's balance
-// @route   GET /api/users/get-balance
+// @route   POST /api/users/get-balance
 // @access  Private
-app.get('/api/users/get-balance', protect, async (req, res) => {
+app.post('/api/users/get-balance', protect, async (req, res) => {
   try {
     const user = req.user;
     if (!user) {
@@ -246,11 +246,15 @@ app.get('/api/users/get-balance', protect, async (req, res) => {
 });
 
 // @desc    Get user's transactions
-// @route   GET /api/transactions
+// @route   GET /api/transactions/:userId
 // @access  Private
-app.get('/api/transactions', protect, async (req, res) => {
+app.get('/api/transactions/:userId', protect, async (req, res) => {
   try {
-    const userId = req.user._id;
+    const { userId } = req.params;
+    // Ensure the authenticated user is requesting their own transactions
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
     const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
     res.json({
       success: true,
@@ -264,9 +268,9 @@ app.get('/api/transactions', protect, async (req, res) => {
 
 
 // @desc    Verify smartcard number
-// @route   POST /api/vtpass/tv/verify
+// @route   POST /api/vtpass/validate-smartcard
 // @access  Private
-app.post('/api/vtpass/tv/verify', protect, async (req, res) => {
+app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
   console.log('Received smartcard verification request.');
   console.log('Request Body:', req.body);
   
