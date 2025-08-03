@@ -1,5 +1,19 @@
 // --- File: server.js ---
-
+//
+// IMPORTANT: This application uses environment variables for sensitive data.
+// You must create a `.env` file in the same directory as this file.
+//
+// Example `.env` file content:
+//
+// PORT=5000
+// MONGO_URI=your_mongodb_connection_string_here
+// JWT_SECRET=your_jwt_secret_key_here
+// VTPASS_API_KEY=your_vtpass_api_key_here
+// VTPASS_SECRET_KEY=your_vtpass_secret_key_here
+// VTPASS_BASE_URL=https://sandbox.vtpass.com/api
+//
+// Please replace the placeholder values with your actual credentials.
+//
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -88,6 +102,17 @@ const protect = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ success: false, message: 'Not authorized, no token' });
   }
+};
+
+// Middleware to protect routes for administrators only
+const adminProtect = async (req, res, next) => {
+  await protect(req, res, () => {
+    if (req.user && req.user.isAdmin) {
+      next();
+    } else {
+      res.status(403).json({ success: false, message: 'Not authorized as an admin' });
+    }
+  });
 };
 
 // VTPass API Helper
@@ -245,6 +270,19 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
   }
 });
 
+// @desc    Get all users (Admin only)
+// @route   GET /api/users
+// @access  Private/Admin
+app.get('/api/users', adminProtect, async (req, res) => {
+  try {
+    const users = await User.find({}).select('-password');
+    res.json({ success: true, users });
+  } catch (error) {
+    console.error('Error fetching all users:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // @desc    Get user's transactions
 // @route   GET /api/transactions/:userId
 // @access  Private
@@ -262,6 +300,19 @@ app.get('/api/transactions/:userId', protect, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get all transactions (Admin only)
+// @route   GET /api/transactions
+// @access  Private/Admin
+app.get('/api/transactions', adminProtect, async (req, res) => {
+  try {
+    const transactions = await Transaction.find({}).sort({ createdAt: -1 }).populate('userId', 'fullName email');
+    res.json({ success: true, transactions });
+  } catch (error) {
+    console.error('Error fetching all transactions:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
