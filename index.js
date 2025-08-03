@@ -1,19 +1,5 @@
 // --- File: server.js ---
-//
-// IMPORTANT: This application uses environment variables for sensitive data.
-// You must create a `.env` file in the same directory as this file.
-//
-// Example `.env` file content:
-//
-// PORT=5000
-// MONGO_URI=your_mongodb_connection_string_here
-// JWT_SECRET=your_jwt_secret_key_here
-// VTPASS_API_KEY=your_vtpass_api_key_here
-// VTPASS_SECRET_KEY=your_vtpass_secret_key_here
-// VTPASS_BASE_URL=https://sandbox.vtpass.com/api
-//
-// Please replace the placeholder values with your actual credentials.
-//
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -265,8 +251,8 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
       balance: user.walletBalance
     });
   } catch (error) {
-    console.error('Error fetching balance:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      console.error('Error fetching balance:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -282,6 +268,54 @@ app.get('/api/users', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+// @desc    Fund a user's wallet (Admin only)
+// @route   POST /api/users/fund
+// @access  Private/Admin
+app.post('/api/users/fund', adminProtect, async (req, res) => {
+  const { userId, amount } = req.body;
+  if (!userId || !amount || amount <= 0) {
+    return res.status(400).json({ success: false, message: 'User ID and a positive amount are required' });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += amount;
+    const balanceAfter = user.walletBalance;
+
+    await user.save({ session });
+    await createTransaction(
+      userId,
+      amount,
+      'credit',
+      'successful',
+      `Admin funding of ${amount}`,
+      balanceBefore,
+      balanceAfter,
+      session
+    );
+
+    await session.commitTransaction();
+    res.json({ success: true, message: `Successfully funded user ${user.email} with ${amount}`, newBalance: balanceAfter });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error funding user:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  } finally {
+    session.endSession();
+  }
+});
+
 
 // @desc    Get user's transactions
 // @route   GET /api/transactions/:userId
@@ -299,8 +333,8 @@ app.get('/api/transactions/:userId', protect, async (req, res) => {
       transactions
     });
   } catch (error) {
-    console.error('Error fetching transactions:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      console.error('Error fetching transactions:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -312,8 +346,8 @@ app.get('/api/transactions', adminProtect, async (req, res) => {
     const transactions = await Transaction.find({}).sort({ createdAt: -1 }).populate('userId', 'fullName email');
     res.json({ success: true, transactions });
   } catch (error) {
-    console.error('Error fetching all transactions:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      console.error('Error fetching all transactions:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -353,8 +387,8 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
       });
     }
   } catch (error) {
-    console.error('Error verifying smartcard:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      console.error('Error verifying smartcard:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -431,9 +465,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       status: newTransaction.status,
     });
   } catch (error) {
-    await session.abortTransaction();
-    console.error('Error in TV payment:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      await session.abortTransaction();
+      console.error('Error in TV payment:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
@@ -505,9 +539,9 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
       newBalance: newBalance,
     });
   } catch (error) {
-    await session.abortTransaction();
-    console.error('Error in airtime purchase:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      await session.abortTransaction();
+      console.error('Error in airtime purchase:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
@@ -572,9 +606,9 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
       newBalance: newBalance,
     });
   } catch (error) {
-    await session.abortTransaction();
-    console.error('Error in data purchase:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+      await session.abortTransaction();
+      console.error('Error in data purchase:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
