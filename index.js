@@ -1,5 +1,4 @@
-
-//index file 
+// --- File: server.js ---
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -227,12 +226,89 @@ app.post('/api/users/login', async (req, res) => {
   }
 });
 
+// @desc    Get user's balance
+// @route   GET /api/users/get-balance
+// @access  Private
+app.get('/api/users/get-balance', protect, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    res.json({
+      success: true,
+      balance: user.walletBalance
+    });
+  } catch (error) {
+    console.error('Error fetching balance:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get user's transactions
+// @route   GET /api/transactions
+// @access  Private
+app.get('/api/transactions', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
+    res.json({
+      success: true,
+      transactions
+    });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Verify smartcard number
+// @route   POST /api/vtpass/tv/verify
+// @access  Private
+app.post('/api/vtpass/tv/verify', protect, async (req, res) => {
+  console.log('Received smartcard verification request.');
+  console.log('Request Body:', req.body);
+  
+  const { serviceID, billersCode } = req.body;
+  
+  if (!serviceID || !billersCode) {
+    return res.status(400).json({ success: false, message: 'Service ID and billersCode are required.' });
+  }
+
+  try {
+    const vtpassResult = await callVtpassApi('/merchant-verify', {
+      serviceID,
+      billersCode,
+    });
+
+    console.log('VTPass Verification Response:', JSON.stringify(vtpassResult, null, 2));
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      res.json({
+        success: true,
+        message: 'Smartcard verified successfully.',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Smartcard verification failed.',
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('Error verifying smartcard:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
 app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
-  // NEW: Log incoming request for TV purchase
+  // Log incoming request for TV purchase
   console.log('Received TV purchase request.');
   console.log('Request Body:', req.body);
   
@@ -261,26 +337,21 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       request_id: reference,
     });
     
-    // NEW: Log the full VTPass response for TV purchase for debugging purposes
+    // Log the full VTPass response for TV purchase for debugging purposes
     console.log('VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
 
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
 
-    if (vtpassResult.success) {
-      if (vtpassResult.data.response_code === '00') {
-        transactionStatus = 'successful';
-        newBalance = user.walletBalance - amount;
-        user.walletBalance = newBalance;
-        await user.save({ session });
-      } else if (vtpassResult.data.response_code === '01') {
-        transactionStatus = 'pending';
-      } else {
-        await session.abortTransaction();
-        return res.status(vtpassResult.status || 400).json(vtpassResult);
-      }
+    // Corrected check for successful VTPass response
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
     } else {
+      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
@@ -346,20 +417,15 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
-
-    if (vtpassResult.success) {
-      if (vtpassResult.data.response_code === '00') {
-        transactionStatus = 'successful';
-        newBalance = user.walletBalance - amount;
-        user.walletBalance = newBalance;
-        await user.save({ session });
-      } else if (vtpassResult.data.response_code === '01') {
-        transactionStatus = 'pending';
-      } else {
-        await session.abortTransaction();
-        return res.status(vtpassResult.status || 400).json(vtpassResult);
-      }
+    
+    // Corrected check for successful VTPass response
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
     } else {
+      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
@@ -418,20 +484,15 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
-
-    if (vtpassResult.success) {
-      if (vtpassResult.data.response_code === '00') {
-        transactionStatus = 'successful';
-        newBalance = user.walletBalance - amount;
-        user.walletBalance = newBalance;
-        await user.save({ session });
-      } else if (vtpassResult.data.response_code === '01') {
-        transactionStatus = 'pending';
-      } else {
-        await session.abortTransaction();
-        return res.status(vtpassResult.status || 400).json(vtpassResult);
-      }
+    
+    // Corrected check for successful VTPass response
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
     } else {
+      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
