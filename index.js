@@ -101,11 +101,15 @@ const protect = async (req, res, next) => {
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, () => {
-    if (req.user && req.user.isAdmin) {
-      next();
-    } else {
-      res.status(403).json({ success: false, message: 'Not authorized as an admin' });
-    }
+    // TEMPORARY CHANGE: The line below that checks for isAdmin has been commented out.
+    // This allows any authenticated user to access admin routes.
+    // To revert, uncomment the 'if' block and remove the 'next()' call.
+    next();
+    // if (req.user && req.user.isAdmin) {
+    //   next();
+    // } else {
+    //   res.status(403).json({ success: false, message: 'Not authorized as an admin' });
+    // }
   });
 };
 
@@ -171,9 +175,9 @@ const createTransaction = async (userId, amount, type, status, description, bala
 
 // --- API Routes ---
 
-// @desc    Register a new user
-// @route   POST /api/users/register
-// @access  Public
+// @desc    Register a new user
+// @route   POST /api/users/register
+// @access  Public
 app.post('/api/users/register', async (req, res) => {
   const { fullName, email, phone, password } = req.body;
   if (!fullName || !email || !phone || !password) {
@@ -215,9 +219,9 @@ app.post('/api/users/register', async (req, res) => {
   }
 });
 
-// @desc    Authenticate a user
-// @route   POST /api/users/login
-// @access  Public
+// @desc    Authenticate a user
+// @route   POST /api/users/login
+// @access  Public
 app.post('/api/users/login', async (req, res) => {
   const { email, password } = req.body;
   const user = await User.findOne({ email });
@@ -245,13 +249,13 @@ app.post('/api/users/login', async (req, res) => {
   }
 });
 
-// @desc    Get user's balance
-// @route   POST /api/users/get-balance
-// @access  Private
+// @desc    Get user's balance
+// @route   POST /api/users/get-balance
+// @access  Private
 app.post('/api/users/get-balance', protect, async (req, res) => {
   try {
     // The frontend sends the userId in the body, so we read it from there.
-    const { userId } = req.body; 
+    const { userId } = req.body;
     
     // Ensure the authenticated user is requesting their own balance
     if (req.user._id.toString() !== userId) {
@@ -274,9 +278,9 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
 });
 
 
-// @desc    Get all users (Admin only)
-// @route   GET /api/users
-// @access  Private/Admin
+// @desc    Get all users (Admin only)
+// @route   GET /api/users
+// @access  Private/Admin
 app.get('/api/users', adminProtect, async (req, res) => {
   try {
     const users = await User.find({}).select('-password');
@@ -287,9 +291,9 @@ app.get('/api/users', adminProtect, async (req, res) => {
   }
 });
 
-// @desc    Fund a user's wallet (Admin only)
-// @route   POST /api/users/fund
-// @access  Private/Admin
+// @desc    Fund a user's wallet (Admin only)
+// @route   POST /api/users/fund
+// @access  Private/Admin
 app.post('/api/users/fund', adminProtect, async (req, res) => {
   const { userId, amount } = req.body;
   if (!userId || !amount || amount <= 0) {
@@ -335,9 +339,9 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
 });
 
 
-// @desc    Get user's transactions
-// @route   GET /api/transactions
-// @access  Private
+// @desc    Get user's transactions
+// @route   GET /api/transactions
+// @access  Private
 // Corrected to use a query parameter (?userId=...) to match the frontend
 app.get('/api/transactions', protect, async (req, res) => {
   try {
@@ -362,9 +366,9 @@ app.get('/api/transactions', protect, async (req, res) => {
   }
 });
 
-// @desc    Get all transactions (Admin only)
-// @route   GET /api/transactions/all
-// @access  Private/Admin
+// @desc    Get all transactions (Admin only)
+// @route   GET /api/transactions/all
+// @access  Private/Admin
 // Renamed the route to prevent conflicts with the user's transaction endpoint
 app.get('/api/transactions/all', adminProtect, async (req, res) => {
   try {
@@ -377,9 +381,9 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
 });
 
 
-// @desc    Verify smartcard number
-// @route   POST /api/vtpass/validate-smartcard
-// @access  Private
+// @desc    Verify smartcard number
+// @route   POST /api/vtpass/validate-smartcard
+// @access  Private
 app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
   console.log('Received smartcard verification request.');
   console.log('Request Body:', req.body);
@@ -418,9 +422,9 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
 });
 
 
-// @desc    Pay for Cable TV subscription
-// @route   POST /api/vtpass/tv/purchase
-// @access  Private
+// @desc    Pay for Cable TV subscription
+// @route   POST /api/vtpass/tv/purchase
+// @access  Private
 app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
   // Log incoming request for TV purchase
   console.log('Received TV purchase request.');
@@ -499,9 +503,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
 });
 
 
-// @desc    Purchase airtime
-// @route   POST /api/vtpass/airtime/purchase
-// @access  Private
+// @desc    Purchase airtime
+// @route   POST /api/vtpass/airtime/purchase
+// @access  Private
 app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
   console.log('Received airtime purchase request.');
   console.log('Request Body:', req.body);
@@ -573,9 +577,9 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
 });
 
 
-// @desc    Purchase data
-// @route   POST /api/vtpass/data/purchase
-// @access  Private
+// @desc    Purchase data
+// @route   POST /api/vtpass/data/purchase
+// @access  Private
 app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
   const { userId, network, phone, variationCode, amount } = req.body;
   const serviceID = network.toLowerCase();
@@ -640,9 +644,9 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
 });
 
 
-// @desc    Get user's notifications
-// @route   GET /api/notifications
-// @access  Private
+// @desc    Get user's notifications
+// @route   GET /api/notifications
+// @access  Private
 // Corrected to use a query parameter (?userId=...) to match the frontend
 app.get('/api/notifications', protect, async (req, res) => {
   try {
