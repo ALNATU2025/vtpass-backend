@@ -100,13 +100,18 @@ const protect = async (req, res, next) => {
 
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
-  // To temporarily allow all authenticated users to access admin routes,
-  // we bypass the isAdmin check and simply proceed to the next middleware.
-  // The 'protect' middleware has already ensured the user is authenticated.
+  // First, ensure the user is authenticated using the 'protect' middleware.
   await protect(req, res, () => {
-    next();
+    // Second, check if the authenticated user has admin privileges.
+    if (req.user && req.user.isAdmin) {
+      next(); // Proceed to the next middleware/route handler.
+    } else {
+      // If the user is not an admin, send a 403 Forbidden response.
+      res.status(403).json({ success: false, message: 'Access Denied: You are not an administrator.' });
+    }
   });
 };
+
 
 // VTPass API Helper
 const vtpassConfig = {
