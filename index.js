@@ -121,10 +121,17 @@ const protect = async (req, res, next) => {
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, async () => {
-    if (!req.user.isAdmin) {
-      return res.status(403).json({ success: false, message: 'Admin access only' });
+    if (req.user.isAdmin) {
+      return next();
     }
-    next();
+    
+    // Get the specific admin user ID from environment variable
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID;
+    if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
+      return next();
+    }
+    
+    return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
 
