@@ -16,6 +16,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   password: { type: String, required: true },
   walletBalance: { type: Number, default: 0 },
+  commissionBalance: { type: Number, default: 0 }, // Added commission balance field
   isAdmin: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   virtualAccount: {
@@ -35,6 +36,7 @@ const transactionSchema = new mongoose.Schema({
   balanceBefore: { type: Number, required: true },
   balanceAfter: { type: Number, required: true },
   reference: { type: String, required: true, unique: true },
+  isCommission: { type: Boolean, default: false }, // Added to identify commission transactions
 }, { timestamps: true });
 
 const notificationSchema = new mongoose.Schema({
@@ -58,6 +60,7 @@ const settingsSchema = new mongoose.Schema({
   minTransferAmount: { type: Number, default: 100 },
   maxTransferAmount: { type: Number, default: 1000000 },
   vtpassCommission: { type: Number, default: 0.05 },
+  commissionRate: { type: Number, default: 0.02 }, // Added default commission rate
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
@@ -81,6 +84,7 @@ connectDB();
 const app = express();
 app.use(express.json());
 app.use(cors());
+
 const PORT = process.env.PORT || 5000;
 
 // JWT Token Generation
@@ -167,7 +171,7 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 };
 
 // Transaction Helper Function
-const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session) => {
+const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false) => {
   const newTransaction = new Transaction({
     userId,
     type,
@@ -177,9 +181,48 @@ const createTransaction = async (userId, amount, type, status, description, bala
     balanceBefore,
     balanceAfter,
     reference: uuidv4(),
+    isCommission
   });
   await newTransaction.save({ session });
   return newTransaction;
+};
+
+// Commission Helper Function - Calculate and add commission
+const calculateAndAddCommission = async (userId, amount, session) => {
+  try {
+    // Get settings to get commission rate
+    const settings = await Settings.findOne().session(session);
+    const commissionRate = settings ? settings.commissionRate : 0.02; // Default 2%
+    
+    const commissionAmount = amount * commissionRate;
+    
+    // Update user's commission balance
+    const user = await User.findById(userId).session(session);
+    if (user) {
+      user.commissionBalance += commissionAmount;
+      await user.save({ session });
+      
+      // Create a commission transaction record
+      await createTransaction(
+        userId,
+        commissionAmount,
+        'credit',
+        'successful',
+        `Commission earned from transaction`,
+        user.commissionBalance - commissionAmount,
+        user.commissionBalance,
+        session,
+        true // isCommission = true
+      );
+      
+      return commissionAmount;
+    }
+    
+    return 0;
+  } catch (error) {
+    console.error('Error calculating commission:', error);
+    return 0;
+  }
 };
 
 // Create default settings if they don't exist
@@ -230,6 +273,7 @@ app.post('/api/users/register', async (req, res) => {
         phone: user.phone,
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance, // Added commission balance
       },
       token,
     });
@@ -259,6 +303,7 @@ app.post('/api/users/login', async (req, res) => {
         phone: user.phone,
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance, // Added commission balance
       },
       token,
     });
@@ -291,6 +336,118 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
   } catch (error) {
       console.error('Error fetching balance:', error);
       res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get user's commission balance
+// @route   POST /api/users/get-commission-balance
+// @access  Private
+app.post('/api/users/get-commission-balance', protect, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    // Ensure the authenticated user is requesting their own commission balance
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to commission balance' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    res.json({
+      success: true,
+      commissionBalance: user.commissionBalance
+    });
+  } catch (error) {
+      console.error('Error fetching commission balance:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Withdraw commission to wallet
+// @route   POST /api/users/withdraw-commission
+// @access  Private
+app.post('/api/users/withdraw-commission', protect, async (req, res) => {
+  const { userId, amount } = req.body;
+  
+  if (!userId || !amount || amount <= 0) {
+    return res.status(400).json({ success: false, message: 'User ID and a positive amount are required' });
+  }
+  
+  // Users can only withdraw from their own commission balance
+  if (req.user._id.toString() !== userId) {
+    return res.status(403).json({ success: false, message: 'You can only withdraw from your own commission balance' });
+  }
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if user has enough commission balance
+    if (user.commissionBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'Insufficient commission balance' });
+    }
+    
+    // Update commission balance
+    const commissionBalanceBefore = user.commissionBalance;
+    user.commissionBalance -= amount;
+    const commissionBalanceAfter = user.commissionBalance;
+    
+    // Update wallet balance
+    const walletBalanceBefore = user.walletBalance;
+    user.walletBalance += amount;
+    const walletBalanceAfter = user.walletBalance;
+    
+    await user.save({ session });
+    
+    // Create commission debit transaction
+    await createTransaction(
+      userId,
+      amount,
+      'debit',
+      'successful',
+      `Commission withdrawal to wallet`,
+      commissionBalanceBefore,
+      commissionBalanceAfter,
+      session,
+      true // isCommission = true
+    );
+    
+    // Create wallet credit transaction
+    await createTransaction(
+      userId,
+      amount,
+      'credit',
+      'successful',
+      `Commission withdrawal from commission balance`,
+      walletBalanceBefore,
+      walletBalanceAfter,
+      session,
+      false // isCommission = false
+    );
+    
+    await session.commitTransaction();
+    
+    res.json({ 
+      success: true, 
+      message: `Commission withdrawal of ${amount} to wallet successful`,
+      newCommissionBalance: commissionBalanceAfter,
+      newWalletBalance: walletBalanceAfter
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error withdrawing commission:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  } finally {
+    session.endSession();
   }
 });
 
@@ -411,7 +568,7 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res)
 app.patch('/api/users/:userId', protect, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { fullName, email, phone, walletBalance, isActive, isAdmin } = req.body;
+    const { fullName, email, phone, walletBalance, commissionBalance, isActive, isAdmin } = req.body;
     
     // Users can only update their own profile unless they're admins
     if (req.user._id.toString() !== userId && !req.user.isAdmin) {
@@ -425,7 +582,7 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     
     // Only admins can update certain fields
     if (!req.user.isAdmin) {
-      if (walletBalance !== undefined || isActive !== undefined || isAdmin !== undefined) {
+      if (walletBalance !== undefined || commissionBalance !== undefined || isActive !== undefined || isAdmin !== undefined) {
         return res.status(403).json({ success: false, message: 'You are not authorized to update these fields' });
       }
     }
@@ -442,6 +599,7 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     }
     if (phone !== undefined) user.phone = phone;
     if (walletBalance !== undefined && req.user.isAdmin) user.walletBalance = walletBalance;
+    if (commissionBalance !== undefined && req.user.isAdmin) user.commissionBalance = commissionBalance;
     if (isActive !== undefined && req.user.isAdmin) user.isActive = isActive;
     if (isAdmin !== undefined && req.user.isAdmin) user.isAdmin = isAdmin;
     
@@ -456,6 +614,7 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
         email: user.email,
         phone: user.phone,
         walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
         isActive: user.isActive,
         isAdmin: user.isAdmin
       }
@@ -640,6 +799,11 @@ app.post('/api/transfer', protect, async (req, res) => {
       session
     );
     
+    // Calculate commission for the receiver (if they are a different user)
+    if (sender._id.toString() !== receiver._id.toString()) {
+      await calculateAndAddCommission(receiver._id, amount, session);
+    }
+    
     await session.commitTransaction();
     
     res.json({ 
@@ -675,8 +839,32 @@ app.get('/api/transactions', protect, async (req, res) => {
       transactions
     });
   } catch (error) {
-      console.error('Error fetching transactions:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get user's commission transactions
+// @route   GET /api/commission-transactions
+// @access  Private
+app.get('/api/commission-transactions', protect, async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
+    }
+    // Ensure the authenticated user is requesting their own commission transactions
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    const commissionTransactions = await Transaction.find({ userId, isCommission: true }).sort({ createdAt: -1 });
+    res.json({
+      success: true,
+      commissionTransactions
+    });
+  } catch (error) {
+    console.error('Error fetching commission transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -688,8 +876,8 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
     const transactions = await Transaction.find({}).sort({ createdAt: -1 }).populate('userId', 'fullName email');
     res.json({ success: true, transactions });
   } catch (error) {
-      console.error('Error fetching all transactions:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('Error fetching all transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -899,7 +1087,7 @@ app.get('/api/settings', async (req, res) => {
 // @access  Private/Admin
 app.post('/api/settings', adminProtect, async (req, res) => {
   try {
-    const { appVersion, maintenanceMode, minTransferAmount, maxTransferAmount, vtpassCommission } = req.body;
+    const { appVersion, maintenanceMode, minTransferAmount, maxTransferAmount, vtpassCommission, commissionRate } = req.body;
     
     let settings = await Settings.findOne();
     if (!settings) {
@@ -911,6 +1099,7 @@ app.post('/api/settings', adminProtect, async (req, res) => {
     if (minTransferAmount !== undefined) settings.minTransferAmount = minTransferAmount;
     if (maxTransferAmount !== undefined) settings.maxTransferAmount = maxTransferAmount;
     if (vtpassCommission !== undefined) settings.vtpassCommission = vtpassCommission;
+    if (commissionRate !== undefined) settings.commissionRate = commissionRate;
     
     await settings.save();
     
@@ -926,7 +1115,6 @@ app.post('/api/settings', adminProtect, async (req, res) => {
 });
 
 // VTPass endpoints remain unchanged...
-
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
 // @access  Private
@@ -960,7 +1148,7 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
     }
   } catch (error) {
       console.error('Error verifying smartcard:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -1006,6 +1194,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
+      
+      // Calculate and add commission for this transaction
+      await calculateAndAddCommission(userId, amount, session);
     } else {
       // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
@@ -1030,9 +1221,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       status: newTransaction.status,
     });
   } catch (error) {
-      await session.abortTransaction();
-      console.error('Error in TV payment:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    await session.abortTransaction();
+    console.error('Error in TV payment:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
@@ -1074,6 +1265,9 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
+      
+      // Calculate and add commission for this transaction
+      await calculateAndAddCommission(userId, amount, session);
     } else {
       // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
@@ -1098,9 +1292,9 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
       newBalance: newBalance,
     });
   } catch (error) {
-      await session.abortTransaction();
-      console.error('Error in airtime purchase:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    await session.abortTransaction();
+    console.error('Error in airtime purchase:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
@@ -1136,6 +1330,9 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
+      
+      // Calculate and add commission for this transaction
+      await calculateAndAddCommission(userId, amount, session);
     } else {
       // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
@@ -1160,9 +1357,9 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
       newBalance: newBalance,
     });
   } catch (error) {
-      await session.abortTransaction();
-      console.error('Error in data purchase:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    await session.abortTransaction();
+    console.error('Error in data purchase:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
