@@ -79,6 +79,7 @@ const connectDB = async () => {
     process.exit(1);
   }
 };
+
 connectDB();
 
 const app = express();
@@ -237,10 +238,10 @@ const initializeSettings = async () => {
     console.error('Error initializing settings:', error);
   }
 };
+
 initializeSettings();
 
 // --- API Routes ---
-
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -1359,6 +1360,127 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     console.error('Error in data purchase:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  } finally {
+    session.endSession();
+  }
+});
+
+// @desc    Verify electricity meter number
+// @route   POST /api/vtpass/validate-electricity
+// @access  Private
+app.post('/api/vtpass/validate-electricity', protect, async (req, res) => {
+  console.log('Received electricity meter verification request.');
+  console.log('Request Body:', req.body);
+  
+  const { serviceID, billersCode } = req.body;
+  
+  if (!serviceID || !billersCode) {
+    return res.status(400).json({ success: false, message: 'Service ID and meter number are required.' });
+  }
+  
+  try {
+    const vtpassResult = await callVtpassApi('/merchant-verify', {
+      serviceID,
+      billersCode,
+    });
+    
+    console.log('VTPass Electricity Verification Response:', JSON.stringify(vtpassResult, null, 2));
+    
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      res.json({
+        success: true,
+        message: 'Electricity meter verified successfully.',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Electricity meter verification failed.',
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('Error verifying electricity meter:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Pay for electricity
+// @route   POST /api/vtpass/electricity/purchase
+// @access  Private
+app.post('/api/vtpass/electricity/purchase', protect, async (req, res) => {
+  console.log('Received electricity purchase request.');
+  console.log('Request Body:', req.body);
+  
+  const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
+  const reference = uuidv4();
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    if (user.walletBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    }
+    
+    const vtpassResult = await callVtpassApi('/pay', {
+      serviceID,
+      billersCode,
+      variation_code: variationCode,
+      amount,
+      phone,
+      request_id: reference,
+    });
+    
+    console.log('VTPass Response for Electricity Purchase:', JSON.stringify(vtpassResult, null, 2));
+    
+    const balanceBefore = user.walletBalance;
+    let transactionStatus = 'failed';
+    let newBalance = balanceBefore;
+    
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
+      
+      // Calculate and add commission for this transaction
+      await calculateAndAddCommission(userId, amount, session);
+    } else {
+      await session.abortTransaction();
+      return res.status(vtpassResult.status || 400).json(vtpassResult);
+    }
+    
+    const newTransaction = await createTransaction(
+      userId,
+      amount,
+      'debit',
+      transactionStatus,
+      `${serviceID} Electricity payment for meter ${billersCode}`,
+      balanceBefore,
+      newBalance,
+      session
+    );
+    
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: `Electricity payment request received. Status: ${newTransaction.status}.`,
+      transactionId: newTransaction._id,
+      newBalance: newBalance,
+      status: newTransaction.status,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error in electricity payment:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
