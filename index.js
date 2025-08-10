@@ -8,7 +8,6 @@ const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const dotenv = require('dotenv');
 dotenv.config();
-
 // Mongoose Models
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
@@ -16,7 +15,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   password: { type: String, required: true },
   walletBalance: { type: Number, default: 0 },
-  commissionBalance: { type: Number, default: 0 }, // Added commission balance field
+  commissionBalance: { type: Number, default: 0 },
   isAdmin: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   virtualAccount: {
@@ -26,7 +25,6 @@ const userSchema = new mongoose.Schema({
     accountName: { type: String },
   },
 }, { timestamps: true });
-
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: { type: String, required: true, enum: ['credit', 'debit'] },
@@ -36,16 +34,14 @@ const transactionSchema = new mongoose.Schema({
   balanceBefore: { type: Number, required: true },
   balanceAfter: { type: Number, required: true },
   reference: { type: String, required: true, unique: true },
-  isCommission: { type: Boolean, default: false }, // Added to identify commission transactions
+  isCommission: { type: Boolean, default: false },
 }, { timestamps: true });
-
 const notificationSchema = new mongoose.Schema({
   recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
   title: { type: String, required: true },
   message: { type: String, required: true },
   isRead: { type: Boolean, default: false },
 }, { timestamps: true });
-
 const beneficiarySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
@@ -53,22 +49,52 @@ const beneficiarySchema = new mongoose.Schema({
   value: { type: String, required: true },
   network: { type: String },
 }, { timestamps: true });
-
+// Updated settings schema to match frontend expectations
 const settingsSchema = new mongoose.Schema({
+  // Existing fields
   appVersion: { type: String, default: '1.0.0' },
   maintenanceMode: { type: Boolean, default: false },
-  minTransferAmount: { type: Number, default: 100 },
-  maxTransferAmount: { type: Number, default: 1000000 },
+  minTransactionAmount: { type: Number, default: 100 }, // Renamed from minTransferAmount
+  maxTransactionAmount: { type: Number, default: 1000000 }, // Renamed from maxTransferAmount
   vtpassCommission: { type: Number, default: 0.05 },
-  commissionRate: { type: Number, default: 0.02 }, // Added default commission rate
+  commissionRate: { type: Number, default: 0.02 },
+  
+  // Service Availability - New fields
+  airtimeEnabled: { type: Boolean, default: true },
+  dataEnabled: { type: Boolean, default: true },
+  cableTvEnabled: { type: Boolean, default: true },
+  electricityEnabled: { type: Boolean, default: true },
+  transferEnabled: { type: Boolean, default: true },
+  
+  // Commission/Fee Management - New fields
+  airtimeCommission: { type: Number, default: 1.5 },
+  dataCommission: { type: Number, default: 1.0 },
+  transferFee: { type: Number, default: 50.0 },
+  isTransferFeePercentage: { type: Boolean, default: false },
+  
+  // User Management Defaults - New fields
+  newUserDefaultWalletBalance: { type: Number, default: 0.0 },
+  
+  // Notification Settings - New fields
+  emailNotificationsEnabled: { type: Boolean, default: true },
+  pushNotificationsEnabled: { type: Boolean, default: true },
+  smsNotificationsEnabled: { type: Boolean, default: false },
+  notificationMessage: { type: String, default: 'System maintenance scheduled' },
+  
+  // Security Settings - New fields
+  twoFactorAuthRequired: { type: Boolean, default: false },
+  autoLogoutEnabled: { type: Boolean, default: true },
+  sessionTimeout: { type: Number, default: 30 },
+  
+  // API Rate Limiting - New fields
+  apiRateLimit: { type: Number, default: 100 },
+  apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
-
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
-
 // Database Connection
 const connectDB = async () => {
   try {
@@ -79,20 +105,15 @@ const connectDB = async () => {
     process.exit(1);
   }
 };
-
 connectDB();
-
 const app = express();
 app.use(express.json());
 app.use(cors());
-
 const PORT = process.env.PORT || 5000;
-
 // JWT Token Generation
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
-
 // Middleware to protect routes with JWT
 const protect = async (req, res, next) => {
   let token;
@@ -117,7 +138,6 @@ const protect = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Not authorized, no token' });
   }
 };
-
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, async () => {
@@ -126,7 +146,7 @@ const adminProtect = async (req, res, next) => {
     }
     
     // Get the specific admin user ID from environment variable
-    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID;
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "68816c3df224eb337f84caaf";
     if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
       return next();
     }
@@ -134,14 +154,12 @@ const adminProtect = async (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
-
 // VTPass API Helper
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
-
 const callVtpassApi = async (endpoint, data, headers = {}) => {
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
@@ -154,7 +172,6 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
       timeout: 15000
     });
     console.log(`VTPass API call to ${endpoint} successful.`);
-    // Log the full VTPass response data for debugging purposes
     console.log('VTPass API Response Data:', JSON.stringify(response.data, null, 2));
     return { success: true, data: response.data };
   } catch (error) {
@@ -177,7 +194,6 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
     }
   }
 };
-
 // Transaction Helper Function
 const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false) => {
   const newTransaction = new Transaction({
@@ -194,23 +210,19 @@ const createTransaction = async (userId, amount, type, status, description, bala
   await newTransaction.save({ session });
   return newTransaction;
 };
-
-// Commission Helper Function - Calculate and add commission
+// Commission Helper Function
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
-    // Get settings to get commission rate
     const settings = await Settings.findOne().session(session);
-    const commissionRate = settings ? settings.commissionRate : 0.02; // Default 2%
+    const commissionRate = settings ? settings.commissionRate : 0.02;
     
     const commissionAmount = amount * commissionRate;
     
-    // Update user's commission balance
     const user = await User.findById(userId).session(session);
     if (user) {
       user.commissionBalance += commissionAmount;
       await user.save({ session });
       
-      // Create a commission transaction record
       await createTransaction(
         userId,
         commissionAmount,
@@ -220,7 +232,7 @@ const calculateAndAddCommission = async (userId, amount, session) => {
         user.commissionBalance - commissionAmount,
         user.commissionBalance,
         session,
-        true // isCommission = true
+        true
       );
       
       return commissionAmount;
@@ -232,7 +244,6 @@ const calculateAndAddCommission = async (userId, amount, session) => {
     return 0;
   }
 };
-
 // Create default settings if they don't exist
 const initializeSettings = async () => {
   try {
@@ -245,9 +256,7 @@ const initializeSettings = async () => {
     console.error('Error initializing settings:', error);
   }
 };
-
 initializeSettings();
-
 // --- API Routes ---
 // @desc    Register a new user
 // @route   POST /api/users/register
@@ -281,7 +290,7 @@ app.post('/api/users/register', async (req, res) => {
         phone: user.phone,
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance, // Added commission balance
+        commissionBalance: user.commissionBalance,
       },
       token,
     });
@@ -289,7 +298,6 @@ app.post('/api/users/register', async (req, res) => {
     res.status(400).json({ success: false, message: 'Invalid user data' });
   }
 });
-
 // @desc    Authenticate a user
 // @route   POST /api/users/login
 // @access  Public
@@ -311,7 +319,7 @@ app.post('/api/users/login', async (req, res) => {
         phone: user.phone,
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance, // Added commission balance
+        commissionBalance: user.commissionBalance,
       },
       token,
     });
@@ -319,16 +327,13 @@ app.post('/api/users/login', async (req, res) => {
     res.status(400).json({ success: false, message: 'Invalid credentials' });
   }
 });
-
 // @desc    Get user's balance
 // @route   POST /api/users/get-balance
 // @access  Private
 app.post('/api/users/get-balance', protect, async (req, res) => {
   try {
-    // The frontend sends the userId in the body, so we read it from there.
     const { userId } = req.body;
     
-    // Ensure the authenticated user is requesting their own balance
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access to balance' });
     }
@@ -346,7 +351,6 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's commission balance
 // @route   POST /api/users/get-commission-balance
 // @access  Private
@@ -354,7 +358,6 @@ app.post('/api/users/get-commission-balance', protect, async (req, res) => {
   try {
     const { userId } = req.body;
     
-    // Ensure the authenticated user is requesting their own commission balance
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access to commission balance' });
     }
@@ -372,7 +375,6 @@ app.post('/api/users/get-commission-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Withdraw commission to wallet
 // @route   POST /api/users/withdraw-commission
 // @access  Private
@@ -383,7 +385,6 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
     return res.status(400).json({ success: false, message: 'User ID and a positive amount are required' });
   }
   
-  // Users can only withdraw from their own commission balance
   if (req.user._id.toString() !== userId) {
     return res.status(403).json({ success: false, message: 'You can only withdraw from your own commission balance' });
   }
@@ -398,25 +399,21 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    // Check if user has enough commission balance
     if (user.commissionBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Insufficient commission balance' });
     }
     
-    // Update commission balance
     const commissionBalanceBefore = user.commissionBalance;
     user.commissionBalance -= amount;
     const commissionBalanceAfter = user.commissionBalance;
     
-    // Update wallet balance
     const walletBalanceBefore = user.walletBalance;
     user.walletBalance += amount;
     const walletBalanceAfter = user.walletBalance;
     
     await user.save({ session });
     
-    // Create commission debit transaction
     await createTransaction(
       userId,
       amount,
@@ -426,10 +423,9 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
       commissionBalanceBefore,
       commissionBalanceAfter,
       session,
-      true // isCommission = true
+      true
     );
     
-    // Create wallet credit transaction
     await createTransaction(
       userId,
       amount,
@@ -439,7 +435,7 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
       walletBalanceBefore,
       walletBalanceAfter,
       session,
-      false // isCommission = false
+      false
     );
     
     await session.commitTransaction();
@@ -458,7 +454,6 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Get a specific user
 // @route   GET /api/users/:userId
 // @access  Private
@@ -466,7 +461,6 @@ app.get('/api/users/:userId', protect, async (req, res) => {
   try {
     const { userId } = req.params;
     
-    // Users can only access their own data unless they're admins
     if (req.user._id.toString() !== userId && !req.user.isAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -482,7 +476,6 @@ app.get('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
 // @access  Private/Admin
@@ -495,7 +488,6 @@ app.get('/api/users', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Toggle user active status (Admin only)
 // @route   PUT /api/users/toggle-status/:userId
 // @access  Private/Admin
@@ -509,7 +501,6 @@ app.put('/api/users/toggle-status/:userId', adminProtect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    // Prevent admins from deactivating themselves
     if (req.user._id.toString() === userId && !isActive) {
       return res.status(400).json({ success: false, message: 'You cannot deactivate your own account' });
     }
@@ -532,7 +523,6 @@ app.put('/api/users/toggle-status/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Toggle user admin status (Admin only)
 // @route   PUT /api/users/toggle-admin-status/:userId
 // @access  Private/Admin
@@ -546,7 +536,6 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res)
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    // Prevent admins from removing their own admin status
     if (req.user._id.toString() === userId && !isAdmin) {
       return res.status(400).json({ success: false, message: 'You cannot remove your own admin status' });
     }
@@ -569,7 +558,6 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res)
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Update user profile
 // @route   PATCH /api/users/:userId
 // @access  Private
@@ -578,7 +566,6 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     const { userId } = req.params;
     const { fullName, email, phone, walletBalance, commissionBalance, isActive, isAdmin } = req.body;
     
-    // Users can only update their own profile unless they're admins
     if (req.user._id.toString() !== userId && !req.user.isAdmin) {
       return res.status(403).json({ success: false, message: 'You can only update your own profile' });
     }
@@ -588,17 +575,14 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    // Only admins can update certain fields
     if (!req.user.isAdmin) {
       if (walletBalance !== undefined || commissionBalance !== undefined || isActive !== undefined || isAdmin !== undefined) {
         return res.status(403).json({ success: false, message: 'You are not authorized to update these fields' });
       }
     }
     
-    // Update fields if provided
     if (fullName !== undefined) user.fullName = fullName;
     if (email !== undefined) {
-      // Check if email is already in use by another user
       const existingUser = await User.findOne({ email, _id: { $ne: userId } });
       if (existingUser) {
         return res.status(400).json({ success: false, message: 'Email is already in use by another user' });
@@ -632,7 +616,6 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Change user password
 // @route   POST /api/users/change-password
 // @access  Private
@@ -640,7 +623,6 @@ app.post('/api/users/change-password', protect, async (req, res) => {
   try {
     const { userId, currentPassword, newPassword } = req.body;
     
-    // Users can only change their own password
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'You can only change your own password' });
     }
@@ -650,17 +632,14 @@ app.post('/api/users/change-password', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
-    // Verify current password
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
       return res.status(400).json({ success: false, message: 'Current password is incorrect' });
     }
     
-    // Hash new password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
     
-    // Update password
     user.password = hashedPassword;
     await user.save();
     
@@ -670,7 +649,6 @@ app.post('/api/users/change-password', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
@@ -711,7 +689,6 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
@@ -722,7 +699,6 @@ app.post('/api/transfer', protect, async (req, res) => {
     return res.status(400).json({ success: false, message: 'All fields are required and amount must be positive' });
   }
   
-  // Users can only transfer from their own account
   if (req.user._id.toString() !== senderId) {
     return res.status(403).json({ success: false, message: 'You can only transfer from your own account' });
   }
@@ -731,36 +707,32 @@ app.post('/api/transfer', protect, async (req, res) => {
   session.startTransaction();
   
   try {
-    // Get sender
     const sender = await User.findById(senderId).session(session);
     if (!sender) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'Sender not found' });
     }
     
-    // Check if sender has enough balance
     if (sender.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Insufficient balance' });
     }
     
-    // Get receiver
     const receiver = await User.findOne({ email: receiverEmail }).session(session);
     if (!receiver) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'Receiver not found' });
     }
     
-    // Check if sender and receiver are the same
     if (sender._id.toString() === receiver._id.toString()) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
     }
     
-    // Get settings to check transfer limits
+    // Updated to use new field names
     const settings = await Settings.findOne().session(session);
-    const minAmount = settings ? settings.minTransferAmount : 100;
-    const maxAmount = settings ? settings.maxTransferAmount : 1000000;
+    const minAmount = settings ? settings.minTransactionAmount : 100;
+    const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
     
     if (amount < minAmount) {
       await session.abortTransaction();
@@ -772,19 +744,16 @@ app.post('/api/transfer', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: `Transfer amount cannot exceed ${maxAmount}` });
     }
     
-    // Update sender balance
     const senderBalanceBefore = sender.walletBalance;
     sender.walletBalance -= amount;
     const senderBalanceAfter = sender.walletBalance;
     await sender.save({ session });
     
-    // Update receiver balance
     const receiverBalanceBefore = receiver.walletBalance;
     receiver.walletBalance += amount;
     const receiverBalanceAfter = receiver.walletBalance;
     await receiver.save({ session });
     
-    // Create transaction records
     await createTransaction(
       senderId,
       amount,
@@ -807,7 +776,6 @@ app.post('/api/transfer', protect, async (req, res) => {
       session
     );
     
-    // Calculate commission for the receiver (if they are a different user)
     if (sender._id.toString() !== receiver._id.toString()) {
       await calculateAndAddCommission(receiver._id, amount, session);
     }
@@ -827,7 +795,6 @@ app.post('/api/transfer', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Get user's transactions
 // @route   GET /api/transactions
 // @access  Private
@@ -837,7 +804,6 @@ app.get('/api/transactions', protect, async (req, res) => {
     if (!userId) {
       return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
     }
-    // Ensure the authenticated user is requesting their own transactions
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
@@ -851,7 +817,6 @@ app.get('/api/transactions', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's commission transactions
 // @route   GET /api/commission-transactions
 // @access  Private
@@ -861,7 +826,6 @@ app.get('/api/commission-transactions', protect, async (req, res) => {
     if (!userId) {
       return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
     }
-    // Ensure the authenticated user is requesting their own commission transactions
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
@@ -875,7 +839,6 @@ app.get('/api/commission-transactions', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
@@ -888,7 +851,29 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
+// @desc    Get a specific transaction by ID
+// @route   GET /api/transactions/:transactionId
+// @access  Private
+app.get('/api/transactions/:transactionId', protect, async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await Transaction.findById(transactionId);
+    
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+    
+    // Check if the user has permission to view this transaction
+    if (req.user._id.toString() !== transaction.userId.toString() && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    res.json({ success: true, transaction });
+  } catch (error) {
+    console.error('Error fetching transaction:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 // @desc    Get user's beneficiaries
 // @route   GET /api/beneficiaries/:userId
 // @access  Private
@@ -896,7 +881,6 @@ app.get('/api/beneficiaries/:userId', protect, async (req, res) => {
   try {
     const { userId } = req.params;
     
-    // Users can only access their own beneficiaries
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -908,7 +892,6 @@ app.get('/api/beneficiaries/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Add a beneficiary
 // @route   POST /api/beneficiaries
 // @access  Private
@@ -916,12 +899,10 @@ app.post('/api/beneficiaries', protect, async (req, res) => {
   try {
     const { userId, name, type, value, network } = req.body;
     
-    // Users can only add beneficiaries to their own account
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
     
-    // Check if beneficiary already exists
     const existingBeneficiary = await Beneficiary.findOne({ userId, value });
     if (existingBeneficiary) {
       return res.status(400).json({ success: false, message: 'Beneficiary already exists' });
@@ -945,7 +926,6 @@ app.post('/api/beneficiaries', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Delete a beneficiary
 // @route   DELETE /api/beneficiaries/:id
 // @access  Private
@@ -958,7 +938,6 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Beneficiary not found' });
     }
     
-    // Users can only delete their own beneficiaries
     if (req.user._id.toString() !== beneficiary.userId.toString()) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -971,7 +950,6 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's notifications
 // @route   GET /api/notifications
 // @access  Private
@@ -981,7 +959,6 @@ app.get('/api/notifications', protect, async (req, res) => {
     if (!userId) {
       return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
     }
-    // Ensure the authenticated user is requesting their own notifications
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
@@ -995,7 +972,6 @@ app.get('/api/notifications', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
@@ -1009,7 +985,6 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
     
-    // Users can only mark their own notifications as read
     if (req.user._id.toString() !== userId || notification.recipientId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -1023,7 +998,6 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Send notification (Admin only)
 // @route   POST /api/notifications/send
 // @access  Private/Admin
@@ -1035,9 +1009,7 @@ app.post('/api/notifications/send', adminProtect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title and message are required' });
     }
     
-    // If recipientId is provided, send to specific user, otherwise send to all users
     if (recipientId) {
-      // Verify the recipient exists
       const recipient = await User.findById(recipientId);
       if (!recipient) {
         return res.status(404).json({ success: false, message: 'Recipient not found' });
@@ -1049,10 +1021,8 @@ app.post('/api/notifications/send', adminProtect, async (req, res) => {
         message
       });
     } else {
-      // Get all active users
       const users = await User.find({ isActive: true });
       
-      // Create a notification for each user
       const notifications = users.map(user => ({
         recipientId: user._id,
         title,
@@ -1073,7 +1043,6 @@ app.post('/api/notifications/send', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get app settings
 // @route   GET /api/settings
 // @access  Public
@@ -1089,25 +1058,78 @@ app.get('/api/settings', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Update app settings (Admin only)
 // @route   POST /api/settings
 // @access  Private/Admin
 app.post('/api/settings', adminProtect, async (req, res) => {
   try {
-    const { appVersion, maintenanceMode, minTransferAmount, maxTransferAmount, vtpassCommission, commissionRate } = req.body;
+    const {
+      appVersion,
+      maintenanceMode,
+      minTransactionAmount,
+      maxTransactionAmount,
+      vtpassCommission,
+      commissionRate,
+      // Service Availability
+      airtimeEnabled,
+      dataEnabled,
+      cableTvEnabled,
+      electricityEnabled,
+      transferEnabled,
+      // Commission/Fee Management
+      airtimeCommission,
+      dataCommission,
+      transferFee,
+      isTransferFeePercentage,
+      // User Management Defaults
+      newUserDefaultWalletBalance,
+      // Notification Settings
+      emailNotificationsEnabled,
+      pushNotificationsEnabled,
+      smsNotificationsEnabled,
+      notificationMessage,
+      // Security Settings
+      twoFactorAuthRequired,
+      autoLogoutEnabled,
+      sessionTimeout,
+      // API Rate Limiting
+      apiRateLimit,
+      apiTimeWindow
+    } = req.body;
     
     let settings = await Settings.findOne();
     if (!settings) {
       settings = new Settings();
     }
     
+    // Update existing fields
     if (appVersion !== undefined) settings.appVersion = appVersion;
     if (maintenanceMode !== undefined) settings.maintenanceMode = maintenanceMode;
-    if (minTransferAmount !== undefined) settings.minTransferAmount = minTransferAmount;
-    if (maxTransferAmount !== undefined) settings.maxTransferAmount = maxTransferAmount;
+    if (minTransactionAmount !== undefined) settings.minTransactionAmount = minTransactionAmount;
+    if (maxTransactionAmount !== undefined) settings.maxTransactionAmount = maxTransactionAmount;
     if (vtpassCommission !== undefined) settings.vtpassCommission = vtpassCommission;
     if (commissionRate !== undefined) settings.commissionRate = commissionRate;
+    
+    // Update new fields
+    if (airtimeEnabled !== undefined) settings.airtimeEnabled = airtimeEnabled;
+    if (dataEnabled !== undefined) settings.dataEnabled = dataEnabled;
+    if (cableTvEnabled !== undefined) settings.cableTvEnabled = cableTvEnabled;
+    if (electricityEnabled !== undefined) settings.electricityEnabled = electricityEnabled;
+    if (transferEnabled !== undefined) settings.transferEnabled = transferEnabled;
+    if (airtimeCommission !== undefined) settings.airtimeCommission = airtimeCommission;
+    if (dataCommission !== undefined) settings.dataCommission = dataCommission;
+    if (transferFee !== undefined) settings.transferFee = transferFee;
+    if (isTransferFeePercentage !== undefined) settings.isTransferFeePercentage = isTransferFeePercentage;
+    if (newUserDefaultWalletBalance !== undefined) settings.newUserDefaultWalletBalance = newUserDefaultWalletBalance;
+    if (emailNotificationsEnabled !== undefined) settings.emailNotificationsEnabled = emailNotificationsEnabled;
+    if (pushNotificationsEnabled !== undefined) settings.pushNotificationsEnabled = pushNotificationsEnabled;
+    if (smsNotificationsEnabled !== undefined) settings.smsNotificationsEnabled = smsNotificationsEnabled;
+    if (notificationMessage !== undefined) settings.notificationMessage = notificationMessage;
+    if (twoFactorAuthRequired !== undefined) settings.twoFactorAuthRequired = twoFactorAuthRequired;
+    if (autoLogoutEnabled !== undefined) settings.autoLogoutEnabled = autoLogoutEnabled;
+    if (sessionTimeout !== undefined) settings.sessionTimeout = sessionTimeout;
+    if (apiRateLimit !== undefined) settings.apiRateLimit = apiRateLimit;
+    if (apiTimeWindow !== undefined) settings.apiTimeWindow = apiTimeWindow;
     
     await settings.save();
     
@@ -1121,7 +1143,91 @@ app.post('/api/settings', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
+// @desc    Update app settings (Admin only) - PUT endpoint for REST consistency
+// @route   PUT /api/settings
+// @access  Private/Admin
+app.put('/api/settings', adminProtect, async (req, res) => {
+  try {
+    const {
+      appVersion,
+      maintenanceMode,
+      minTransactionAmount,
+      maxTransactionAmount,
+      vtpassCommission,
+      commissionRate,
+      // Service Availability
+      airtimeEnabled,
+      dataEnabled,
+      cableTvEnabled,
+      electricityEnabled,
+      transferEnabled,
+      // Commission/Fee Management
+      airtimeCommission,
+      dataCommission,
+      transferFee,
+      isTransferFeePercentage,
+      // User Management Defaults
+      newUserDefaultWalletBalance,
+      // Notification Settings
+      emailNotificationsEnabled,
+      pushNotificationsEnabled,
+      smsNotificationsEnabled,
+      notificationMessage,
+      // Security Settings
+      twoFactorAuthRequired,
+      autoLogoutEnabled,
+      sessionTimeout,
+      // API Rate Limiting
+      apiRateLimit,
+      apiTimeWindow
+    } = req.body;
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    // Update existing fields
+    if (appVersion !== undefined) settings.appVersion = appVersion;
+    if (maintenanceMode !== undefined) settings.maintenanceMode = maintenanceMode;
+    if (minTransactionAmount !== undefined) settings.minTransactionAmount = minTransactionAmount;
+    if (maxTransactionAmount !== undefined) settings.maxTransactionAmount = maxTransactionAmount;
+    if (vtpassCommission !== undefined) settings.vtpassCommission = vtpassCommission;
+    if (commissionRate !== undefined) settings.commissionRate = commissionRate;
+    
+    // Update new fields
+    if (airtimeEnabled !== undefined) settings.airtimeEnabled = airtimeEnabled;
+    if (dataEnabled !== undefined) settings.dataEnabled = dataEnabled;
+    if (cableTvEnabled !== undefined) settings.cableTvEnabled = cableTvEnabled;
+    if (electricityEnabled !== undefined) settings.electricityEnabled = electricityEnabled;
+    if (transferEnabled !== undefined) settings.transferEnabled = transferEnabled;
+    if (airtimeCommission !== undefined) settings.airtimeCommission = airtimeCommission;
+    if (dataCommission !== undefined) settings.dataCommission = dataCommission;
+    if (transferFee !== undefined) settings.transferFee = transferFee;
+    if (isTransferFeePercentage !== undefined) settings.isTransferFeePercentage = isTransferFeePercentage;
+    if (newUserDefaultWalletBalance !== undefined) settings.newUserDefaultWalletBalance = newUserDefaultWalletBalance;
+    if (emailNotificationsEnabled !== undefined) settings.emailNotificationsEnabled = emailNotificationsEnabled;
+    if (pushNotificationsEnabled !== undefined) settings.pushNotificationsEnabled = pushNotificationsEnabled;
+    if (smsNotificationsEnabled !== undefined) settings.smsNotificationsEnabled = smsNotificationsEnabled;
+    if (notificationMessage !== undefined) settings.notificationMessage = notificationMessage;
+    if (twoFactorAuthRequired !== undefined) settings.twoFactorAuthRequired = twoFactorAuthRequired;
+    if (autoLogoutEnabled !== undefined) settings.autoLogoutEnabled = autoLogoutEnabled;
+    if (sessionTimeout !== undefined) settings.sessionTimeout = sessionTimeout;
+    if (apiRateLimit !== undefined) settings.apiRateLimit = apiRateLimit;
+    if (apiTimeWindow !== undefined) settings.apiTimeWindow = apiTimeWindow;
+    
+    await settings.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Settings updated successfully',
+      settings
+    });
+  } catch (error) {
+    console.error('Error updating settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 // VTPass endpoints remain unchanged...
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
@@ -1159,12 +1265,10 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
 app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
-  // Log incoming request for TV purchase
   console.log('Received TV purchase request.');
   console.log('Request Body:', req.body);
   
@@ -1191,22 +1295,19 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       request_id: reference,
     });
     
-    // Log the full VTPass response for TV purchase for debugging purposes
     console.log('VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
-    // Corrected check for successful VTPass response
+    
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      // Calculate and add commission for this transaction
       await calculateAndAddCommission(userId, amount, session);
     } else {
-      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
@@ -1236,7 +1337,6 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
@@ -1261,23 +1361,19 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     }
     const vtpassResult = await callVtpassApi('/pay', { serviceID, phone, amount, request_id: reference });
     
-    // Log the full VTPass response data for debugging purposes
     console.log('VTPass Response:', JSON.stringify(vtpassResult, null, 2));
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
     
-    // Corrected check for successful VTPass response
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      // Calculate and add commission for this transaction
       await calculateAndAddCommission(userId, amount, session);
     } else {
-      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
@@ -1307,7 +1403,6 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Purchase data
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
@@ -1332,17 +1427,14 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
     
-    // Corrected check for successful VTPass response
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      // Calculate and add commission for this transaction
       await calculateAndAddCommission(userId, amount, session);
     } else {
-      // Revert transaction if VTPass call failed or response code is not successful
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
@@ -1372,7 +1464,6 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 // @desc    Verify electricity meter number
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
@@ -1412,7 +1503,6 @@ app.post('/api/vtpass/validate-electricity', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Pay for electricity
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
@@ -1458,7 +1548,6 @@ app.post('/api/vtpass/electricity/purchase', protect, async (req, res) => {
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      // Calculate and add commission for this transaction
       await calculateAndAddCommission(userId, amount, session);
     } else {
       await session.abortTransaction();
@@ -1491,6 +1580,73 @@ app.post('/api/vtpass/electricity/purchase', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
+  }
+});
+
+// NEW ENDPOINTS FOR VTPASS SERVICES AND VARIATIONS
+// @desc    Get VTpass services
+// @route   GET /api/vtpass/services
+// @access  Private
+app.get('/api/vtpass/services', protect, async (req, res) => {
+  try {
+    const { serviceID } = req.query;
+    
+    if (!serviceID) {
+      return res.status(400).json({ success: false, message: 'Service ID is required' });
+    }
+    
+    // Call VTpass API to get services
+    const vtpassResult = await callVtpassApi('/services', { serviceID });
+    
+    if (vtpassResult.success) {
+      res.json({
+        success: true,
+        message: 'Services fetched successfully',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(vtpassResult.status || 500).json({
+        success: false,
+        message: 'Failed to fetch services',
+        details: vtpassResult.details || vtpassResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching VTpass services:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get VTpass variations
+// @route   GET /api/vtpass/variations
+// @access  Private
+app.get('/api/vtpass/variations', protect, async (req, res) => {
+  try {
+    const { serviceID } = req.query;
+    
+    if (!serviceID) {
+      return res.status(400).json({ success: false, message: 'Service ID is required' });
+    }
+    
+    // Call VTpass API to get variations
+    const vtpassResult = await callVtpassApi('/variations', { serviceID });
+    
+    if (vtpassResult.success) {
+      res.json({
+        success: true,
+        message: 'Variations fetched successfully',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(vtpassResult.status || 500).json({
+        success: false,
+        message: 'Failed to fetch variations',
+        details: vtpassResult.details || vtpassResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching VTpass variations:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
