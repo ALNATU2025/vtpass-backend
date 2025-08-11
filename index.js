@@ -7,7 +7,32 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
 dotenv.config();
+
+// Security middleware
+const app = express();
+app.use(helmet());
+app.use(mongoSanitize());
+app.use(xss());
+app.use(hpp());
+app.use(express.json());
+app.use(cors());
+
+// Rate limiting for authentication endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
+  message: 'Too many authentication attempts, please try again after 15 minutes'
+});
+app.use('/api/users/login', authLimiter);
+app.use('/api/users/set-transaction-pin', authLimiter);
+app.use('/api/users/change-transaction-pin', authLimiter);
+app.use('/api/users/verify-transaction-pin', authLimiter);
 
 // Mongoose Models
 const userSchema = new mongoose.Schema({
@@ -15,12 +40,17 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   phone: { type: String, required: true },
   password: { type: String, required: true },
-  transactionPin: { type: String }, // Added for transaction PIN
-  biometricEnabled: { type: Boolean, default: false }, // Added for biometric auth
+  transactionPin: { type: String },
+  biometricEnabled: { type: Boolean, default: false },
+  biometricKey: { type: String }, // For storing biometric public key
+  biometricCredentialId: { type: String }, // For storing credential ID
   walletBalance: { type: Number, default: 0 },
   commissionBalance: { type: Number, default: 0 },
   isAdmin: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
+  failedPinAttempts: { type: Number, default: 0 },
+  pinLockedUntil: { type: Date },
+  lastLoginAt: { type: Date },
   virtualAccount: {
     assigned: { type: Boolean, default: false },
     bankName: { type: String },
@@ -28,6 +58,21 @@ const userSchema = new mongoose.Schema({
     accountName: { type: String },
   },
 }, { timestamps: true });
+
+// Add indexes for better performance
+userSchema.index({ email: 1 });
+userSchema.index({ phone: 1 });
+
+// Authentication log schema
+const authLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
+  action: { type: String, required: true }, // 'login', 'pin_attempt', 'biometric_attempt'
+  ipAddress: { type: String, required: true },
+  userAgent: { type: String },
+  success: { type: Boolean, required: true },
+  details: { type: String },
+  timestamp: { type: Date, default: Date.now }
+});
 
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -39,7 +84,7 @@ const transactionSchema = new mongoose.Schema({
   balanceAfter: { type: Number, required: true },
   reference: { type: String, required: true, unique: true },
   isCommission: { type: Boolean, default: false },
-  authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' }, // Added to track auth method
+  authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' },
 }, { timestamps: true });
 
 const notificationSchema = new mongoose.Schema({
@@ -57,46 +102,44 @@ const beneficiarySchema = new mongoose.Schema({
   network: { type: String },
 }, { timestamps: true });
 
-// Updated settings schema to match frontend expectations
 const settingsSchema = new mongoose.Schema({
-  // Existing fields
   appVersion: { type: String, default: '1.0.0' },
   maintenanceMode: { type: Boolean, default: false },
-  minTransactionAmount: { type: Number, default: 100 }, // Renamed from minTransferAmount
-  maxTransactionAmount: { type: Number, default: 1000000 }, // Renamed from maxTransferAmount
+  minTransactionAmount: { type: Number, default: 100 },
+  maxTransactionAmount: { type: Number, default: 1000000 },
   vtpassCommission: { type: Number, default: 0.05 },
   commissionRate: { type: Number, default: 0.02 },
   
-  // Service Availability - New fields
+  // Service Availability
   airtimeEnabled: { type: Boolean, default: true },
   dataEnabled: { type: Boolean, default: true },
   cableTvEnabled: { type: Boolean, default: true },
   electricityEnabled: { type: Boolean, default: true },
   transferEnabled: { type: Boolean, default: true },
   
-  // Commission/Fee Management - New fields
+  // Commission/Fee Management
   airtimeCommission: { type: Number, default: 1.5 },
   dataCommission: { type: Number, default: 1.0 },
   transferFee: { type: Number, default: 50.0 },
   isTransferFeePercentage: { type: Boolean, default: false },
   
-  // User Management Defaults - New fields
+  // User Management Defaults
   newUserDefaultWalletBalance: { type: Number, default: 0.0 },
   
-  // Notification Settings - New fields
+  // Notification Settings
   emailNotificationsEnabled: { type: Boolean, default: true },
   pushNotificationsEnabled: { type: Boolean, default: true },
   smsNotificationsEnabled: { type: Boolean, default: false },
   notificationMessage: { type: String, default: 'System maintenance scheduled' },
   
-  // Security Settings - New fields
+  // Security Settings
   twoFactorAuthRequired: { type: Boolean, default: false },
   autoLogoutEnabled: { type: Boolean, default: true },
   sessionTimeout: { type: Number, default: 30 },
-  transactionPinRequired: { type: Boolean, default: true }, // Added for PIN requirement
-  biometricAuthEnabled: { type: Boolean, default: true }, // Added for biometric option
+  transactionPinRequired: { type: Boolean, default: true },
+  biometricAuthEnabled: { type: Boolean, default: true },
   
-  // API Rate Limiting - New fields
+  // API Rate Limiting
   apiRateLimit: { type: Number, default: 100 },
   apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
@@ -106,6 +149,7 @@ const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
+const AuthLog = mongoose.model('AuthLog', authLogSchema);
 
 // Database Connection
 const connectDB = async () => {
@@ -119,14 +163,27 @@ const connectDB = async () => {
 };
 connectDB();
 
-const app = express();
-app.use(express.json());
-app.use(cors());
 const PORT = process.env.PORT || 5000;
 
 // JWT Token Generation
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+};
+
+// Helper function to log authentication attempts
+const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
+  try {
+    await AuthLog.create({
+      userId,
+      action,
+      ipAddress,
+      userAgent,
+      success,
+      details
+    });
+  } catch (error) {
+    console.error('Error logging auth attempt:', error);
+  }
 };
 
 // Middleware to protect routes with JWT
@@ -161,7 +218,6 @@ const adminProtect = async (req, res, next) => {
       return next();
     }
     
-    // Get the specific admin user ID from environment variable
     const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "689945d4fb65f8f9179e661b";
     if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
       return next();
@@ -171,10 +227,116 @@ const adminProtect = async (req, res, next) => {
   });
 };
 
+// Middleware to verify transaction PIN with rate limiting
+const verifyTransactionPin = async (req, res, next) => {
+  try {
+    const { transactionPin } = req.body;
+    const userId = req.user._id;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if PIN is locked
+    if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+      const remainingTime = Math.ceil((user.pinLockedUntil - new Date()) / 60000);
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked');
+      return res.status(429).json({ 
+        success: false, 
+        message: `Too many failed attempts. Account locked for ${remainingTime} minutes.` 
+      });
+    }
+    
+    // If PIN is not set, return error
+    if (!user.transactionPin) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'PIN not set');
+      return res.status(400).json({ success: false, message: 'Transaction PIN not set' });
+    }
+    
+    // Verify PIN
+    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+    
+    if (isPinMatch) {
+      // Reset failed attempts on successful PIN
+      user.failedPinAttempts = 0;
+      user.pinLockedUntil = null;
+      await user.save();
+      
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN verified');
+      req.authenticationMethod = 'pin';
+      return next();
+    } else {
+      // Increment failed attempts
+      user.failedPinAttempts += 1;
+      
+      // Lock account if too many failed attempts
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+        await user.save();
+        
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
+        return res.status(429).json({ 
+          success: false, 
+          message: 'Too many failed attempts. Account locked for 15 minutes.' 
+        });
+      } else {
+        await user.save();
+        
+        const remainingAttempts = 3 - user.failedPinAttempts;
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, `Invalid PIN, ${remainingAttempts} attempts remaining`);
+        return res.status(400).json({ 
+          success: false, 
+          message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.` 
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Transaction PIN verification error:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+// Middleware to verify biometric authentication
+const verifyBiometricAuth = async (req, res, next) => {
+  try {
+    const { biometricData } = req.body;
+    const userId = req.user._id;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if biometric is enabled
+    if (!user.biometricEnabled) {
+      await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, false, 'Biometric not enabled');
+      return res.status(400).json({ success: false, message: 'Biometric authentication not enabled' });
+    }
+    
+    // In a real implementation, you would verify the biometric data here
+    // This would involve checking the signature against the stored public key
+    // For this example, we'll assume the client has already verified the biometric
+    // and we just need to check that the user has it enabled
+    
+    await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, true, 'Biometric verified');
+    req.authenticationMethod = 'biometric';
+    return next();
+  } catch (error) {
+    console.error('Biometric verification error:', error);
+    await logAuthAttempt(userId, 'biometric_attempt', req.ip, req.get('User-Agent'), false, error.message);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
 // Middleware to verify transaction authentication (PIN or Biometric)
 const verifyTransactionAuth = async (req, res, next) => {
   try {
-    const { transactionPin, useBiometric } = req.body;
+    const { transactionPin, useBiometric, biometricData } = req.body;
     const userId = req.user._id;
     
     // Get user settings
@@ -184,6 +346,7 @@ const verifyTransactionAuth = async (req, res, next) => {
     
     // If PIN is not required globally, skip verification
     if (!pinRequired) {
+      req.authenticationMethod = 'none';
       return next();
     }
     
@@ -204,21 +367,12 @@ const verifyTransactionAuth = async (req, res, next) => {
     
     // If biometric is requested and enabled
     if (useBiometric && hasBiometric && biometricAllowed) {
-      // In a real app, biometric verification happens on the client side
-      // Here we just check if the user has enabled it and the client is requesting to use it
-      req.authenticationMethod = 'biometric';
-      return next();
+      return verifyBiometricAuth(req, res, next);
     }
     
     // If PIN is provided
     if (transactionPin && hasPin) {
-      const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
-      if (isPinMatch) {
-        req.authenticationMethod = 'pin';
-        return next();
-      } else {
-        return res.status(400).json({ success: false, message: 'Invalid transaction PIN' });
-      }
+      return verifyTransactionPin(req, res, next);
     }
     
     // If we reach here, authentication failed
@@ -287,7 +441,7 @@ const createTransaction = async (userId, amount, type, status, description, bala
     balanceAfter,
     reference: uuidv4(),
     isCommission,
-    authenticationMethod // Added authentication method
+    authenticationMethod
   });
   await newTransaction.save({ session });
   return newTransaction;
@@ -316,7 +470,7 @@ const calculateAndAddCommission = async (userId, amount, session) => {
         user.commissionBalance,
         session,
         true,
-        'none' // Commission transactions don't require additional auth
+        'none'
       );
       
       return commissionAmount;
@@ -357,7 +511,7 @@ app.post('/api/users/register', async (req, res) => {
   if (userExists) {
     return res.status(400).json({ success: false, message: 'User already exists' });
   }
-  const salt = await bcrypt.genSalt(10);
+  const salt = await bcrypt.genSalt(12);
   const hashedPassword = await bcrypt.hash(password, salt);
   const user = await User.create({
     fullName,
@@ -378,8 +532,8 @@ app.post('/api/users/register', async (req, res) => {
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
         commissionBalance: user.commissionBalance,
-        transactionPinSet: !!user.transactionPin, // Added to indicate if PIN is set
-        biometricEnabled: user.biometricEnabled, // Added biometric status
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
       },
       token,
     });
@@ -393,30 +547,52 @@ app.post('/api/users/register', async (req, res) => {
 // @access  Public
 app.post('/api/users/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findOne({ email });
-  if (user && (await bcrypt.compare(password, user.password))) {
-    if (!user.isActive) {
-      return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact support.' });
+  const ipAddress = req.ip;
+  const userAgent = req.get('User-Agent');
+  
+  try {
+    const user = await User.findOne({ email });
+    
+    if (user && (await bcrypt.compare(password, user.password))) {
+      if (!user.isActive) {
+        await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
+        return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact support.' });
+      }
+      
+      // Update last login time
+      user.lastLoginAt = new Date();
+      await user.save();
+      
+      const token = generateToken(user._id);
+      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
+      
+      res.json({
+        success: true,
+        message: 'Login successful!',
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          phone: user.phone,
+          isAdmin: user.isAdmin,
+          walletBalance: user.walletBalance,
+          commissionBalance: user.commissionBalance,
+          transactionPinSet: !!user.transactionPin,
+          biometricEnabled: user.biometricEnabled,
+        },
+        token,
+      });
+    } else {
+      if (user) {
+        await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Invalid password');
+      } else {
+        await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Invalid email: ${email}`);
+      }
+      res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
-    const token = generateToken(user._id);
-    res.json({
-      success: true,
-      message: 'Login successful!',
-      user: {
-        _id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        phone: user.phone,
-        isAdmin: user.isAdmin,
-        walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance,
-        transactionPinSet: !!user.transactionPin, // Added to indicate if PIN is set
-        biometricEnabled: user.biometricEnabled, // Added biometric status
-      },
-      token,
-    });
-  } else {
-    res.status(400).json({ success: false, message: 'Invalid credentials' });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -426,26 +602,46 @@ app.post('/api/users/login', async (req, res) => {
 app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
   try {
     const { userId, pin } = req.body;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
     
     if (req.user._id.toString() !== userId) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Unauthorized access');
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
     
-    if (!pin || pin.length !== 4 || !/^\d+$/.test(pin)) {
-      return res.status(400).json({ success: false, message: 'PIN must be a 4-digit number' });
+    // Updated validation: 4-6 digits
+    if (!pin || pin.length < 4 || pin.length > 6 || !/^\d+$/.test(pin)) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Invalid PIN format');
+      return res.status(400).json({ success: false, message: 'PIN must be a 4-6 digit number' });
+    }
+    
+    // Check for common PINs
+    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333'];
+    if (commonPins.includes(pin)) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'PIN is too common. Please choose a more secure PIN' 
+      });
     }
     
     const user = await User.findById(userId);
     if (!user) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'User not found');
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
     // Hash the PIN
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(12);
     const hashedPin = await bcrypt.hash(pin, salt);
     
     user.transactionPin = hashedPin;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
     await user.save();
+    
+    await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN set successfully');
     
     res.json({ 
       success: true, 
@@ -463,17 +659,33 @@ app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
 app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
   try {
     const { userId, currentPin, newPin } = req.body;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
     
     if (req.user._id.toString() !== userId) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Unauthorized access');
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
     
-    if (!newPin || newPin.length !== 4 || !/^\d+$/.test(newPin)) {
-      return res.status(400).json({ success: false, message: 'New PIN must be a 4-digit number' });
+    // Updated validation: 4-6 digits
+    if (!newPin || newPin.length < 4 || newPin.length > 6 || !/^\d+$/.test(newPin)) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Invalid new PIN format');
+      return res.status(400).json({ success: false, message: 'New PIN must be a 4-6 digit number' });
+    }
+    
+    // Check for common PINs
+    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333'];
+    if (commonPins.includes(newPin)) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'New PIN is too common. Please choose a more secure PIN' 
+      });
     }
     
     const user = await User.findById(userId);
     if (!user) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'User not found');
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
@@ -481,16 +693,42 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
     if (user.transactionPin) {
       const isCurrentPinMatch = await bcrypt.compare(currentPin, user.transactionPin);
       if (!isCurrentPinMatch) {
-        return res.status(400).json({ success: false, message: 'Current PIN is incorrect' });
+        // Increment failed attempts
+        user.failedPinAttempts += 1;
+        
+        // Lock account if too many failed attempts
+        if (user.failedPinAttempts >= 3) {
+          user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+          await user.save();
+          
+          await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
+          return res.status(429).json({ 
+            success: false, 
+            message: 'Too many failed attempts. Account locked for 15 minutes.' 
+          });
+        } else {
+          await user.save();
+          
+          const remainingAttempts = 3 - user.failedPinAttempts;
+          await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, `Invalid current PIN, ${remainingAttempts} attempts remaining`);
+          return res.status(400).json({ 
+            success: false, 
+            message: `Current PIN is incorrect. ${remainingAttempts} attempts remaining before lockout.` 
+          });
+        }
       }
     }
     
     // Hash the new PIN
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(12);
     const hashedPin = await bcrypt.hash(newPin, salt);
     
     user.transactionPin = hashedPin;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
     await user.save();
+    
+    await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN changed successfully');
     
     res.json({ 
       success: true, 
@@ -507,7 +745,7 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
 // @access  Private
 app.post('/api/users/toggle-biometric', protect, async (req, res) => {
   try {
-    const { userId, enable } = req.body;
+    const { userId, enable, biometricKey, biometricCredentialId } = req.body;
     
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
@@ -526,7 +764,22 @@ app.post('/api/users/toggle-biometric', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Biometric authentication is currently disabled' });
     }
     
+    // When enabling biometric, require biometricKey and biometricCredentialId
+    if (enable && (!biometricKey || !biometricCredentialId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Biometric key and credential ID are required to enable biometric authentication' 
+      });
+    }
+    
     user.biometricEnabled = enable;
+    if (enable) {
+      user.biometricKey = biometricKey;
+      user.biometricCredentialId = biometricCredentialId;
+    } else {
+      user.biometricKey = null;
+      user.biometricCredentialId = null;
+    }
     await user.save();
     
     res.json({ 
@@ -536,6 +789,70 @@ app.post('/api/users/toggle-biometric', protect, async (req, res) => {
     });
   } catch (error) {
     console.error('Error toggling biometric authentication:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Verify transaction PIN (standalone endpoint)
+// @route   POST /api/users/verify-transaction-pin
+// @access  Private
+app.post('/api/users/verify-transaction-pin', protect, async (req, res) => {
+  try {
+    const { userId, transactionPin } = req.body;
+    
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if PIN is locked
+    if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+      const remainingTime = Math.ceil((user.pinLockedUntil - new Date()) / 60000);
+      return res.status(429).json({ 
+        success: false, 
+        message: `Too many failed attempts. Account locked for ${remainingTime} minutes.` 
+      });
+    }
+    
+    // Verify PIN
+    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+    
+    if (isPinMatch) {
+      // Reset failed attempts on successful PIN
+      user.failedPinAttempts = 0;
+      user.pinLockedUntil = null;
+      await user.save();
+      
+      return res.json({ success: true, message: 'PIN verified successfully' });
+    } else {
+      // Increment failed attempts
+      user.failedPinAttempts += 1;
+      
+      // Lock account if too many failed attempts
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+        await user.save();
+        
+        return res.status(429).json({ 
+          success: false, 
+          message: 'Too many failed attempts. Account locked for 15 minutes.' 
+        });
+      } else {
+        await user.save();
+        
+        const remainingAttempts = 3 - user.failedPinAttempts;
+        return res.status(400).json({ 
+          success: false, 
+          message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.` 
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error verifying transaction PIN:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
@@ -562,11 +879,48 @@ app.get('/api/users/security-settings', protect, async (req, res) => {
         transactionPinSet: !!user.transactionPin,
         biometricEnabled: user.biometricEnabled,
         pinRequired,
-        biometricAllowed
+        biometricAllowed,
+        pinLocked: user.pinLockedUntil && user.pinLockedUntil > new Date(),
+        lockTimeRemaining: user.pinLockedUntil && user.pinLockedUntil > new Date() 
+          ? Math.ceil((user.pinLockedUntil - new Date()) / 60000) 
+          : 0
       }
     });
   } catch (error) {
     console.error('Error fetching security settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get user's authentication logs
+// @route   GET /api/users/auth-logs
+// @access  Private
+app.get('/api/users/auth-logs', protect, async (req, res) => {
+  try {
+    const { userId } = req.query;
+    const { page = 1, limit = 20 } = req.query;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    const skip = (page - 1) * limit;
+    const logs = await AuthLog.find({ userId })
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await AuthLog.countDocuments({ userId });
+    
+    res.json({
+      success: true,
+      logs,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
+  } catch (error) {
+    console.error('Error fetching authentication logs:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
@@ -893,7 +1247,7 @@ app.post('/api/users/change-password', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Current password is incorrect' });
     }
     
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
     
     user.password = hashedPassword;
@@ -936,7 +1290,7 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
       balanceAfter,
       session,
       false,
-      'none' // Admin operations don't require additional auth
+      'none'
     );
     await session.commitTransaction();
     res.json({ success: true, message: `Successfully funded user ${user.email} with ${amount}`, newBalance: balanceAfter });
@@ -989,7 +1343,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
     }
     
-    // Updated to use new field names
     const settings = await Settings.findOne().session(session);
     const minAmount = settings ? settings.minTransactionAmount : 100;
     const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
@@ -1515,6 +1868,7 @@ app.put('/api/settings', adminProtect, async (req, res) => {
 });
 
 // VTPass endpoints remain unchanged...
+
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
 // @access  Private
