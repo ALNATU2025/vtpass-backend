@@ -8,12 +8,15 @@ const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const dotenv = require('dotenv');
 dotenv.config();
+
 // Mongoose Models
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   phone: { type: String, required: true },
   password: { type: String, required: true },
+  transactionPin: { type: String }, // Added for transaction PIN
+  biometricEnabled: { type: Boolean, default: false }, // Added for biometric auth
   walletBalance: { type: Number, default: 0 },
   commissionBalance: { type: Number, default: 0 },
   isAdmin: { type: Boolean, default: false },
@@ -25,6 +28,7 @@ const userSchema = new mongoose.Schema({
     accountName: { type: String },
   },
 }, { timestamps: true });
+
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: { type: String, required: true, enum: ['credit', 'debit'] },
@@ -35,13 +39,16 @@ const transactionSchema = new mongoose.Schema({
   balanceAfter: { type: Number, required: true },
   reference: { type: String, required: true, unique: true },
   isCommission: { type: Boolean, default: false },
+  authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' }, // Added to track auth method
 }, { timestamps: true });
+
 const notificationSchema = new mongoose.Schema({
   recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
   title: { type: String, required: true },
   message: { type: String, required: true },
   isRead: { type: Boolean, default: false },
 }, { timestamps: true });
+
 const beneficiarySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
@@ -49,6 +56,7 @@ const beneficiarySchema = new mongoose.Schema({
   value: { type: String, required: true },
   network: { type: String },
 }, { timestamps: true });
+
 // Updated settings schema to match frontend expectations
 const settingsSchema = new mongoose.Schema({
   // Existing fields
@@ -85,16 +93,20 @@ const settingsSchema = new mongoose.Schema({
   twoFactorAuthRequired: { type: Boolean, default: false },
   autoLogoutEnabled: { type: Boolean, default: true },
   sessionTimeout: { type: Number, default: 30 },
+  transactionPinRequired: { type: Boolean, default: true }, // Added for PIN requirement
+  biometricAuthEnabled: { type: Boolean, default: true }, // Added for biometric option
   
   // API Rate Limiting - New fields
   apiRateLimit: { type: Number, default: 100 },
   apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
+
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
+
 // Database Connection
 const connectDB = async () => {
   try {
@@ -106,14 +118,17 @@ const connectDB = async () => {
   }
 };
 connectDB();
+
 const app = express();
 app.use(express.json());
 app.use(cors());
 const PORT = process.env.PORT || 5000;
+
 // JWT Token Generation
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
+
 // Middleware to protect routes with JWT
 const protect = async (req, res, next) => {
   let token;
@@ -138,6 +153,7 @@ const protect = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Not authorized, no token' });
   }
 };
+
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, async () => {
@@ -154,12 +170,76 @@ const adminProtect = async (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
+
+// Middleware to verify transaction authentication (PIN or Biometric)
+const verifyTransactionAuth = async (req, res, next) => {
+  try {
+    const { transactionPin, useBiometric } = req.body;
+    const userId = req.user._id;
+    
+    // Get user settings
+    const settings = await Settings.findOne();
+    const pinRequired = settings ? settings.transactionPinRequired : true;
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    // If PIN is not required globally, skip verification
+    if (!pinRequired) {
+      return next();
+    }
+    
+    // Get user from database
+    const user = await User.findById(userId);
+    
+    // Check if user has set up a PIN or enabled biometrics
+    const hasPin = user.transactionPin && user.transactionPin.length > 0;
+    const hasBiometric = user.biometricEnabled;
+    
+    // If user has neither PIN nor biometric set up, return error
+    if (!hasPin && !hasBiometric) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please set up a transaction PIN or enable biometric authentication first' 
+      });
+    }
+    
+    // If biometric is requested and enabled
+    if (useBiometric && hasBiometric && biometricAllowed) {
+      // In a real app, biometric verification happens on the client side
+      // Here we just check if the user has enabled it and the client is requesting to use it
+      req.authenticationMethod = 'biometric';
+      return next();
+    }
+    
+    // If PIN is provided
+    if (transactionPin && hasPin) {
+      const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+      if (isPinMatch) {
+        req.authenticationMethod = 'pin';
+        return next();
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid transaction PIN' });
+      }
+    }
+    
+    // If we reach here, authentication failed
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Authentication required. Please provide your transaction PIN or use biometric authentication.' 
+    });
+    
+  } catch (error) {
+    console.error('Transaction authentication error:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
 // VTPass API Helper
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
+
 const callVtpassApi = async (endpoint, data, headers = {}) => {
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
@@ -194,8 +274,9 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
     }
   }
 };
+
 // Transaction Helper Function
-const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false) => {
+const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none') => {
   const newTransaction = new Transaction({
     userId,
     type,
@@ -205,11 +286,13 @@ const createTransaction = async (userId, amount, type, status, description, bala
     balanceBefore,
     balanceAfter,
     reference: uuidv4(),
-    isCommission
+    isCommission,
+    authenticationMethod // Added authentication method
   });
   await newTransaction.save({ session });
   return newTransaction;
 };
+
 // Commission Helper Function
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
@@ -232,7 +315,8 @@ const calculateAndAddCommission = async (userId, amount, session) => {
         user.commissionBalance - commissionAmount,
         user.commissionBalance,
         session,
-        true
+        true,
+        'none' // Commission transactions don't require additional auth
       );
       
       return commissionAmount;
@@ -244,6 +328,7 @@ const calculateAndAddCommission = async (userId, amount, session) => {
     return 0;
   }
 };
+
 // Create default settings if they don't exist
 const initializeSettings = async () => {
   try {
@@ -257,7 +342,9 @@ const initializeSettings = async () => {
   }
 };
 initializeSettings();
+
 // --- API Routes ---
+
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -291,6 +378,8 @@ app.post('/api/users/register', async (req, res) => {
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
         commissionBalance: user.commissionBalance,
+        transactionPinSet: !!user.transactionPin, // Added to indicate if PIN is set
+        biometricEnabled: user.biometricEnabled, // Added biometric status
       },
       token,
     });
@@ -298,6 +387,7 @@ app.post('/api/users/register', async (req, res) => {
     res.status(400).json({ success: false, message: 'Invalid user data' });
   }
 });
+
 // @desc    Authenticate a user
 // @route   POST /api/users/login
 // @access  Public
@@ -320,6 +410,8 @@ app.post('/api/users/login', async (req, res) => {
         isAdmin: user.isAdmin,
         walletBalance: user.walletBalance,
         commissionBalance: user.commissionBalance,
+        transactionPinSet: !!user.transactionPin, // Added to indicate if PIN is set
+        biometricEnabled: user.biometricEnabled, // Added biometric status
       },
       token,
     });
@@ -327,6 +419,158 @@ app.post('/api/users/login', async (req, res) => {
     res.status(400).json({ success: false, message: 'Invalid credentials' });
   }
 });
+
+// @desc    Set up transaction PIN
+// @route   POST /api/users/set-transaction-pin
+// @access  Private
+app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
+  try {
+    const { userId, pin } = req.body;
+    
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    if (!pin || pin.length !== 4 || !/^\d+$/.test(pin)) {
+      return res.status(400).json({ success: false, message: 'PIN must be a 4-digit number' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Hash the PIN
+    const salt = await bcrypt.genSalt(10);
+    const hashedPin = await bcrypt.hash(pin, salt);
+    
+    user.transactionPin = hashedPin;
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Transaction PIN set successfully',
+    });
+  } catch (error) {
+    console.error('Error setting transaction PIN:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Change transaction PIN
+// @route   POST /api/users/change-transaction-pin
+// @access  Private
+app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
+  try {
+    const { userId, currentPin, newPin } = req.body;
+    
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    if (!newPin || newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+      return res.status(400).json({ success: false, message: 'New PIN must be a 4-digit number' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Verify current PIN if it exists
+    if (user.transactionPin) {
+      const isCurrentPinMatch = await bcrypt.compare(currentPin, user.transactionPin);
+      if (!isCurrentPinMatch) {
+        return res.status(400).json({ success: false, message: 'Current PIN is incorrect' });
+      }
+    }
+    
+    // Hash the new PIN
+    const salt = await bcrypt.genSalt(10);
+    const hashedPin = await bcrypt.hash(newPin, salt);
+    
+    user.transactionPin = hashedPin;
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Transaction PIN changed successfully',
+    });
+  } catch (error) {
+    console.error('Error changing transaction PIN:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Toggle biometric authentication
+// @route   POST /api/users/toggle-biometric
+// @access  Private
+app.post('/api/users/toggle-biometric', protect, async (req, res) => {
+  try {
+    const { userId, enable } = req.body;
+    
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if biometric authentication is allowed in settings
+    const settings = await Settings.findOne();
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    if (!biometricAllowed && enable) {
+      return res.status(400).json({ success: false, message: 'Biometric authentication is currently disabled' });
+    }
+    
+    user.biometricEnabled = enable;
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: `Biometric authentication ${enable ? 'enabled' : 'disabled'} successfully`,
+      biometricEnabled: user.biometricEnabled
+    });
+  } catch (error) {
+    console.error('Error toggling biometric authentication:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Get user's security settings
+// @route   GET /api/users/security-settings
+// @access  Private
+app.get('/api/users/security-settings', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId).select('transactionPin biometricEnabled');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    const settings = await Settings.findOne();
+    const pinRequired = settings ? settings.transactionPinRequired : true;
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    res.json({
+      success: true,
+      securitySettings: {
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+        pinRequired,
+        biometricAllowed
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching security settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // @desc    Get user's balance
 // @route   POST /api/users/get-balance
 // @access  Private
@@ -351,6 +595,7 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's commission balance
 // @route   POST /api/users/get-commission-balance
 // @access  Private
@@ -375,10 +620,11 @@ app.post('/api/users/get-commission-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Withdraw commission to wallet
 // @route   POST /api/users/withdraw-commission
 // @access  Private
-app.post('/api/users/withdraw-commission', protect, async (req, res) => {
+app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, async (req, res) => {
   const { userId, amount } = req.body;
   
   if (!userId || !amount || amount <= 0) {
@@ -423,7 +669,8 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
       commissionBalanceBefore,
       commissionBalanceAfter,
       session,
-      true
+      true,
+      req.authenticationMethod
     );
     
     await createTransaction(
@@ -435,7 +682,8 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
       walletBalanceBefore,
       walletBalanceAfter,
       session,
-      false
+      false,
+      req.authenticationMethod
     );
     
     await session.commitTransaction();
@@ -454,6 +702,7 @@ app.post('/api/users/withdraw-commission', protect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Get a specific user
 // @route   GET /api/users/:userId
 // @access  Private
@@ -476,6 +725,7 @@ app.get('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
 // @access  Private/Admin
@@ -488,6 +738,7 @@ app.get('/api/users', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Toggle user active status (Admin only)
 // @route   PUT /api/users/toggle-status/:userId
 // @access  Private/Admin
@@ -523,6 +774,7 @@ app.put('/api/users/toggle-status/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Toggle user admin status (Admin only)
 // @route   PUT /api/users/toggle-admin-status/:userId
 // @access  Private/Admin
@@ -558,6 +810,7 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res)
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Update user profile
 // @route   PATCH /api/users/:userId
 // @access  Private
@@ -608,7 +861,9 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
         walletBalance: user.walletBalance,
         commissionBalance: user.commissionBalance,
         isActive: user.isActive,
-        isAdmin: user.isAdmin
+        isAdmin: user.isAdmin,
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
       }
     });
   } catch (error) {
@@ -616,6 +871,7 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Change user password
 // @route   POST /api/users/change-password
 // @access  Private
@@ -649,6 +905,7 @@ app.post('/api/users/change-password', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
@@ -677,7 +934,9 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
       `Admin funding of ${amount}`,
       balanceBefore,
       balanceAfter,
-      session
+      session,
+      false,
+      'none' // Admin operations don't require additional auth
     );
     await session.commitTransaction();
     res.json({ success: true, message: `Successfully funded user ${user.email} with ${amount}`, newBalance: balanceAfter });
@@ -689,10 +948,11 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
-app.post('/api/transfer', protect, async (req, res) => {
+app.post('/api/transfer', protect, verifyTransactionAuth, async (req, res) => {
   const { senderId, receiverEmail, amount } = req.body;
   
   if (!senderId || !receiverEmail || !amount || amount <= 0) {
@@ -762,7 +1022,9 @@ app.post('/api/transfer', protect, async (req, res) => {
       `Transfer to ${receiverEmail}`,
       senderBalanceBefore,
       senderBalanceAfter,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     
     await createTransaction(
@@ -773,7 +1035,9 @@ app.post('/api/transfer', protect, async (req, res) => {
       `Transfer from ${sender.email}`,
       receiverBalanceBefore,
       receiverBalanceAfter,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     
     if (sender._id.toString() !== receiver._id.toString()) {
@@ -795,6 +1059,7 @@ app.post('/api/transfer', protect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Get user's transactions
 // @route   GET /api/transactions
 // @access  Private
@@ -817,6 +1082,7 @@ app.get('/api/transactions', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's commission transactions
 // @route   GET /api/commission-transactions
 // @access  Private
@@ -839,6 +1105,7 @@ app.get('/api/commission-transactions', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
@@ -851,6 +1118,7 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get a specific transaction by ID
 // @route   GET /api/transactions/:transactionId
 // @access  Private
@@ -874,6 +1142,7 @@ app.get('/api/transactions/:transactionId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's beneficiaries
 // @route   GET /api/beneficiaries/:userId
 // @access  Private
@@ -892,6 +1161,7 @@ app.get('/api/beneficiaries/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Add a beneficiary
 // @route   POST /api/beneficiaries
 // @access  Private
@@ -926,6 +1196,7 @@ app.post('/api/beneficiaries', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Delete a beneficiary
 // @route   DELETE /api/beneficiaries/:id
 // @access  Private
@@ -950,6 +1221,7 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's notifications
 // @route   GET /api/notifications
 // @access  Private
@@ -972,6 +1244,7 @@ app.get('/api/notifications', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
@@ -998,6 +1271,7 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Send notification (Admin only)
 // @route   POST /api/notifications/send
 // @access  Private/Admin
@@ -1043,6 +1317,7 @@ app.post('/api/notifications/send', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get app settings
 // @route   GET /api/settings
 // @access  Public
@@ -1058,6 +1333,7 @@ app.get('/api/settings', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Update app settings (Admin only)
 // @route   POST /api/settings
 // @access  Private/Admin
@@ -1092,6 +1368,8 @@ app.post('/api/settings', adminProtect, async (req, res) => {
       twoFactorAuthRequired,
       autoLogoutEnabled,
       sessionTimeout,
+      transactionPinRequired,
+      biometricAuthEnabled,
       // API Rate Limiting
       apiRateLimit,
       apiTimeWindow
@@ -1128,6 +1406,8 @@ app.post('/api/settings', adminProtect, async (req, res) => {
     if (twoFactorAuthRequired !== undefined) settings.twoFactorAuthRequired = twoFactorAuthRequired;
     if (autoLogoutEnabled !== undefined) settings.autoLogoutEnabled = autoLogoutEnabled;
     if (sessionTimeout !== undefined) settings.sessionTimeout = sessionTimeout;
+    if (transactionPinRequired !== undefined) settings.transactionPinRequired = transactionPinRequired;
+    if (biometricAuthEnabled !== undefined) settings.biometricAuthEnabled = biometricAuthEnabled;
     if (apiRateLimit !== undefined) settings.apiRateLimit = apiRateLimit;
     if (apiTimeWindow !== undefined) settings.apiTimeWindow = apiTimeWindow;
     
@@ -1143,6 +1423,7 @@ app.post('/api/settings', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Update app settings (Admin only) - PUT endpoint for REST consistency
 // @route   PUT /api/settings
 // @access  Private/Admin
@@ -1177,6 +1458,8 @@ app.put('/api/settings', adminProtect, async (req, res) => {
       twoFactorAuthRequired,
       autoLogoutEnabled,
       sessionTimeout,
+      transactionPinRequired,
+      biometricAuthEnabled,
       // API Rate Limiting
       apiRateLimit,
       apiTimeWindow
@@ -1213,6 +1496,8 @@ app.put('/api/settings', adminProtect, async (req, res) => {
     if (twoFactorAuthRequired !== undefined) settings.twoFactorAuthRequired = twoFactorAuthRequired;
     if (autoLogoutEnabled !== undefined) settings.autoLogoutEnabled = autoLogoutEnabled;
     if (sessionTimeout !== undefined) settings.sessionTimeout = sessionTimeout;
+    if (transactionPinRequired !== undefined) settings.transactionPinRequired = transactionPinRequired;
+    if (biometricAuthEnabled !== undefined) settings.biometricAuthEnabled = biometricAuthEnabled;
     if (apiRateLimit !== undefined) settings.apiRateLimit = apiRateLimit;
     if (apiTimeWindow !== undefined) settings.apiTimeWindow = apiTimeWindow;
     
@@ -1228,6 +1513,7 @@ app.put('/api/settings', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // VTPass endpoints remain unchanged...
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
@@ -1265,10 +1551,11 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
-app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
+app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, res) => {
   console.log('Received TV purchase request.');
   console.log('Request Body:', req.body);
   
@@ -1319,7 +1606,9 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
       `${serviceID} TV Subscription for ${billersCode}`,
       balanceBefore,
       newBalance,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     await session.commitTransaction();
     res.json({
@@ -1337,10 +1626,11 @@ app.post('/api/vtpass/tv/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
-app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
+app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (req, res) => {
   console.log('Received airtime purchase request.');
   console.log('Request Body:', req.body);
   
@@ -1385,7 +1675,9 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
       `Airtime purchase for ${phone} on ${network}`,
       balanceBefore,
       newBalance,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     await session.commitTransaction();
     res.json({
@@ -1403,10 +1695,11 @@ app.post('/api/vtpass/airtime/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Purchase data
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
-app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
+app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req, res) => {
   const { userId, network, phone, variationCode, amount } = req.body;
   const serviceID = network.toLowerCase();
   const reference = uuidv4();
@@ -1446,7 +1739,9 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
       `Data purchase for ${phone} on ${network}`,
       balanceBefore,
       newBalance,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     await session.commitTransaction();
     res.json({
@@ -1464,6 +1759,7 @@ app.post('/api/vtpass/data/purchase', protect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Verify electricity meter number
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
@@ -1503,10 +1799,11 @@ app.post('/api/vtpass/validate-electricity', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Pay for electricity
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
-app.post('/api/vtpass/electricity/purchase', protect, async (req, res) => {
+app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, async (req, res) => {
   console.log('Received electricity purchase request.');
   console.log('Request Body:', req.body);
   
@@ -1562,7 +1859,9 @@ app.post('/api/vtpass/electricity/purchase', protect, async (req, res) => {
       `${serviceID} Electricity payment for meter ${billersCode}`,
       balanceBefore,
       newBalance,
-      session
+      session,
+      false,
+      req.authenticationMethod
     );
     
     await session.commitTransaction();
