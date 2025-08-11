@@ -146,7 +146,7 @@ const adminProtect = async (req, res, next) => {
     }
     
     // Get the specific admin user ID from environment variable
-    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "68816c3df224eb337f84caaf";
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "68816c3df224eb337f84caaf","689945d4fb65f8f9179e661b";
     if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
       return next();
     }
