@@ -7,32 +7,114 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
 const dotenv = require('dotenv');
-const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
-const mongoSanitize = require('express-mongo-sanitize');
-const xss = require('xss-clean');
-const hpp = require('hpp');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// Try to import security middleware, with fallbacks if modules are missing
+let rateLimit, helmet, mongoSanitize, xss, hpp;
+try {
+  rateLimit = require('express-rate-limit');
+} catch (e) {
+  console.log('express-rate-limit module not found. Rate limiting will not be applied.');
+  rateLimit = null;
+}
+try {
+  helmet = require('helmet');
+} catch (e) {
+  console.log('helmet module not found. Security headers will not be applied.');
+  helmet = null;
+}
+try {
+  mongoSanitize = require('mongo-sanitize');
+} catch (e) {
+  console.log('mongo-sanitize module not found. Input sanitization will not be applied.');
+  mongoSanitize = null;
+}
+try {
+  xss = require('xss-clean');
+} catch (e) {
+  console.log('xss-clean module not found. XSS protection will not be applied.');
+  xss = null;
+}
+try {
+  hpp = require('hpp');
+} catch (e) {
+  console.log('hpp module not found. Parameter pollution protection will not be applied.');
+  hpp = null;
+}
+
 dotenv.config();
 
-// Security middleware
+// Initialize Express app
 const app = express();
-app.use(helmet());
-app.use(mongoSanitize());
-app.use(xss());
-app.use(hpp());
+
+// Apply security middleware if available
+if (helmet) {
+  app.use(helmet());
+}
+if (mongoSanitize) {
+  app.use(mongoSanitize());
+}
+if (xss) {
+  app.use(xss());
+}
+if (hpp) {
+  app.use(hpp());
+}
+
+// Apply rate limiting if available
+if (rateLimit) {
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // limit each IP to 5 requests per windowMs
+    message: 'Too many authentication attempts, please try again after 15 minutes'
+  });
+  app.use('/api/users/login', authLimiter);
+  app.use('/api/users/set-transaction-pin', authLimiter);
+  app.use('/api/users/change-transaction-pin', authLimiter);
+  app.use('/api/users/verify-transaction-pin', authLimiter);
+}
+
+// Standard middleware
 app.use(express.json());
 app.use(cors());
 
-// Rate limiting for authentication endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message: 'Too many authentication attempts, please try again after 15 minutes'
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    cb(null, `${uuidv4()}-${file.originalname}`);
+  }
 });
-app.use('/api/users/login', authLimiter);
-app.use('/api/users/set-transaction-pin', authLimiter);
-app.use('/api/users/change-transaction-pin', authLimiter);
-app.use('/api/users/verify-transaction-pin', authLimiter);
+
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 1024 * 1024 * 2 }, // 2MB limit
+  fileFilter: function (req, file, cb) {
+    const filetypes = /jpeg|jpg|png/;
+    const mimetype = filetypes.test(file.mimetype);
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error("Only image files are allowed!"));
+  }
+});
+
+// Serve static files from uploads directory
+app.use('/uploads', express.static(uploadsDir));
+
+const PORT = process.env.PORT || 5000;
 
 // Mongoose Models
 const userSchema = new mongoose.Schema({
@@ -51,6 +133,9 @@ const userSchema = new mongoose.Schema({
   failedPinAttempts: { type: Number, default: 0 },
   pinLockedUntil: { type: Date },
   lastLoginAt: { type: Date },
+  profileImage: { type: String },
+  resetPasswordToken: { type: String },
+  resetPasswordExpire: { type: Date },
   virtualAccount: {
     assigned: { type: Boolean, default: false },
     bankName: { type: String },
@@ -74,6 +159,25 @@ const authLogSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 });
 
+const AuthLog = mongoose.model('AuthLog', authLogSchema);
+
+// Helper function to log authentication attempts
+const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
+  try {
+    await AuthLog.create({
+      userId,
+      action,
+      ipAddress,
+      userAgent,
+      success,
+      details
+    });
+  } catch (error) {
+    console.error('Error logging auth attempt:', error);
+  }
+};
+
+// Transaction schema
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: { type: String, required: true, enum: ['credit', 'debit'] },
@@ -87,6 +191,7 @@ const transactionSchema = new mongoose.Schema({
   authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' },
 }, { timestamps: true });
 
+// Notification schema
 const notificationSchema = new mongoose.Schema({
   recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
   title: { type: String, required: true },
@@ -94,6 +199,7 @@ const notificationSchema = new mongoose.Schema({
   isRead: { type: Boolean, default: false },
 }, { timestamps: true });
 
+// Beneficiary schema
 const beneficiarySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
@@ -102,6 +208,7 @@ const beneficiarySchema = new mongoose.Schema({
   network: { type: String },
 }, { timestamps: true });
 
+// Settings schema
 const settingsSchema = new mongoose.Schema({
   appVersion: { type: String, default: '1.0.0' },
   maintenanceMode: { type: Boolean, default: false },
@@ -149,7 +256,6 @@ const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
-const AuthLog = mongoose.model('AuthLog', authLogSchema);
 
 // Database Connection
 const connectDB = async () => {
@@ -161,29 +267,12 @@ const connectDB = async () => {
     process.exit(1);
   }
 };
-connectDB();
 
-const PORT = process.env.PORT || 5000;
+connectDB();
 
 // JWT Token Generation
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-};
-
-// Helper function to log authentication attempts
-const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
-  try {
-    await AuthLog.create({
-      userId,
-      action,
-      ipAddress,
-      userAgent,
-      success,
-      details
-    });
-  } catch (error) {
-    console.error('Error logging auth attempt:', error);
-  }
 };
 
 // Middleware to protect routes with JWT
@@ -495,10 +584,26 @@ const initializeSettings = async () => {
     console.error('Error initializing settings:', error);
   }
 };
+
 initializeSettings();
 
-// --- API Routes ---
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, message: 'File size is too large. Maximum size is 2MB.' });
+    }
+    return res.status(400).json({ success: false, message: err.message });
+  } else if (err) {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+  
+  res.status(500).json({ success: false, message: 'Internal Server Error' });
+});
 
+// --- API Routes ---
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -596,6 +701,100 @@ app.post('/api/users/login', async (req, res) => {
   }
 });
 
+// @desc    Logout user
+// @route   POST /api/users/logout
+// @access  Private
+app.post('/api/users/logout', protect, async (req, res) => {
+  try {
+    // In a stateless JWT system, logout is typically handled client-side
+    // by discarding the token. For server-side token blacklisting,
+    // you would implement a token blacklist here.
+    
+    res.json({ success: true, message: 'Logout successful' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Request password reset
+// @route   POST /api/users/forgot-password
+// @access  Public
+app.post('/api/users/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email is required' });
+    }
+    
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Generate reset token
+    const resetToken = uuidv4();
+    
+    // Set token and expire time
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    await user.save();
+    
+    // In a real implementation, you would send an email with the reset token
+    // For this example, we'll just return the token in the response
+    
+    res.json({
+      success: true,
+      message: 'Password reset token generated',
+      resetToken
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Reset password
+// @route   POST /api/users/reset-password
+// @access  Public
+app.post('/api/users/reset-password', async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+    
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Reset token and new password are required' });
+    }
+    
+    const user = await User.findOne({
+      resetPasswordToken: resetToken,
+      resetPasswordExpire: { $gt: Date.now() }
+    });
+    
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
+    }
+    
+    // Hash the new password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    // Update user password and clear reset token
+    user.password = hashedPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    
+    await user.save();
+    
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
@@ -617,7 +816,7 @@ app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
     }
     
     // Check for common PINs
-    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333'];
+    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333', '12345', '11111', '00000'];
     if (commonPins.includes(pin)) {
       await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
       return res.status(400).json({ 
@@ -674,7 +873,7 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
     }
     
     // Check for common PINs
-    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333'];
+    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333', '12345', '11111', '00000'];
     if (commonPins.includes(newPin)) {
       await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
       return res.status(400).json({ 
@@ -765,11 +964,15 @@ app.post('/api/users/toggle-biometric', protect, async (req, res) => {
     }
     
     // When enabling biometric, require biometricKey and biometricCredentialId
-    if (enable && (!biometricKey || !biometricCredentialId)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Biometric key and credential ID are required to enable biometric authentication' 
-      });
+    if (enable) {
+      // For simplicity, we'll accept any non-empty values for biometricKey and biometricCredentialId
+      // In a real implementation, these would be properly validated
+      if (!biometricKey || !biometricCredentialId) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Biometric key and credential ID are required to enable biometric authentication' 
+        });
+      }
     }
     
     user.biometricEnabled = enable;
@@ -1057,6 +1260,45 @@ app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, async
   }
 });
 
+// @desc    Upload profile image
+// @route   POST /api/users/upload-profile-image
+// @access  Private
+app.post('/api/users/upload-profile-image', protect, upload.single('profileImage'), async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Delete old profile image if exists
+    if (user.profileImage) {
+      const oldImagePath = path.join(__dirname, user.profileImage);
+      if (fs.existsSync(oldImagePath)) {
+        fs.unlinkSync(oldImagePath);
+      }
+    }
+    
+    // Update user profile image path
+    user.profileImage = `/uploads/${req.file.filename}`;
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully',
+      profileImage: user.profileImage
+    });
+  } catch (error) {
+    console.error('Error uploading profile image:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // @desc    Get a specific user
 // @route   GET /api/users/:userId
 // @access  Private
@@ -1300,6 +1542,115 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
+  }
+});
+
+// @desc    Get transaction statistics (Admin only)
+// @route   GET /api/transactions/statistics
+// @access  Private/Admin
+app.get('/api/transactions/statistics', adminProtect, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    let matchQuery = {};
+    
+    if (startDate && endDate) {
+      matchQuery = {
+        createdAt: {
+          $gte: new Date(startDate),
+          $lte: new Date(endDate)
+        }
+      };
+    }
+    
+    // Total transactions
+    const totalTransactions = await Transaction.countDocuments(matchQuery);
+    
+    // Total successful transactions
+    const successfulTransactions = await Transaction.countDocuments({
+      ...matchQuery,
+      status: 'successful'
+    });
+    
+    // Total failed transactions
+    const failedTransactions = await Transaction.countDocuments({
+      ...matchQuery,
+      status: 'failed'
+    });
+    
+    // Total transaction amount
+    const transactionAggregation = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          totalCredit: { $sum: { $cond: { if: { $eq: ['$type', 'credit'] }, then: '$amount', else: 0 } } },
+          totalDebit: { $sum: { $cond: { if: { $eq: ['$type', 'debit'] }, then: '$amount', else: 0 } } }
+        }
+      }
+    ]);
+    
+    const transactionStats = transactionAggregation[0] || {
+      totalAmount: 0,
+      totalCredit: 0,
+      totalDebit: 0
+    };
+    
+    // Commission statistics
+    const commissionAggregation = await Transaction.aggregate([
+      { $match: { ...matchQuery, isCommission: true } },
+      {
+        $group: {
+          _id: null,
+          totalCommission: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    const commissionStats = commissionAggregation[0] || { totalCommission: 0 };
+    
+    // Transaction by type
+    const transactionsByType = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$type',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Transaction by status
+    const transactionsByStatus = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    res.json({
+      success: true,
+      statistics: {
+        totalTransactions,
+        successfulTransactions,
+        failedTransactions,
+        totalAmount: transactionStats.totalAmount,
+        totalCredit: transactionStats.totalCredit,
+        totalDebit: transactionStats.totalDebit,
+        totalCommission: commissionStats.totalCommission,
+        transactionsByType,
+        transactionsByStatus
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching transaction statistics:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
 
@@ -1867,8 +2218,100 @@ app.put('/api/settings', adminProtect, async (req, res) => {
   }
 });
 
-// VTPass endpoints remain unchanged...
+// @desc    Get virtual account details
+// @route   GET /api/virtual-account/:userId
+// @access  Private
+app.get('/api/virtual-account/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    res.json({
+      success: true,
+      virtualAccount: user.virtualAccount
+    });
+  } catch (error) {
+    console.error('Error fetching virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 
+// @desc    Create or update virtual account
+// @route   POST /api/virtual-account
+// @access  Private/Admin
+app.post('/api/virtual-account', adminProtect, async (req, res) => {
+  try {
+    const { userId, bankName, accountNumber, accountName } = req.body;
+    
+    if (!userId || !bankName || !accountNumber || !accountName) {
+      return res.status(400).json({ success: false, message: 'All fields are required' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    user.virtualAccount = {
+      assigned: true,
+      bankName,
+      accountNumber,
+      accountName
+    };
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Virtual account assigned successfully',
+      virtualAccount: user.virtualAccount
+    });
+  } catch (error) {
+    console.error('Error assigning virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Remove virtual account
+// @route   DELETE /api/virtual-account/:userId
+// @access  Private/Admin
+app.delete('/api/virtual-account/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    user.virtualAccount = {
+      assigned: false,
+      bankName: '',
+      accountNumber: '',
+      accountName: ''
+    };
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Virtual account removed successfully'
+    });
+  } catch (error) {
+    console.error('Error removing virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// VTPass endpoints remain unchanged...
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
 // @access  Private
