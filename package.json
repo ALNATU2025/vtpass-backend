@@ -24,7 +24,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "multer": "^1.4.5-lts.1",
-    "mongo-sanitize": "^2.1.0",
+    "mongo-sanitize": "^1.0.1",
     "nodemailer": "^7.0.5",
     "xss-clean": "^0.1.4",
     "hpp": "^0.2.3",
