@@ -10,6 +10,34 @@ const dotenv = require('dotenv');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+
+// Helper function to generate Request ID in Africa/Lagos timezone
+function generateRequestId() {
+  // Get current time in Africa/Lagos (GMT+1)
+  const now = new Date();
+  const lagosTime = new Date(now.toLocaleString("en-US", {timeZone: "Africa/Lagos"}));
+  
+  // Format as YYYYMMDDHHII
+  const year = lagosTime.getFullYear();
+  const month = String(lagosTime.getMonth() + 1).padStart(2, '0');
+  const day = String(lagosTime.getDate()).padStart(2, '0');
+  const hours = String(lagosTime.getHours()).padStart(2, '0');
+  const minutes = String(lagosTime.getMinutes()).padStart(2, '0');
+  
+  // Create the 12-digit timestamp
+  const timestamp = `${year}${month}${day}${hours}${minutes}`;
+  
+  // Add a unique suffix (using UUID)
+  const suffix = uuidv4().replace(/-/g, '').substring(0, 12);
+  
+  return `${timestamp}_${suffix}`;
+}
+
+// Helper function to get current time in Africa/Lagos
+function getLagosTime() {
+  return new Date(new Date().toLocaleString("en-US", {timeZone: "Africa/Lagos"}));
+}
+
 // Try to import security middleware, with fallbacks if modules are missing
 let rateLimit, helmet, mongoSanitize, xss, hpp;
 try {
@@ -358,8 +386,8 @@ const verifyTransactionPin = async (req, res, next) => {
     }
     
     // Check if PIN is locked
-    if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
-      const remainingTime = Math.ceil((user.pinLockedUntil - new Date()) / 60000);
+    if (user.pinLockedUntil && user.pinLockedUntil > getLagosTime()) {
+      const remainingTime = Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000);
       await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked');
       return res.status(429).json({ 
         success: false, 
@@ -391,7 +419,7 @@ const verifyTransactionPin = async (req, res, next) => {
       
       // Lock account if too many failed attempts
       if (user.failedPinAttempts >= 3) {
-        user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
         await user.save();
         
         await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
@@ -682,7 +710,7 @@ app.post('/api/users/login', async (req, res) => {
       }
       
       // Update last login time
-      user.lastLoginAt = new Date();
+      user.lastLoginAt = getLagosTime();
       await user.save();
       
       const token = generateToken(user._id);
@@ -754,7 +782,7 @@ app.post('/api/users/forgot-password', async (req, res) => {
     
     // Set token and expire time
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.resetPasswordExpire = new Date(getLagosTime().getTime() + 10 * 60 * 1000); // 10 minutes
     
     await user.save();
     
@@ -784,7 +812,7 @@ app.post('/api/users/reset-password', async (req, res) => {
     
     const user = await User.findOne({
       resetPasswordToken: resetToken,
-      resetPasswordExpire: { $gt: Date.now() }
+      resetPasswordExpire: { $gt: getLagosTime() }
     });
     
     if (!user) {
@@ -909,7 +937,7 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
         
         // Lock account if too many failed attempts
         if (user.failedPinAttempts >= 3) {
-          user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+          user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
           await user.save();
           
           await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
@@ -1023,8 +1051,8 @@ app.post('/api/users/verify-transaction-pin', protect, async (req, res) => {
     }
     
     // Check if PIN is locked
-    if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
-      const remainingTime = Math.ceil((user.pinLockedUntil - new Date()) / 60000);
+    if (user.pinLockedUntil && user.pinLockedUntil > getLagosTime()) {
+      const remainingTime = Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000);
       return res.status(429).json({ 
         success: false, 
         message: `Too many failed attempts. Account locked for ${remainingTime} minutes.` 
@@ -1047,7 +1075,7 @@ app.post('/api/users/verify-transaction-pin', protect, async (req, res) => {
       
       // Lock account if too many failed attempts
       if (user.failedPinAttempts >= 3) {
-        user.pinLockedUntil = new Date(Date.now() + 15 * 60000); // Lock for 15 minutes
+        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
         await user.save();
         
         return res.status(429).json({ 
@@ -1092,9 +1120,9 @@ app.get('/api/users/security-settings', protect, async (req, res) => {
         biometricEnabled: user.biometricEnabled,
         pinRequired,
         biometricAllowed,
-        pinLocked: user.pinLockedUntil && user.pinLockedUntil > new Date(),
-        lockTimeRemaining: user.pinLockedUntil && user.pinLockedUntil > new Date() 
-          ? Math.ceil((user.pinLockedUntil - new Date()) / 60000) 
+        pinLocked: user.pinLockedUntil && user.pinLockedUntil > getLagosTime(),
+        lockTimeRemaining: user.pinLockedUntil && user.pinLockedUntil > getLagosTime() 
+          ? Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000) 
           : 0
       }
     });
@@ -2258,7 +2286,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, 
   console.log('Request Body:', req.body);
   
   const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
-  const reference = uuidv4();
+  const reference = generateRequestId(); // CHANGED: Using Lagos time
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -2333,7 +2361,7 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (
   
   const { userId, network, phone, amount } = req.body;
   const serviceID = network.toLowerCase();
-  const reference = uuidv4();
+  const reference = generateRequestId(); // CHANGED: Using Lagos time
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -2398,7 +2426,7 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (
 app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req, res) => {
   const { userId, network, phone, variationCode, amount } = req.body;
   const serviceID = network.toLowerCase();
-  const reference = uuidv4();
+  const reference = generateRequestId(); // CHANGED: Using Lagos time
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -2502,7 +2530,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, asy
   console.log('Request Body:', req.body);
   
   const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
-  const reference = uuidv4();
+  const reference = generateRequestId(); // CHANGED: Using Lagos time
   const session = await mongoose.startSession();
   session.startTransaction();
   
