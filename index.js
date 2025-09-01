@@ -10,14 +10,22 @@ const dotenv = require('dotenv');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const moment = require('moment-timezone');
-const { body, validationResult } = require('express-validator');
+const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('mongo-sanitize');
 const xss = require('xss-clean');
 const hpp = require('hpp');
+
+// Try to load moment-timezone with fallback
+let moment;
+try {
+  moment = require('moment-timezone');
+} catch (error) {
+  console.log('moment-timezone not found, using moment as fallback');
+  moment = require('moment');
+}
 
 dotenv.config();
 
@@ -82,7 +90,14 @@ const PORT = process.env.PORT || 5000;
 
 // Helper function to generate Request ID in Africa/Lagos timezone
 function generateRequestId() {
-  const lagosTime = moment().tz('Africa/Lagos');
+  let lagosTime;
+  if (moment.tz) {
+    lagosTime = moment.tz('Africa/Lagos');
+  } else {
+    // Fallback if moment-timezone is not available
+    lagosTime = moment().utcOffset('+01:00');
+  }
+  
   const timestamp = lagosTime.format('YYYYMMDDHHmm');
   const suffix = uuidv4().replace(/-/g, '').substring(0, 12);
   return `${timestamp}_${suffix}`;
@@ -90,7 +105,12 @@ function generateRequestId() {
 
 // Helper function to get current time in Africa/Lagos
 function getLagosTime() {
-  return moment().tz('Africa/Lagos').toDate();
+  if (moment.tz) {
+    return moment.tz('Africa/Lagos').toDate();
+  } else {
+    // Fallback if moment-timezone is not available
+    return moment().utcOffset('+01:00').toDate();
+  }
 }
 
 // Password complexity validation
