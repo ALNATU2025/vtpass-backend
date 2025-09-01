@@ -10,158 +10,47 @@ const dotenv = require('dotenv');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const moment = require('moment-timezone');
+const { body, validationResult } = require('express-validator');
+const NodeCache = require('node-cache');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const mongoSanitize = require('mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
 
-// Helper function to generate Request ID in Africa/Lagos timezone
-function generateRequestId() {
-  // Get current time in Africa/Lagos (GMT+1)
-  const now = new Date();
-  const lagosTime = new Date(now.toLocaleString("en-US", {timeZone: "Africa/Lagos"}));
-  
-  // Format as YYYYMMDDHHII
-  const year = lagosTime.getFullYear();
-  const month = String(lagosTime.getMonth() + 1).padStart(2, '0');
-  const day = String(lagosTime.getDate()).padStart(2, '0');
-  const hours = String(lagosTime.getHours()).padStart(2, '0');
-  const minutes = String(lagosTime.getMinutes()).padStart(2, '0');
-  
-  // Create the 12-digit timestamp
-  const timestamp = `${year}${month}${day}${hours}${minutes}`;
-  
-  // Add a unique suffix (using UUID)
-  const suffix = uuidv4().replace(/-/g, '').substring(0, 12);
-  
-  return `${timestamp}_${suffix}`;
-}
-
-// Helper function to get current time in Africa/Lagos
-function getLagosTime() {
-  return new Date(new Date().toLocaleString("en-US", {timeZone: "Africa/Lagos"}));
-}
-
-// Try to import security middleware, with fallbacks if modules are missing
-let rateLimit, helmet, mongoSanitize, xss, hpp;
-try {
-  rateLimit = require('express-rate-limit');
-  // Check if rateLimit is actually a function
-  if (typeof rateLimit !== 'function') {
-    console.log('express-rate-limit module loaded but is not a function. Rate limiting will not be applied.');
-    rateLimit = null;
-  }
-} catch (e) {
-  console.log('express-rate-limit module not found. Rate limiting will not be applied.');
-  rateLimit = null;
-}
-try {
-  helmet = require('helmet');
-  if (typeof helmet !== 'function') {
-    console.log('helmet module loaded but is not a function. Security headers will not be applied.');
-    helmet = null;
-  }
-} catch (e) {
-  console.log('helmet module not found. Security headers will not be applied.');
-  helmet = null;
-}
-try {
-  mongoSanitize = require('mongo-sanitize');
-  if (typeof mongoSanitize !== 'function') {
-    console.log('mongo-sanitize module loaded but is not a function. Input sanitization will not be applied.');
-    mongoSanitize = null;
-  }
-} catch (e) {
-  console.log('mongo-sanitize module not found. Input sanitization will not be applied.');
-  mongoSanitize = null;
-}
-try {
-  xss = require('xss-clean');
-  if (typeof xss !== 'function') {
-    console.log('xss-clean module loaded but is not a function. XSS protection will not be applied.');
-    xss = null;
-  }
-} catch (e) {
-  console.log('xss-clean module not found. XSS protection will not be applied.');
-  xss = null;
-}
-try {
-  hpp = require('hpp');
-  if (typeof hpp !== 'function') {
-    console.log('hpp module loaded but is not a function. Parameter pollution protection will not be applied.');
-    hpp = null;
-  }
-} catch (e) {
-  console.log('hpp module not found. Parameter pollution protection will not be applied.');
-  hpp = null;
-}
 dotenv.config();
+
 // Initialize Express app
 const app = express();
-// Apply security middleware if available
-if (helmet && typeof helmet === 'function') {
-  try {
-    app.use(helmet());
-  } catch (error) {
-    console.log('Error applying helmet middleware:', error);
-  }
-}
-if (mongoSanitize && typeof mongoSanitize === 'function') {
-  try {
-    // Fixed: Create custom middleware for mongo-sanitize
-    app.use((req, res, next) => {
-      // Sanitize req.body, req.query, and req.params
-      if (req.body) req.body = mongoSanitize(req.body);
-      if (req.query) req.query = mongoSanitize(req.query);
-      if (req.params) req.params = mongoSanitize(req.params);
-      next();
-    });
-  } catch (error) {
-    console.log('Error applying mongo-sanitize middleware:', error);
-  }
-}
-if (xss && typeof xss === 'function') {
-  try {
-    app.use(xss());
-  } catch (error) {
-    console.log('Error applying xss-clean middleware:', error);
-  }
-}
-if (hpp && typeof hpp === 'function') {
-  try {
-    app.use(hpp());
-  } catch (error) {
-    console.log('Error applying hpp middleware:', error);
-  }
-}
-// Apply rate limiting if available
-if (rateLimit && typeof rateLimit === 'function') {
-  try {
-    const authLimiter = rateLimit({
-      windowMs: 15 * 60 * 1000, // 15 minutes
-      max: 5, // limit each IP to 5 requests per windowMs
-      message: 'Too many authentication attempts, please try again after 15 minutes'
-    });
-    
-    if (authLimiter && typeof authLimiter === 'function') {
-      app.use('/api/users/login', authLimiter);
-      app.use('/api/users/set-transaction-pin', authLimiter);
-      app.use('/api/users/change-transaction-pin', authLimiter);
-      app.use('/api/users/verify-transaction-pin', authLimiter);
-      console.log('Rate limiting applied to authentication endpoints');
-    } else {
-      console.log('express-rate-limit did not return a valid middleware function');
-    }
-  } catch (error) {
-    console.log('Error setting up rate limiter:', error);
-  }
-} else {
-  console.log('Rate limiting not applied: express-rate-limit module not available or not a function');
-}
+
+// Security middleware
+app.use(helmet());
+app.use(mongoSanitize());
+app.use(xss());
+app.use(hpp());
+
+// Rate limiting configuration
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later'
+});
+app.use(limiter);
+
 // Standard middleware
 app.use(express.json());
 app.use(cors());
+
+// Initialize cache
+const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
+
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -185,9 +74,40 @@ const upload = multer({
     cb(new Error("Only image files are allowed!"));
   }
 });
+
 // Serve static files from uploads directory
 app.use('/uploads', express.static(uploadsDir));
+
 const PORT = process.env.PORT || 5000;
+
+// Helper function to generate Request ID in Africa/Lagos timezone
+function generateRequestId() {
+  const lagosTime = moment().tz('Africa/Lagos');
+  const timestamp = lagosTime.format('YYYYMMDDHHmm');
+  const suffix = uuidv4().replace(/-/g, '').substring(0, 12);
+  return `${timestamp}_${suffix}`;
+}
+
+// Helper function to get current time in Africa/Lagos
+function getLagosTime() {
+  return moment().tz('Africa/Lagos').toDate();
+}
+
+// Password complexity validation
+function validatePassword(password) {
+  const minLength = 8;
+  const hasUpperCase = /[A-Z]/.test(password);
+  const hasLowerCase = /[a-z]/.test(password);
+  const hasNumbers = /\d/.test(password);
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+  
+  return password.length >= minLength && 
+         hasUpperCase && 
+         hasLowerCase && 
+         hasNumbers && 
+         hasSpecialChar;
+}
+
 // Mongoose Models
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
@@ -196,8 +116,8 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   transactionPin: { type: String },
   biometricEnabled: { type: Boolean, default: false },
-  biometricKey: { type: String }, // For storing biometric public key
-  biometricCredentialId: { type: String }, // For storing credential ID
+  biometricKey: { type: String },
+  biometricCredentialId: { type: String },
   walletBalance: { type: Number, default: 0 },
   commissionBalance: { type: Number, default: 0 },
   isAdmin: { type: Boolean, default: false },
@@ -214,35 +134,25 @@ const userSchema = new mongoose.Schema({
     accountNumber: { type: String },
     accountName: { type: String },
   },
+  refreshToken: { type: String },
 }, { timestamps: true });
-// Fixed: Removed duplicate index for email (unique: true already creates an index)
+
+// Add indexes for performance
+userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
+userSchema.index({ isActive: 1 });
+
 // Authentication log schema
 const authLogSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
-  action: { type: String, required: true }, // 'login', 'pin_attempt', 'biometric_attempt'
+  action: { type: String, required: true },
   ipAddress: { type: String, required: true },
   userAgent: { type: String },
   success: { type: Boolean, required: true },
   details: { type: String },
   timestamp: { type: Date, default: Date.now }
 });
-const AuthLog = mongoose.model('AuthLog', authLogSchema);
-// Helper function to log authentication attempts
-const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
-  try {
-    await AuthLog.create({
-      userId,
-      action,
-      ipAddress,
-      userAgent,
-      success,
-      details
-    });
-  } catch (error) {
-    console.error('Error logging auth attempt:', error);
-  }
-};
+
 // Transaction schema
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -256,6 +166,12 @@ const transactionSchema = new mongoose.Schema({
   isCommission: { type: Boolean, default: false },
   authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' },
 }, { timestamps: true });
+
+// Add indexes for performance
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ reference: 1 });
+transactionSchema.index({ status: 1 });
+
 // Notification schema
 const notificationSchema = new mongoose.Schema({
   recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
@@ -263,6 +179,7 @@ const notificationSchema = new mongoose.Schema({
   message: { type: String, required: true },
   isRead: { type: Boolean, default: false },
 }, { timestamps: true });
+
 // Beneficiary schema
 const beneficiarySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -271,6 +188,7 @@ const beneficiarySchema = new mongoose.Schema({
   value: { type: String, required: true },
   network: { type: String },
 }, { timestamps: true });
+
 // Settings schema
 const settingsSchema = new mongoose.Schema({
   appVersion: { type: String, default: '1.0.0' },
@@ -313,11 +231,14 @@ const settingsSchema = new mongoose.Schema({
   apiRateLimit: { type: Number, default: 100 },
   apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
+
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
+const AuthLog = mongoose.model('AuthLog', authLogSchema);
+
 // Database Connection
 const connectDB = async () => {
   try {
@@ -329,10 +250,17 @@ const connectDB = async () => {
   }
 };
 connectDB();
+
 // JWT Token Generation
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 };
+
+// Generate Refresh Token
+const generateRefreshToken = (id) => {
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '7d' });
+};
+
 // Middleware to protect routes with JWT
 const protect = async (req, res, next) => {
   let token;
@@ -357,6 +285,7 @@ const protect = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Not authorized, no token' });
   }
 };
+
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, async () => {
@@ -372,6 +301,7 @@ const adminProtect = async (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
+
 // Middleware to verify transaction PIN with rate limiting
 const verifyTransactionPin = async (req, res, next) => {
   try {
@@ -443,6 +373,7 @@ const verifyTransactionPin = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
+
 // Middleware to verify biometric authentication
 const verifyBiometricAuth = async (req, res, next) => {
   try {
@@ -476,6 +407,7 @@ const verifyBiometricAuth = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
+
 // Middleware to verify transaction authentication (PIN or Biometric)
 const verifyTransactionAuth = async (req, res, next) => {
   try {
@@ -529,12 +461,14 @@ const verifyTransactionAuth = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
+
 // VTPass API Helper
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
+
 const callVtpassApi = async (endpoint, data, headers = {}) => {
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
@@ -569,6 +503,7 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
     }
   }
 };
+
 // Transaction Helper Function
 const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none') => {
   const newTransaction = new Transaction({
@@ -586,6 +521,7 @@ const createTransaction = async (userId, amount, type, status, description, bala
   await newTransaction.save({ session });
   return newTransaction;
 };
+
 // Commission Helper Function
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
@@ -621,6 +557,23 @@ const calculateAndAddCommission = async (userId, amount, session) => {
     return 0;
   }
 };
+
+// Helper function to log authentication attempts
+const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
+  try {
+    await AuthLog.create({
+      userId,
+      action,
+      ipAddress,
+      userAgent,
+      success,
+      details
+    });
+  } catch (error) {
+    console.error('Error logging auth attempt:', error);
+  }
+};
+
 // Create default settings if they don't exist
 const initializeSettings = async () => {
   try {
@@ -634,6 +587,7 @@ const initializeSettings = async () => {
   }
 };
 initializeSettings();
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
@@ -649,53 +603,100 @@ app.use((err, req, res, next) => {
   
   res.status(500).json({ success: false, message: 'Internal Server Error' });
 });
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
 // --- API Routes ---
+
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
-app.post('/api/users/register', async (req, res) => {
+app.post('/api/users/register', [
+  body('fullName').notEmpty().withMessage('Full name is required'),
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('password').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
+    }
+    return true;
+  })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   const { fullName, email, phone, password } = req.body;
-  if (!fullName || !email || !phone || !password) {
-    return res.status(400).json({ success: false, message: 'Please add all fields' });
-  }
-  const userExists = await User.findOne({ email });
-  if (userExists) {
-    return res.status(400).json({ success: false, message: 'User already exists' });
-  }
-  const salt = await bcrypt.genSalt(12);
-  const hashedPassword = await bcrypt.hash(password, salt);
-  const user = await User.create({
-    fullName,
-    email,
-    phone,
-    password: hashedPassword,
-  });
-  if (user) {
-    const token = generateToken(user._id);
-    res.status(201).json({
-      success: true,
-      message: 'Registration successful!',
-      user: {
-        _id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        phone: user.phone,
-        isAdmin: user.isAdmin,
-        walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance,
-        transactionPinSet: !!user.transactionPin,
-        biometricEnabled: user.biometricEnabled,
-      },
-      token,
+  
+  try {
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(400).json({ success: false, message: 'User already exists' });
+    }
+    
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    const user = await User.create({
+      fullName,
+      email,
+      phone,
+      password: hashedPassword,
     });
-  } else {
-    res.status(400).json({ success: false, message: 'Invalid user data' });
+    
+    if (user) {
+      const token = generateToken(user._id);
+      const refreshToken = generateRefreshToken(user._id);
+      
+      // Store refresh token
+      user.refreshToken = refreshToken;
+      await user.save();
+      
+      res.status(201).json({
+        success: true,
+        message: 'Registration successful!',
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          phone: user.phone,
+          isAdmin: user.isAdmin,
+          walletBalance: user.walletBalance,
+          commissionBalance: user.commissionBalance,
+          transactionPinSet: !!user.transactionPin,
+          biometricEnabled: user.biometricEnabled,
+        },
+        token,
+        refreshToken
+      });
+    } else {
+      res.status(400).json({ success: false, message: 'Invalid user data' });
+    }
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Authenticate a user
 // @route   POST /api/users/login
 // @access  Public
-app.post('/api/users/login', async (req, res) => {
+app.post('/api/users/login', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('password').notEmpty().withMessage('Password is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   const { email, password } = req.body;
   const ipAddress = req.ip;
   const userAgent = req.get('User-Agent');
@@ -711,9 +712,15 @@ app.post('/api/users/login', async (req, res) => {
       
       // Update last login time
       user.lastLoginAt = getLagosTime();
+      
+      // Generate tokens
+      const token = generateToken(user._id);
+      const refreshToken = generateRefreshToken(user._id);
+      
+      // Store refresh token
+      user.refreshToken = refreshToken;
       await user.save();
       
-      const token = generateToken(user._id);
       await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
       
       res.json({
@@ -731,6 +738,7 @@ app.post('/api/users/login', async (req, res) => {
           biometricEnabled: user.biometricEnabled,
         },
         token,
+        refreshToken
       });
     } else {
       if (user) {
@@ -745,14 +753,51 @@ app.post('/api/users/login', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+// @desc    Refresh access token
+// @route   POST /api/users/refresh-token
+// @access  Public
+app.post('/api/users/refresh-token', async (req, res) => {
+  const { refreshToken } = req.body;
+  
+  if (!refreshToken) {
+    return res.status(401).json({ success: false, message: 'Refresh token is required' });
+  }
+  
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const user = await User.findById(decoded.id);
+    
+    if (!user || user.refreshToken !== refreshToken) {
+      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
+    
+    const token = generateToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
+    
+    // Update refresh token
+    user.refreshToken = newRefreshToken;
+    await user.save();
+    
+    res.json({
+      success: true,
+      token,
+      refreshToken: newRefreshToken
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(401).json({ success: false, message: 'Invalid refresh token' });
+  }
+});
+
 // @desc    Logout user
 // @route   POST /api/users/logout
 // @access  Private
 app.post('/api/users/logout', protect, async (req, res) => {
   try {
-    // In a stateless JWT system, logout is typically handled client-side
-    // by discarding the token. For server-side token blacklisting,
-    // you would implement a token blacklist here.
+    // Invalidate refresh token
+    req.user.refreshToken = null;
+    await req.user.save();
     
     res.json({ success: true, message: 'Logout successful' });
   } catch (error) {
@@ -760,16 +805,20 @@ app.post('/api/users/logout', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Request password reset
 // @route   POST /api/users/forgot-password
 // @access  Public
-app.post('/api/users/forgot-password', async (req, res) => {
+app.post('/api/users/forgot-password', [
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { email } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({ success: false, message: 'Email is required' });
-    }
     
     const user = await User.findOne({ email });
     
@@ -799,16 +848,26 @@ app.post('/api/users/forgot-password', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Reset password
 // @route   POST /api/users/reset-password
 // @access  Public
-app.post('/api/users/reset-password', async (req, res) => {
+app.post('/api/users/reset-password', [
+  body('resetToken').notEmpty().withMessage('Reset token is required'),
+  body('newPassword').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
+    }
+    return true;
+  })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { resetToken, newPassword } = req.body;
-    
-    if (!resetToken || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Reset token and new password are required' });
-    }
     
     const user = await User.findOne({
       resetPasswordToken: resetToken,
@@ -836,10 +895,19 @@ app.post('/api/users/reset-password', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
-app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
+app.post('/api/users/set-transaction-pin', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('pin').isLength({ min: 6, max: 8 }).withMessage('PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId, pin } = req.body;
     const ipAddress = req.ip;
@@ -850,14 +918,8 @@ app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
     
-    // Updated validation: 4-6 digits
-    if (!pin || pin.length < 4 || pin.length > 6 || !/^\d+$/.test(pin)) {
-      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Invalid PIN format');
-      return res.status(400).json({ success: false, message: 'PIN must be a 4-6 digit number' });
-    }
-    
     // Check for common PINs
-    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333', '12345', '11111', '00000'];
+    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333', '12345678', '11111111', '00000000'];
     if (commonPins.includes(pin)) {
       await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
       return res.status(400).json({ 
@@ -892,10 +954,20 @@ app.post('/api/users/set-transaction-pin', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Change transaction PIN
 // @route   POST /api/users/change-transaction-pin
 // @access  Private
-app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
+app.post('/api/users/change-transaction-pin', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('currentPin').isLength({ min: 6, max: 8 }).withMessage('Current PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits'),
+  body('newPin').isLength({ min: 6, max: 8 }).withMessage('New PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId, currentPin, newPin } = req.body;
     const ipAddress = req.ip;
@@ -906,14 +978,8 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
     
-    // Updated validation: 4-6 digits
-    if (!newPin || newPin.length < 4 || newPin.length > 6 || !/^\d+$/.test(newPin)) {
-      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Invalid new PIN format');
-      return res.status(400).json({ success: false, message: 'New PIN must be a 4-6 digit number' });
-    }
-    
     // Check for common PINs
-    const commonPins = ['1234', '1111', '0000', '1212', '7777', '1004', '2000', '4444', '2222', '3333', '12345', '11111', '00000'];
+    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333', '12345678', '11111111', '00000000'];
     if (commonPins.includes(newPin)) {
       await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
       return res.status(400).json({ 
@@ -978,10 +1044,19 @@ app.post('/api/users/change-transaction-pin', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Toggle biometric authentication
 // @route   POST /api/users/toggle-biometric
 // @access  Private
-app.post('/api/users/toggle-biometric', protect, async (req, res) => {
+app.post('/api/users/toggle-biometric', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('enable').isBoolean().withMessage('Enable must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId, enable, biometricKey, biometricCredentialId } = req.body;
     
@@ -1004,8 +1079,6 @@ app.post('/api/users/toggle-biometric', protect, async (req, res) => {
     
     // When enabling biometric, require biometricKey and biometricCredentialId
     if (enable) {
-      // For simplicity, we'll accept any non-empty values for biometricKey and biometricCredentialId
-      // In a real implementation, these would be properly validated
       if (!biometricKey || !biometricCredentialId) {
         return res.status(400).json({ 
           success: false, 
@@ -1034,10 +1107,19 @@ app.post('/api/users/toggle-biometric', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Verify transaction PIN (standalone endpoint)
 // @route   POST /api/users/verify-transaction-pin
 // @access  Private
-app.post('/api/users/verify-transaction-pin', protect, async (req, res) => {
+app.post('/api/users/verify-transaction-pin', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('transactionPin').isLength({ min: 6, max: 8 }).withMessage('PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId, transactionPin } = req.body;
     
@@ -1097,6 +1179,7 @@ app.post('/api/users/verify-transaction-pin', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's security settings
 // @route   GET /api/users/security-settings
 // @access  Private
@@ -1131,10 +1214,20 @@ app.get('/api/users/security-settings', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's authentication logs
 // @route   GET /api/users/auth-logs
 // @access  Private
-app.get('/api/users/auth-logs', protect, async (req, res) => {
+app.get('/api/users/auth-logs', protect, [
+  query('userId').notEmpty().withMessage('User ID is required'),
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId } = req.query;
     const { page = 1, limit = 20 } = req.query;
@@ -1163,21 +1256,19 @@ app.get('/api/users/auth-logs', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's balance
-// @route   POST /api/users/get-balance
+// @route   GET /api/users/balance
 // @access  Private
-app.post('/api/users/get-balance', protect, async (req, res) => {
+app.get('/api/users/balance', protect, async (req, res) => {
   try {
-    const { userId } = req.body;
-    
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized access to balance' });
-    }
+    const userId = req.user._id;
     
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     res.json({
       success: true,
       walletBalance: user.walletBalance
@@ -1187,21 +1278,19 @@ app.post('/api/users/get-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's commission balance
-// @route   POST /api/users/get-commission-balance
+// @route   GET /api/users/commission-balance
 // @access  Private
-app.post('/api/users/get-commission-balance', protect, async (req, res) => {
+app.get('/api/users/commission-balance', protect, async (req, res) => {
   try {
-    const { userId } = req.body;
-    
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized access to commission balance' });
-    }
+    const userId = req.user._id;
     
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     res.json({
       success: true,
       commissionBalance: user.commissionBalance
@@ -1211,19 +1300,20 @@ app.post('/api/users/get-commission-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Withdraw commission to wallet
 // @route   POST /api/users/withdraw-commission
 // @access  Private
-app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, async (req, res) => {
-  const { userId, amount } = req.body;
-  
-  if (!userId || !amount || amount <= 0) {
-    return res.status(400).json({ success: false, message: 'User ID and a positive amount are required' });
+app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, [
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  
-  if (req.user._id.toString() !== userId) {
-    return res.status(403).json({ success: false, message: 'You can only withdraw from your own commission balance' });
-  }
+
+  const { amount } = req.body;
+  const userId = req.user._id;
   
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1292,6 +1382,7 @@ app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, async
     session.endSession();
   }
 });
+
 // @desc    Upload profile image
 // @route   POST /api/users/upload-profile-image
 // @access  Private
@@ -1330,6 +1421,7 @@ app.post('/api/users/upload-profile-image', protect, upload.single('profileImage
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get a specific user
 // @route   GET /api/users/:userId
 // @access  Private
@@ -1352,22 +1444,54 @@ app.get('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
 // @access  Private/Admin
-app.get('/api/users', adminProtect, async (req, res) => {
+app.get('/api/users', adminProtect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const users = await User.find({}).select('-password');
-    res.json({ success: true, users });
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const users = await User.find({})
+      .select('-password')
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await User.countDocuments();
+    
+    res.json({ 
+      success: true, 
+      users,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
   } catch (error) {
     console.error('Error fetching all users:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Toggle user active status (Admin only)
 // @route   PUT /api/users/toggle-status/:userId
 // @access  Private/Admin
-app.put('/api/users/toggle-status/:userId', adminProtect, async (req, res) => {
+app.put('/api/users/toggle-status/:userId', adminProtect, [
+  body('isActive').isBoolean().withMessage('isActive must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId } = req.params;
     const { isActive } = req.body;
@@ -1399,10 +1523,18 @@ app.put('/api/users/toggle-status/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Toggle user admin status (Admin only)
 // @route   PUT /api/users/toggle-admin-status/:userId
 // @access  Private/Admin
-app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res) => {
+app.put('/api/users/toggle-admin-status/:userId', adminProtect, [
+  body('isAdmin').isBoolean().withMessage('isAdmin must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId } = req.params;
     const { isAdmin } = req.body;
@@ -1434,10 +1566,20 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, async (req, res)
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Update user profile
 // @route   PATCH /api/users/:userId
 // @access  Private
-app.patch('/api/users/:userId', protect, async (req, res) => {
+app.patch('/api/users/:userId', protect, [
+  body('fullName').optional().notEmpty().withMessage('Full name cannot be empty'),
+  body('email').optional().isEmail().withMessage('Please provide a valid email'),
+  body('phone').optional().isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId } = req.params;
     const { fullName, email, phone, walletBalance, commissionBalance, isActive, isAdmin } = req.body;
@@ -1494,16 +1636,27 @@ app.patch('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Change user password
 // @route   POST /api/users/change-password
 // @access  Private
-app.post('/api/users/change-password', protect, async (req, res) => {
-  try {
-    const { userId, currentPassword, newPassword } = req.body;
-    
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'You can only change your own password' });
+app.post('/api/users/change-password', protect, [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
     }
+    return true;
+  })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user._id;
     
     const user = await User.findById(userId);
     if (!user) {
@@ -1527,26 +1680,36 @@ app.post('/api/users/change-password', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
-app.post('/api/users/fund', adminProtect, async (req, res) => {
-  const { userId, amount } = req.body;
-  if (!userId || !amount || amount <= 0) {
-    return res.status(400).json({ success: false, message: 'User ID and a positive amount are required' });
+app.post('/api/users/fund', adminProtect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+
+  const { userId, amount } = req.body;
+  
   const session = await mongoose.startSession();
   session.startTransaction();
+  
   try {
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     const balanceBefore = user.walletBalance;
     user.walletBalance += amount;
     const balanceAfter = user.walletBalance;
     await user.save({ session });
+    
     await createTransaction(
       userId,
       amount,
@@ -1559,8 +1722,14 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
       false,
       'none'
     );
+    
     await session.commitTransaction();
-    res.json({ success: true, message: `Successfully funded user ${user.email} with ${amount}`, newBalance: balanceAfter });
+    
+    res.json({ 
+      success: true, 
+      message: `Successfully funded user ${user.email} with ${amount}`, 
+      newBalance: balanceAfter 
+    });
   } catch (error) {
     await session.abortTransaction();
     console.error('Error funding user:', error);
@@ -1569,10 +1738,19 @@ app.post('/api/users/fund', adminProtect, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Get transaction statistics (Admin only)
 // @route   GET /api/transactions/statistics
 // @access  Private/Admin
-app.get('/api/transactions/statistics', adminProtect, async (req, res) => {
+app.get('/api/transactions/statistics', adminProtect, [
+  query('startDate').optional().isISO8601().withMessage('Start date must be a valid ISO8601 date'),
+  query('endDate').optional().isISO8601().withMessage('End date must be a valid ISO8601 date')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { startDate, endDate } = req.query;
     
@@ -1585,6 +1763,14 @@ app.get('/api/transactions/statistics', adminProtect, async (req, res) => {
           $lte: new Date(endDate)
         }
       };
+    }
+    
+    // Try to get from cache first
+    const cacheKey = `transaction-stats-${startDate || 'all'}-${endDate || 'all'}`;
+    const cachedStats = cache.get(cacheKey);
+    
+    if (cachedStats) {
+      return res.json({ success: true, statistics: cachedStats });
     }
     
     // Total transactions
@@ -1658,38 +1844,42 @@ app.get('/api/transactions/statistics', adminProtect, async (req, res) => {
       }
     ]);
     
-    res.json({
-      success: true,
-      statistics: {
-        totalTransactions,
-        successfulTransactions,
-        failedTransactions,
-        totalAmount: transactionStats.totalAmount,
-        totalCredit: transactionStats.totalCredit,
-        totalDebit: transactionStats.totalDebit,
-        totalCommission: commissionStats.totalCommission,
-        transactionsByType,
-        transactionsByStatus
-      }
-    });
+    const statistics = {
+      totalTransactions,
+      successfulTransactions,
+      failedTransactions,
+      totalAmount: transactionStats.totalAmount,
+      totalCredit: transactionStats.totalCredit,
+      totalDebit: transactionStats.totalDebit,
+      totalCommission: commissionStats.totalCommission,
+      transactionsByType,
+      transactionsByStatus
+    };
+    
+    // Cache the result
+    cache.set(cacheKey, statistics);
+    
+    res.json({ success: true, statistics });
   } catch (error) {
     console.error('Error fetching transaction statistics:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
-app.post('/api/transfer', protect, verifyTransactionAuth, async (req, res) => {
-  const { senderId, receiverEmail, amount } = req.body;
-  
-  if (!senderId || !receiverEmail || !amount || amount <= 0) {
-    return res.status(400).json({ success: false, message: 'All fields are required and amount must be positive' });
+app.post('/api/transfer', protect, verifyTransactionAuth, [
+  body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  
-  if (req.user._id.toString() !== senderId) {
-    return res.status(403).json({ success: false, message: 'You can only transfer from your own account' });
-  }
+
+  const { receiverEmail, amount } = req.body;
+  const senderId = req.user._id;
   
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1786,62 +1976,118 @@ app.post('/api/transfer', protect, verifyTransactionAuth, async (req, res) => {
     session.endSession();
   }
 });
+
 // @desc    Get user's transactions
 // @route   GET /api/transactions
 // @access  Private
-app.get('/api/transactions', protect, async (req, res) => {
+app.get('/api/transactions', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const { userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
-    }
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized access' });
-    }
-    const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const transactions = await Transaction.find({ userId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Transaction.countDocuments({ userId });
+    
     res.json({
       success: true,
-      transactions
+      transactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
     });
   } catch (error) {
     console.error('Error fetching transactions:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's commission transactions
 // @route   GET /api/commission-transactions
 // @access  Private
-app.get('/api/commission-transactions', protect, async (req, res) => {
+app.get('/api/commission-transactions', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const { userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
-    }
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized access' });
-    }
-    const commissionTransactions = await Transaction.find({ userId, isCommission: true }).sort({ createdAt: -1 });
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const commissionTransactions = await Transaction.find({ userId, isCommission: true })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Transaction.countDocuments({ userId, isCommission: true });
+    
     res.json({
       success: true,
-      commissionTransactions
+      commissionTransactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
     });
   } catch (error) {
     console.error('Error fetching commission transactions:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
-app.get('/api/transactions/all', adminProtect, async (req, res) => {
+app.get('/api/transactions/all', adminProtect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const transactions = await Transaction.find({}).sort({ createdAt: -1 }).populate('userId', 'fullName email');
-    res.json({ success: true, transactions });
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const transactions = await Transaction.find({})
+      .sort({ createdAt: -1 })
+      .populate('userId', 'fullName email')
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Transaction.countDocuments();
+    
+    res.json({ 
+      success: true, 
+      transactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
   } catch (error) {
     console.error('Error fetching all transactions:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get a specific transaction by ID
 // @route   GET /api/transactions/:transactionId
 // @access  Private
@@ -1865,34 +2111,40 @@ app.get('/api/transactions/:transactionId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's beneficiaries
-// @route   GET /api/beneficiaries/:userId
+// @route   GET /api/beneficiaries
 // @access  Private
-app.get('/api/beneficiaries/:userId', protect, async (req, res) => {
+app.get('/api/beneficiaries', protect, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user._id;
     
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
+    const beneficiaries = await Beneficiary.find({ userId })
+      .sort({ createdAt: -1 });
     
-    const beneficiaries = await Beneficiary.find({ userId }).sort({ createdAt: -1 });
     res.json({ success: true, beneficiaries });
   } catch (error) {
     console.error('Error fetching beneficiaries:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Add a beneficiary
 // @route   POST /api/beneficiaries
 // @access  Private
-app.post('/api/beneficiaries', protect, async (req, res) => {
+app.post('/api/beneficiaries', protect, [
+  body('name').notEmpty().withMessage('Name is required'),
+  body('type').isIn(['phone', 'email']).withMessage('Type must be phone or email'),
+  body('value').notEmpty().withMessage('Value is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const { userId, name, type, value, network } = req.body;
-    
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
+    const { name, type, value, network } = req.body;
+    const userId = req.user._id;
     
     const existingBeneficiary = await Beneficiary.findOne({ userId, value });
     if (existingBeneficiary) {
@@ -1917,6 +2169,7 @@ app.post('/api/beneficiaries', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Delete a beneficiary
 // @route   DELETE /api/beneficiaries/:id
 // @access  Private
@@ -1933,7 +2186,6 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
     
-    // Fixed: Using findByIdAndDelete instead of deprecated .remove()
     await Beneficiary.findByIdAndDelete(id);
     
     res.json({ success: true, message: 'Beneficiary deleted successfully' });
@@ -1942,42 +2194,58 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get user's notifications
 // @route   GET /api/notifications
 // @access  Private
-app.get('/api/notifications', protect, async (req, res) => {
+app.get('/api/notifications', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
-    const { userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID query parameter is required' });
-    }
-    if (req.user._id.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Unauthorized access' });
-    }
-    const notifications = await Notification.find({ recipientId: userId }).sort({ createdAt: -1 });
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const notifications = await Notification.find({ recipientId: userId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Notification.countDocuments({ recipientId: userId });
+    
     res.json({
       success: true,
-      notifications
+      notifications,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
     });
   } catch (error) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
 app.post('/api/notifications/:id/read', protect, async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
+    const userId = req.user._id;
     
     const notification = await Notification.findById(id);
     if (!notification) {
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
     
-    if (req.user._id.toString() !== userId || notification.recipientId.toString() !== userId) {
+    if (notification.recipientId.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
     
@@ -1990,16 +2258,21 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Send notification (Admin only)
 // @route   POST /api/notifications/send
 // @access  Private/Admin
-app.post('/api/notifications/send', adminProtect, async (req, res) => {
+app.post('/api/notifications/send', adminProtect, [
+  body('title').notEmpty().withMessage('Title is required'),
+  body('message').notEmpty().withMessage('Message is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { title, message, recipientId } = req.body;
-    
-    if (!title || !message) {
-      return res.status(400).json({ success: false, message: 'Title and message are required' });
-    }
     
     if (recipientId) {
       const recipient = await User.findById(recipientId);
@@ -2035,23 +2308,38 @@ app.post('/api/notifications/send', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get app settings
 // @route   GET /api/settings
 // @access  Public
 app.get('/api/settings', async (req, res) => {
   try {
+    // Try to get from cache first
+    const cachedSettings = cache.get('app-settings');
+    
+    if (cachedSettings) {
+      return res.json({ success: true, settings: cachedSettings });
+    }
+    
     let settings = await Settings.findOne();
     if (!settings) {
       settings = await Settings.create({});
     }
+    
+    // Cache the result
+    cache.set('app-settings', settings);
+    
     res.json({ success: true, settings });
   } catch (error) {
     console.error('Error fetching settings:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// Helper function to update settings - extracted to avoid code duplication
-const updateSettings = async (req, res) => {
+
+// @desc    Update app settings (Admin only)
+// @route   PUT /api/settings
+// @access  Private/Admin
+app.put('/api/settings', adminProtect, async (req, res) => {
   try {
     const {
       appVersion,
@@ -2127,40 +2415,26 @@ const updateSettings = async (req, res) => {
     
     await settings.save();
     
-    return { 
+    // Clear cache
+    cache.del('app-settings');
+    
+    res.json({ 
       success: true, 
       message: 'Settings updated successfully',
       settings
-    };
+    });
   } catch (error) {
     console.error('Error updating settings:', error);
-    return { success: false, message: 'Internal Server Error' };
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
-};
-// @desc    Update app settings (Admin only)
-// @route   POST /api/settings
-// @access  Private/Admin
-app.post('/api/settings', adminProtect, async (req, res) => {
-  const result = await updateSettings(req, res);
-  return res.status(result.success ? 200 : 500).json(result);
 });
-// @desc    Update app settings (Admin only) - PUT endpoint for REST consistency
-// @route   PUT /api/settings
-// @access  Private/Admin
-app.put('/api/settings', adminProtect, async (req, res) => {
-  const result = await updateSettings(req, res);
-  return res.status(result.success ? 200 : 500).json(result);
-});
+
 // @desc    Get virtual account details
-// @route   GET /api/virtual-account/:userId
+// @route   GET /api/virtual-account
 // @access  Private
-app.get('/api/virtual-account/:userId', protect, async (req, res) => {
+app.get('/api/virtual-account', protect, async (req, res) => {
   try {
-    const { userId } = req.params;
-    
-    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
+    const userId = req.user._id;
     
     const user = await User.findById(userId);
     if (!user) {
@@ -2176,16 +2450,23 @@ app.get('/api/virtual-account/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Create or update virtual account
 // @route   POST /api/virtual-account
 // @access  Private/Admin
-app.post('/api/virtual-account', adminProtect, async (req, res) => {
+app.post('/api/virtual-account', adminProtect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('bankName').notEmpty().withMessage('Bank name is required'),
+  body('accountNumber').notEmpty().withMessage('Account number is required'),
+  body('accountName').notEmpty().withMessage('Account name is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { userId, bankName, accountNumber, accountName } = req.body;
-    
-    if (!userId || !bankName || !accountNumber || !accountName) {
-      return res.status(400).json({ success: false, message: 'All fields are required' });
-    }
     
     const user = await User.findById(userId);
     if (!user) {
@@ -2211,6 +2492,7 @@ app.post('/api/virtual-account', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Remove virtual account
 // @route   DELETE /api/virtual-account/:userId
 // @access  Private/Admin
@@ -2241,25 +2523,34 @@ app.delete('/api/virtual-account/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// VTPass endpoints remain unchanged...
+
+// VTpass endpoints
+
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
 // @access  Private
-app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
+app.post('/api/vtpass/validate-smartcard', protect, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   console.log('Received smartcard verification request.');
   console.log('Request Body:', req.body);
   
   const { serviceID, billersCode } = req.body;
   
-  if (!serviceID || !billersCode) {
-    return res.status(400).json({ success: false, message: 'Service ID and billersCode are required.' });
-  }
   try {
     const vtpassResult = await callVtpassApi('/merchant-verify', {
       serviceID,
       billersCode,
     });
+    
     console.log('VTPass Verification Response:', JSON.stringify(vtpassResult, null, 2));
+    
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
       res.json({
         success: true,
@@ -2274,31 +2565,48 @@ app.post('/api/vtpass/validate-smartcard', protect, async (req, res) => {
       });
     }
   } catch (error) {
-      console.error('Error verifying smartcard:', error);
+    console.error('Error verifying smartcard:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
-app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, res) => {
+app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   console.log('Received TV purchase request.');
   console.log('Request Body:', req.body);
   
-  const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
-  const reference = generateRequestId(); // CHANGED: Using Lagos time
+  const { serviceID, billersCode, variationCode, amount, phone } = req.body;
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
   const session = await mongoose.startSession();
   session.startTransaction();
+  
   try {
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Insufficient balance' });
     }
+    
     const vtpassResult = await callVtpassApi('/pay', {
       serviceID,
       billersCode,
@@ -2309,6 +2617,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, 
     });
     
     console.log('VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
+    
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
@@ -2324,6 +2633,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, 
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
+    
     const newTransaction = await createTransaction(
       userId,
       amount,
@@ -2336,7 +2646,9 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, 
       false,
       req.authenticationMethod
     );
+    
     await session.commitTransaction();
+    
     res.json({
       success: true,
       message: `Payment request received. Status: ${newTransaction.status}.`,
@@ -2352,31 +2664,52 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, async (req, 
     session.endSession();
   }
 });
+
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
-app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (req, res) => {
+app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
+  body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least 50')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   console.log('Received airtime purchase request.');
   console.log('Request Body:', req.body);
   
-  const { userId, network, phone, amount } = req.body;
+  const { network, phone, amount } = req.body;
   const serviceID = network.toLowerCase();
-  const reference = generateRequestId(); // CHANGED: Using Lagos time
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
   const session = await mongoose.startSession();
   session.startTransaction();
+  
   try {
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Insufficient balance' });
     }
-    const vtpassResult = await callVtpassApi('/pay', { serviceID, phone, amount, request_id: reference });
+    
+    const vtpassResult = await callVtpassApi('/pay', { 
+      serviceID, 
+      phone, 
+      amount, 
+      request_id: reference 
+    });
     
     console.log('VTPass Response:', JSON.stringify(vtpassResult, null, 2));
+    
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
@@ -2392,6 +2725,7 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
+    
     const newTransaction = await createTransaction(
       userId,
       amount,
@@ -2404,7 +2738,9 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (
       false,
       req.authenticationMethod
     );
+    
     await session.commitTransaction();
+    
     res.json({
       success: true,
       message: `Airtime purchase initiated. Status: ${newTransaction.status}.`,
@@ -2420,26 +2756,49 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, async (
     session.endSession();
   }
 });
+
 // @desc    Purchase data
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
-app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req, res) => {
-  const { userId, network, phone, variationCode, amount } = req.body;
+app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
+  body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const { network, phone, variationCode, amount } = req.body;
   const serviceID = network.toLowerCase();
-  const reference = generateRequestId(); // CHANGED: Using Lagos time
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
   const session = await mongoose.startSession();
   session.startTransaction();
+  
   try {
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
     if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'Insufficient balance' });
     }
-    const vtpassResult = await callVtpassApi('/pay', { serviceID, phone, variation_code: variationCode, amount, request_id: reference });
+    
+    const vtpassResult = await callVtpassApi('/pay', { 
+      serviceID, 
+      phone, 
+      variation_code: variationCode, 
+      amount, 
+      request_id: reference 
+    });
+    
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
@@ -2455,6 +2814,7 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
+    
     const newTransaction = await createTransaction(
       userId,
       amount,
@@ -2467,7 +2827,9 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req
       false,
       req.authenticationMethod
     );
+    
     await session.commitTransaction();
+    
     res.json({
       success: true,
       message: `Data purchase initiated. Status: ${newTransaction.status}.`,
@@ -2483,18 +2845,23 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, async (req
     session.endSession();
   }
 });
+
 // @desc    Verify electricity meter number
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
-app.post('/api/vtpass/validate-electricity', protect, async (req, res) => {
+app.post('/api/vtpass/validate-electricity', protect, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   console.log('Received electricity meter verification request.');
   console.log('Request Body:', req.body);
   
   const { serviceID, billersCode } = req.body;
-  
-  if (!serviceID || !billersCode) {
-    return res.status(400).json({ success: false, message: 'Service ID and meter number are required.' });
-  }
   
   try {
     const vtpassResult = await callVtpassApi('/merchant-verify', {
@@ -2522,15 +2889,29 @@ app.post('/api/vtpass/validate-electricity', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Pay for electricity
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
-app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, async (req, res) => {
+app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   console.log('Received electricity purchase request.');
   console.log('Request Body:', req.body);
   
-  const { userId, serviceID, billersCode, variationCode, amount, phone } = req.body;
-  const reference = generateRequestId(); // CHANGED: Using Lagos time
+  const { serviceID, billersCode, variationCode, amount, phone } = req.body;
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
   const session = await mongoose.startSession();
   session.startTransaction();
   
@@ -2603,22 +2984,40 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, asy
     session.endSession();
   }
 });
-// NEW ENDPOINTS FOR VTPASS SERVICES AND VARIATIONS
+
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
 // @access  Private
-app.get('/api/vtpass/services', protect, async (req, res) => {
+app.get('/api/vtpass/services', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { serviceID } = req.query;
     
-    if (!serviceID) {
-      return res.status(400).json({ success: false, message: 'Service ID is required' });
+    // Try to get from cache first
+    const cacheKey = `vtpass-services-${serviceID}`;
+    const cachedServices = cache.get(cacheKey);
+    
+    if (cachedServices) {
+      return res.json({
+        success: true,
+        message: 'Services fetched successfully',
+        data: cachedServices
+      });
     }
     
     // Call VTpass API to get services
     const vtpassResult = await callVtpassApi('/services', { serviceID });
     
     if (vtpassResult.success) {
+      // Cache the result
+      cache.set(cacheKey, vtpassResult.data);
+      
       res.json({
         success: true,
         message: 'Services fetched successfully',
@@ -2636,21 +3035,40 @@ app.get('/api/vtpass/services', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Get VTpass variations
 // @route   GET /api/vtpass/variations
 // @access  Private
-app.get('/api/vtpass/variations', protect, async (req, res) => {
+app.get('/api/vtpass/variations', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
   try {
     const { serviceID } = req.query;
     
-    if (!serviceID) {
-      return res.status(400).json({ success: false, message: 'Service ID is required' });
+    // Try to get from cache first
+    const cacheKey = `vtpass-variations-${serviceID}`;
+    const cachedVariations = cache.get(cacheKey);
+    
+    if (cachedVariations) {
+      return res.json({
+        success: true,
+        message: 'Variations fetched successfully',
+        data: cachedVariations
+      });
     }
     
     // Call VTpass API to get variations
     const vtpassResult = await callVtpassApi('/variations', { serviceID });
     
     if (vtpassResult.success) {
+      // Cache the result
+      cache.set(cacheKey, vtpassResult.data);
+      
       res.json({
         success: true,
         message: 'Variations fetched successfully',
@@ -2668,10 +3086,12 @@ app.get('/api/vtpass/variations', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // Catch-all 404 handler
 app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
 });
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
