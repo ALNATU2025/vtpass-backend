@@ -22,7 +22,7 @@
     "node-cache": "^5.1.2",
     "helmet": "^7.0.0",
     "express-rate-limit": "^6.10.0",
-    "mongo-sanitize": "^2.1.0",
+    "mongo-sanitize": "^1.0.1",
     "xss-clean": "^0.1.4",
     "hpp": "^0.2.3"
   },
@@ -30,6 +30,6 @@
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   }
 }
