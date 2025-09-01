@@ -12,14 +12,40 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const mongoSanitize = require('mongo-sanitize');
-const xss = require('xss-clean');
-const hpp = require('hpp');
 
-// Try to load moment-timezone with fallback
-let moment;
+// Try to load security middleware with error handling
+let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
+
+try {
+  helmet = require('helmet');
+} catch (e) {
+  console.log('helmet module not found. Security headers will not be applied.');
+}
+
+try {
+  rateLimit = require('express-rate-limit');
+} catch (e) {
+  console.log('express-rate-limit module not found. Rate limiting will not be applied.');
+}
+
+try {
+  mongoSanitize = require('mongo-sanitize');
+} catch (e) {
+  console.log('mongo-sanitize module not found. Input sanitization will not be applied.');
+}
+
+try {
+  xss = require('xss-clean');
+} catch (e) {
+  console.log('xss-clean module not found. XSS protection will not be applied.');
+}
+
+try {
+  hpp = require('hpp');
+} catch (e) {
+  console.log('hpp module not found. Parameter pollution protection will not be applied.');
+}
+
 try {
   moment = require('moment-timezone');
 } catch (error) {
@@ -32,19 +58,59 @@ dotenv.config();
 // Initialize Express app
 const app = express();
 
-// Security middleware
-app.use(helmet());
-app.use(mongoSanitize());
-app.use(xss());
-app.use(hpp());
+// Apply security middleware if available
+if (helmet && typeof helmet === 'function') {
+  try {
+    app.use(helmet());
+  } catch (error) {
+    console.log('Error applying helmet middleware:', error);
+  }
+}
 
-// Rate limiting configuration
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later'
-});
-app.use(limiter);
+if (mongoSanitize && typeof mongoSanitize === 'function') {
+  try {
+    // Create custom middleware for mongo-sanitize
+    app.use((req, res, next) => {
+      // Sanitize req.body, req.query, and req.params
+      if (req.body) req.body = mongoSanitize(req.body);
+      if (req.query) req.query = mongoSanitize(req.query);
+      if (req.params) req.params = mongoSanitize(req.params);
+      next();
+    });
+  } catch (error) {
+    console.log('Error applying mongo-sanitize middleware:', error);
+  }
+}
+
+if (xss && typeof xss === 'function') {
+  try {
+    app.use(xss());
+  } catch (error) {
+    console.log('Error applying xss-clean middleware:', error);
+  }
+}
+
+if (hpp && typeof hpp === 'function') {
+  try {
+    app.use(hpp());
+  } catch (error) {
+    console.log('Error applying hpp middleware:', error);
+  }
+}
+
+// Apply rate limiting if available
+if (rateLimit && typeof rateLimit === 'function') {
+  try {
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100, // limit each IP to 100 requests per windowMs
+      message: 'Too many requests from this IP, please try again later'
+    });
+    app.use(limiter);
+  } catch (error) {
+    console.log('Error setting up rate limiter:', error);
+  }
+}
 
 // Standard middleware
 app.use(express.json());
@@ -91,7 +157,7 @@ const PORT = process.env.PORT || 5000;
 // Helper function to generate Request ID in Africa/Lagos timezone
 function generateRequestId() {
   let lagosTime;
-  if (moment.tz) {
+  if (moment && moment.tz) {
     lagosTime = moment.tz('Africa/Lagos');
   } else {
     // Fallback if moment-timezone is not available
@@ -105,7 +171,7 @@ function generateRequestId() {
 
 // Helper function to get current time in Africa/Lagos
 function getLagosTime() {
-  if (moment.tz) {
+  if (moment && moment.tz) {
     return moment.tz('Africa/Lagos').toDate();
   } else {
     // Fallback if moment-timezone is not available
