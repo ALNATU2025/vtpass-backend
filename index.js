@@ -12,52 +12,42 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
-
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
-
 try {
   helmet = require('helmet');
 } catch (e) {
   console.log('helmet module not found. Security headers will not be applied.');
 }
-
 try {
   rateLimit = require('express-rate-limit');
 } catch (e) {
   console.log('express-rate-limit module not found. Rate limiting will not be applied.');
 }
-
 try {
   mongoSanitize = require('mongo-sanitize');
 } catch (e) {
   console.log('mongo-sanitize module not found. Input sanitization will not be applied.');
 }
-
 try {
   xss = require('xss-clean');
 } catch (e) {
   console.log('xss-clean module not found. XSS protection will not be applied.');
 }
-
 try {
   hpp = require('hpp');
 } catch (e) {
   console.log('hpp module not found. Parameter pollution protection will not be applied.');
 }
-
 try {
   moment = require('moment-timezone');
 } catch (error) {
   console.log('moment-timezone not found, using moment as fallback');
   moment = require('moment');
 }
-
 dotenv.config();
-
 // Initialize Express app
 const app = express();
-
 // Apply security middleware if available
 if (helmet && typeof helmet === 'function') {
   try {
@@ -66,7 +56,6 @@ if (helmet && typeof helmet === 'function') {
     console.log('Error applying helmet middleware:', error);
   }
 }
-
 if (mongoSanitize && typeof mongoSanitize === 'function') {
   try {
     // Create custom middleware for mongo-sanitize
@@ -81,7 +70,6 @@ if (mongoSanitize && typeof mongoSanitize === 'function') {
     console.log('Error applying mongo-sanitize middleware:', error);
   }
 }
-
 if (xss && typeof xss === 'function') {
   try {
     app.use(xss());
@@ -89,7 +77,6 @@ if (xss && typeof xss === 'function') {
     console.log('Error applying xss-clean middleware:', error);
   }
 }
-
 if (hpp && typeof hpp === 'function') {
   try {
     app.use(hpp());
@@ -97,7 +84,6 @@ if (hpp && typeof hpp === 'function') {
     console.log('Error applying hpp middleware:', error);
   }
 }
-
 // Apply rate limiting if available
 if (rateLimit && typeof rateLimit === 'function') {
   try {
@@ -111,20 +97,16 @@ if (rateLimit && typeof rateLimit === 'function') {
     console.log('Error setting up rate limiter:', error);
   }
 }
-
 // Standard middleware
 app.use(express.json());
 app.use(cors());
-
 // Initialize cache
 const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
-
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
-
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -148,12 +130,9 @@ const upload = multer({
     cb(new Error("Only image files are allowed!"));
   }
 });
-
 // Serve static files from uploads directory
 app.use('/uploads', express.static(uploadsDir));
-
 const PORT = process.env.PORT || 5000;
-
 // Helper function to generate Request ID in Africa/Lagos timezone
 function generateRequestId() {
   let lagosTime;
@@ -168,7 +147,6 @@ function generateRequestId() {
   const suffix = uuidv4().replace(/-/g, '').substring(0, 12);
   return `${timestamp}_${suffix}`;
 }
-
 // Helper function to get current time in Africa/Lagos
 function getLagosTime() {
   if (moment && moment.tz) {
@@ -178,7 +156,6 @@ function getLagosTime() {
     return moment().utcOffset('+01:00').toDate();
   }
 }
-
 // Password complexity validation
 function validatePassword(password) {
   const minLength = 8;
@@ -193,7 +170,6 @@ function validatePassword(password) {
          hasNumbers && 
          hasSpecialChar;
 }
-
 // Mongoose Models
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
@@ -222,12 +198,10 @@ const userSchema = new mongoose.Schema({
   },
   refreshToken: { type: String },
 }, { timestamps: true });
-
 // Add indexes for performance
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ isActive: 1 });
-
 // Authentication log schema
 const authLogSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
@@ -238,7 +212,6 @@ const authLogSchema = new mongoose.Schema({
   details: { type: String },
   timestamp: { type: Date, default: Date.now }
 });
-
 // Transaction schema
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -252,12 +225,10 @@ const transactionSchema = new mongoose.Schema({
   isCommission: { type: Boolean, default: false },
   authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' },
 }, { timestamps: true });
-
 // Add indexes for performance
 transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ reference: 1 });
 transactionSchema.index({ status: 1 });
-
 // Notification schema
 const notificationSchema = new mongoose.Schema({
   recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
@@ -265,7 +236,6 @@ const notificationSchema = new mongoose.Schema({
   message: { type: String, required: true },
   isRead: { type: Boolean, default: false },
 }, { timestamps: true });
-
 // Beneficiary schema
 const beneficiarySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -274,7 +244,6 @@ const beneficiarySchema = new mongoose.Schema({
   value: { type: String, required: true },
   network: { type: String },
 }, { timestamps: true });
-
 // Settings schema
 const settingsSchema = new mongoose.Schema({
   appVersion: { type: String, default: '1.0.0' },
@@ -317,14 +286,12 @@ const settingsSchema = new mongoose.Schema({
   apiRateLimit: { type: Number, default: 100 },
   apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
-
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
 const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
 const Settings = mongoose.model('Settings', settingsSchema);
 const AuthLog = mongoose.model('AuthLog', authLogSchema);
-
 // Database Connection
 const connectDB = async () => {
   try {
@@ -336,17 +303,14 @@ const connectDB = async () => {
   }
 };
 connectDB();
-
 // JWT Token Generation
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 };
-
 // Generate Refresh Token
 const generateRefreshToken = (id) => {
   return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '7d' });
 };
-
 // Middleware to protect routes with JWT
 const protect = async (req, res, next) => {
   let token;
@@ -371,7 +335,6 @@ const protect = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Not authorized, no token' });
   }
 };
-
 // Middleware to protect routes for administrators only
 const adminProtect = async (req, res, next) => {
   await protect(req, res, async () => {
@@ -387,7 +350,6 @@ const adminProtect = async (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
-
 // Middleware to verify transaction PIN with rate limiting
 const verifyTransactionPin = async (req, res, next) => {
   try {
@@ -459,7 +421,6 @@ const verifyTransactionPin = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
-
 // Middleware to verify biometric authentication
 const verifyBiometricAuth = async (req, res, next) => {
   try {
@@ -493,7 +454,6 @@ const verifyBiometricAuth = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
-
 // Middleware to verify transaction authentication (PIN or Biometric)
 const verifyTransactionAuth = async (req, res, next) => {
   try {
@@ -547,14 +507,12 @@ const verifyTransactionAuth = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
-
 // VTPass API Helper
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
-
 const callVtpassApi = async (endpoint, data, headers = {}) => {
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
@@ -589,7 +547,6 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
     }
   }
 };
-
 // Transaction Helper Function
 const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none') => {
   const newTransaction = new Transaction({
@@ -607,7 +564,6 @@ const createTransaction = async (userId, amount, type, status, description, bala
   await newTransaction.save({ session });
   return newTransaction;
 };
-
 // Commission Helper Function
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
@@ -643,7 +599,6 @@ const calculateAndAddCommission = async (userId, amount, session) => {
     return 0;
   }
 };
-
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
   try {
@@ -659,7 +614,6 @@ const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, det
     console.error('Error logging auth attempt:', error);
   }
 };
-
 // Create default settings if they don't exist
 const initializeSettings = async () => {
   try {
@@ -673,7 +627,6 @@ const initializeSettings = async () => {
   }
 };
 initializeSettings();
-
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
@@ -689,7 +642,6 @@ app.use((err, req, res, next) => {
   
   res.status(500).json({ success: false, message: 'Internal Server Error' });
 });
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -698,9 +650,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime()
   });
 });
-
 // --- API Routes ---
-
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -719,7 +669,6 @@ app.post('/api/users/register', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { fullName, email, phone, password } = req.body;
   
   try {
@@ -770,7 +719,6 @@ app.post('/api/users/register', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Authenticate a user
 // @route   POST /api/users/login
 // @access  Public
@@ -782,64 +730,74 @@ app.post('/api/users/login', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { email, password } = req.body;
   const ipAddress = req.ip;
   const userAgent = req.get('User-Agent');
   
   try {
+    console.log(`Login attempt for email: ${email}`);
+    
     const user = await User.findOne({ email });
     
-    if (user && (await bcrypt.compare(password, user.password))) {
-      if (!user.isActive) {
-        await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
-        return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact support.' });
-      }
-      
-      // Update last login time
-      user.lastLoginAt = getLagosTime();
-      
-      // Generate tokens
-      const token = generateToken(user._id);
-      const refreshToken = generateRefreshToken(user._id);
-      
-      // Store refresh token
-      user.refreshToken = refreshToken;
-      await user.save();
-      
-      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
-      
-      res.json({
-        success: true,
-        message: 'Login successful!',
-        user: {
-          _id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          phone: user.phone,
-          isAdmin: user.isAdmin,
-          walletBalance: user.walletBalance,
-          commissionBalance: user.commissionBalance,
-          transactionPinSet: !!user.transactionPin,
-          biometricEnabled: user.biometricEnabled,
-        },
-        token,
-        refreshToken
-      });
-    } else {
-      if (user) {
-        await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Invalid password');
-      } else {
-        await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Invalid email: ${email}`);
-      }
-      res.status(400).json({ success: false, message: 'Invalid credentials' });
+    if (!user) {
+      console.log(`User not found for email: ${email}`);
+      await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Invalid email: ${email}`);
+      return res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
+    
+    console.log(`User found, comparing passwords for: ${email}`);
+    const isPasswordMatch = await bcrypt.compare(password, user.password);
+    
+    if (!isPasswordMatch) {
+      console.log(`Password mismatch for email: ${email}`);
+      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Invalid password');
+      return res.status(400).json({ success: false, message: 'Invalid credentials' });
+    }
+    
+    if (!user.isActive) {
+      console.log(`Account deactivated for email: ${email}`);
+      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
+      return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact support.' });
+    }
+    
+    console.log(`Generating tokens for user: ${email}`);
+    // Update last login time
+    user.lastLoginAt = getLagosTime();
+    
+    // Generate tokens
+    const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+    
+    // Store refresh token
+    user.refreshToken = refreshToken;
+    await user.save();
+    
+    console.log(`Login successful for user: ${email}`);
+    await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
+    
+    res.json({
+      success: true,
+      message: 'Login successful!',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        isAdmin: user.isAdmin,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+      },
+      token,
+      refreshToken
+    });
   } catch (error) {
     console.error('Login error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Refresh access token
 // @route   POST /api/users/refresh-token
 // @access  Public
@@ -875,7 +833,6 @@ app.post('/api/users/refresh-token', async (req, res) => {
     res.status(401).json({ success: false, message: 'Invalid refresh token' });
   }
 });
-
 // @desc    Logout user
 // @route   POST /api/users/logout
 // @access  Private
@@ -891,7 +848,6 @@ app.post('/api/users/logout', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Request password reset
 // @route   POST /api/users/forgot-password
 // @access  Public
@@ -902,7 +858,6 @@ app.post('/api/users/forgot-password', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { email } = req.body;
     
@@ -934,7 +889,6 @@ app.post('/api/users/forgot-password', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Reset password
 // @route   POST /api/users/reset-password
 // @access  Public
@@ -951,7 +905,6 @@ app.post('/api/users/reset-password', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { resetToken, newPassword } = req.body;
     
@@ -981,7 +934,6 @@ app.post('/api/users/reset-password', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
@@ -993,7 +945,6 @@ app.post('/api/users/set-transaction-pin', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId, pin } = req.body;
     const ipAddress = req.ip;
@@ -1040,7 +991,6 @@ app.post('/api/users/set-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Change transaction PIN
 // @route   POST /api/users/change-transaction-pin
 // @access  Private
@@ -1053,7 +1003,6 @@ app.post('/api/users/change-transaction-pin', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId, currentPin, newPin } = req.body;
     const ipAddress = req.ip;
@@ -1130,7 +1079,6 @@ app.post('/api/users/change-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Toggle biometric authentication
 // @route   POST /api/users/toggle-biometric
 // @access  Private
@@ -1142,7 +1090,6 @@ app.post('/api/users/toggle-biometric', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId, enable, biometricKey, biometricCredentialId } = req.body;
     
@@ -1193,7 +1140,6 @@ app.post('/api/users/toggle-biometric', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Verify transaction PIN (standalone endpoint)
 // @route   POST /api/users/verify-transaction-pin
 // @access  Private
@@ -1205,7 +1151,6 @@ app.post('/api/users/verify-transaction-pin', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId, transactionPin } = req.body;
     
@@ -1265,7 +1210,6 @@ app.post('/api/users/verify-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's security settings
 // @route   GET /api/users/security-settings
 // @access  Private
@@ -1300,7 +1244,6 @@ app.get('/api/users/security-settings', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's authentication logs
 // @route   GET /api/users/auth-logs
 // @access  Private
@@ -1313,7 +1256,6 @@ app.get('/api/users/auth-logs', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId } = req.query;
     const { page = 1, limit = 20 } = req.query;
@@ -1342,7 +1284,6 @@ app.get('/api/users/auth-logs', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's balance
 // @route   GET /api/users/balance
 // @access  Private
@@ -1364,7 +1305,6 @@ app.get('/api/users/balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's commission balance
 // @route   GET /api/users/commission-balance
 // @access  Private
@@ -1386,7 +1326,6 @@ app.get('/api/users/commission-balance', protect, async (req, res) => {
       res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Withdraw commission to wallet
 // @route   POST /api/users/withdraw-commission
 // @access  Private
@@ -1397,7 +1336,6 @@ app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { amount } = req.body;
   const userId = req.user._id;
   
@@ -1468,7 +1406,6 @@ app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Upload profile image
 // @route   POST /api/users/upload-profile-image
 // @access  Private
@@ -1507,7 +1444,6 @@ app.post('/api/users/upload-profile-image', protect, upload.single('profileImage
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get a specific user
 // @route   GET /api/users/:userId
 // @access  Private
@@ -1530,7 +1466,6 @@ app.get('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
 // @access  Private/Admin
@@ -1542,7 +1477,6 @@ app.get('/api/users', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
@@ -1566,7 +1500,6 @@ app.get('/api/users', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Toggle user active status (Admin only)
 // @route   PUT /api/users/toggle-status/:userId
 // @access  Private/Admin
@@ -1577,7 +1510,6 @@ app.put('/api/users/toggle-status/:userId', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId } = req.params;
     const { isActive } = req.body;
@@ -1609,7 +1541,6 @@ app.put('/api/users/toggle-status/:userId', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Toggle user admin status (Admin only)
 // @route   PUT /api/users/toggle-admin-status/:userId
 // @access  Private/Admin
@@ -1620,7 +1551,6 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId } = req.params;
     const { isAdmin } = req.body;
@@ -1652,7 +1582,6 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Update user profile
 // @route   PATCH /api/users/:userId
 // @access  Private
@@ -1665,7 +1594,6 @@ app.patch('/api/users/:userId', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId } = req.params;
     const { fullName, email, phone, walletBalance, commissionBalance, isActive, isAdmin } = req.body;
@@ -1722,7 +1650,6 @@ app.patch('/api/users/:userId', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Change user password
 // @route   POST /api/users/change-password
 // @access  Private
@@ -1739,7 +1666,6 @@ app.post('/api/users/change-password', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { currentPassword, newPassword } = req.body;
     const userId = req.user._id;
@@ -1766,7 +1692,6 @@ app.post('/api/users/change-password', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
@@ -1778,7 +1703,6 @@ app.post('/api/users/fund', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { userId, amount } = req.body;
   
   const session = await mongoose.startSession();
@@ -1824,7 +1748,6 @@ app.post('/api/users/fund', adminProtect, [
     session.endSession();
   }
 });
-
 // @desc    Get transaction statistics (Admin only)
 // @route   GET /api/transactions/statistics
 // @access  Private/Admin
@@ -1836,7 +1759,6 @@ app.get('/api/transactions/statistics', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { startDate, endDate } = req.query;
     
@@ -1951,7 +1873,6 @@ app.get('/api/transactions/statistics', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
@@ -1963,7 +1884,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { receiverEmail, amount } = req.body;
   const senderId = req.user._id;
   
@@ -2062,7 +1982,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Get user's transactions
 // @route   GET /api/transactions
 // @access  Private
@@ -2074,7 +1993,6 @@ app.get('/api/transactions', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const userId = req.user._id;
     const { page = 1, limit = 20 } = req.query;
@@ -2099,7 +2017,6 @@ app.get('/api/transactions', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's commission transactions
 // @route   GET /api/commission-transactions
 // @access  Private
@@ -2111,7 +2028,6 @@ app.get('/api/commission-transactions', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const userId = req.user._id;
     const { page = 1, limit = 20 } = req.query;
@@ -2136,7 +2052,6 @@ app.get('/api/commission-transactions', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
@@ -2148,7 +2063,6 @@ app.get('/api/transactions/all', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
@@ -2173,7 +2087,6 @@ app.get('/api/transactions/all', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get a specific transaction by ID
 // @route   GET /api/transactions/:transactionId
 // @access  Private
@@ -2197,7 +2110,6 @@ app.get('/api/transactions/:transactionId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's beneficiaries
 // @route   GET /api/beneficiaries
 // @access  Private
@@ -2214,7 +2126,6 @@ app.get('/api/beneficiaries', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Add a beneficiary
 // @route   POST /api/beneficiaries
 // @access  Private
@@ -2227,7 +2138,6 @@ app.post('/api/beneficiaries', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { name, type, value, network } = req.body;
     const userId = req.user._id;
@@ -2255,7 +2165,6 @@ app.post('/api/beneficiaries', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Delete a beneficiary
 // @route   DELETE /api/beneficiaries/:id
 // @access  Private
@@ -2280,7 +2189,6 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get user's notifications
 // @route   GET /api/notifications
 // @access  Private
@@ -2292,7 +2200,6 @@ app.get('/api/notifications', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const userId = req.user._id;
     const { page = 1, limit = 20 } = req.query;
@@ -2317,7 +2224,6 @@ app.get('/api/notifications', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
@@ -2344,7 +2250,6 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Send notification (Admin only)
 // @route   POST /api/notifications/send
 // @access  Private/Admin
@@ -2356,7 +2261,6 @@ app.post('/api/notifications/send', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { title, message, recipientId } = req.body;
     
@@ -2394,7 +2298,6 @@ app.post('/api/notifications/send', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get app settings
 // @route   GET /api/settings
 // @access  Public
@@ -2421,7 +2324,6 @@ app.get('/api/settings', async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Update app settings (Admin only)
 // @route   PUT /api/settings
 // @access  Private/Admin
@@ -2514,7 +2416,6 @@ app.put('/api/settings', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get virtual account details
 // @route   GET /api/virtual-account
 // @access  Private
@@ -2536,7 +2437,6 @@ app.get('/api/virtual-account', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Create or update virtual account
 // @route   POST /api/virtual-account
 // @access  Private/Admin
@@ -2550,7 +2450,6 @@ app.post('/api/virtual-account', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { userId, bankName, accountNumber, accountName } = req.body;
     
@@ -2578,7 +2477,6 @@ app.post('/api/virtual-account', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Remove virtual account
 // @route   DELETE /api/virtual-account/:userId
 // @access  Private/Admin
@@ -2609,9 +2507,7 @@ app.delete('/api/virtual-account/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // VTpass endpoints
-
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
 // @access  Private
@@ -2623,7 +2519,6 @@ app.post('/api/vtpass/validate-smartcard', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   console.log('Received smartcard verification request.');
   console.log('Request Body:', req.body);
   
@@ -2655,7 +2550,6 @@ app.post('/api/vtpass/validate-smartcard', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
@@ -2670,7 +2564,6 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   console.log('Received TV purchase request.');
   console.log('Request Body:', req.body);
   
@@ -2750,7 +2643,6 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
@@ -2763,7 +2655,6 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   console.log('Received airtime purchase request.');
   console.log('Request Body:', req.body);
   
@@ -2842,7 +2733,6 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Purchase data
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
@@ -2856,7 +2746,6 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   const { network, phone, variationCode, amount } = req.body;
   const serviceID = network.toLowerCase();
   const userId = req.user._id;
@@ -2931,7 +2820,6 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Verify electricity meter number
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
@@ -2943,7 +2831,6 @@ app.post('/api/vtpass/validate-electricity', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   console.log('Received electricity meter verification request.');
   console.log('Request Body:', req.body);
   
@@ -2975,7 +2862,6 @@ app.post('/api/vtpass/validate-electricity', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Pay for electricity
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
@@ -2990,7 +2876,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   console.log('Received electricity purchase request.');
   console.log('Request Body:', req.body);
   
@@ -3070,7 +2955,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
 // @access  Private
@@ -3081,7 +2965,6 @@ app.get('/api/vtpass/services', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { serviceID } = req.query;
     
@@ -3121,7 +3004,6 @@ app.get('/api/vtpass/services', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 // @desc    Get VTpass variations
 // @route   GET /api/vtpass/variations
 // @access  Private
@@ -3132,7 +3014,6 @@ app.get('/api/vtpass/variations', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
   try {
     const { serviceID } = req.query;
     
@@ -3170,6 +3051,39 @@ app.get('/api/vtpass/variations', protect, [
   } catch (error) {
     console.error('Error fetching VTpass variations:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// NEW: Error reporting endpoint
+// @desc    Report an error
+// @route   POST /api/errors/report
+// @access  Private
+app.post('/api/errors/report', protect, async (req, res) => {
+  try {
+    const { error, stackTrace, timestamp, platform, version } = req.body;
+    
+    console.error('Error reported from client:', {
+      error,
+      stackTrace,
+      timestamp,
+      platform,
+      version,
+      userId: req.user._id
+    });
+    
+    // Here you would typically save the error to a database or send it to a logging service
+    // For now, we'll just acknowledge receipt
+    
+    res.status(200).json({ 
+      success: true, 
+      message: 'Error report received' 
+    });
+  } catch (error) {
+    console.error('Error reporting error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to process error report' 
+    });
   }
 });
 
