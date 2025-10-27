@@ -48,6 +48,7 @@ try {
 dotenv.config();
 // Initialize Express app
 const app = express();
+app.set('trust proxy', 1);
 // Apply security middleware if available
 if (helmet && typeof helmet === 'function') {
   try {
