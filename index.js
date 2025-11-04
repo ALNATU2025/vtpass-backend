@@ -3005,6 +3005,53 @@ app.get('/api/vtpass/services', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+// In your main backend routes, add this:
+
+// Wallet top-up endpoint
+router.post('/wallet/top-up', async (req, res) => {
+    try {
+        const { userId, amount, reference, description, source } = req.body;
+        
+        console.log('💰 Wallet top-up request:', { userId, amount, reference });
+        
+        // Find user and update balance
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        
+        // Update wallet balance
+        user.walletBalance = (user.walletBalance || 0) + amount;
+        await user.save();
+        
+        // Create transaction record
+        const transaction = new Transaction({
+            userId: userId,
+            type: 'credit',
+            amount: amount,
+            reference: reference,
+            description: description || 'Wallet funding',
+            status: 'completed',
+            service: 'wallet_funding',
+            source: source || 'paystack'
+        });
+        
+        await transaction.save();
+        
+        console.log('✅ Wallet top-up successful:', { userId, newBalance: user.walletBalance });
+        
+        res.json({
+            success: true,
+            message: 'Wallet topped up successfully',
+            newBalance: user.walletBalance,
+            transactionId: transaction._id
+        });
+        
+    } catch (error) {
+        console.error('❌ Wallet top-up error:', error);
+        res.status(500).json({ success: false, message: 'Wallet top-up failed' });
+    }
+});
 // @desc    Get VTpass variations
 // @route   GET /api/vtpass/variations
 // @access  Private
