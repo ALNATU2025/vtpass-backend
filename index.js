@@ -3093,6 +3093,100 @@ app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
 });
 
+// Add this to your main backend (vtpass-backend)
+// @desc    Top up wallet from virtual account payment
+// @route   POST /api/wallet/top-up
+// @access  Private
+app.post('/api/wallet/top-up', async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+        const { userId, amount, reference, description } = req.body;
+        
+        console.log('💰 Wallet top-up request:', { userId, amount, reference });
+
+        if (!userId || !amount || !reference) {
+            await session.abortTransaction();
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Missing required fields: userId, amount, reference' 
+            });
+        }
+
+        const user = await User.findById(userId).session(session);
+        if (!user) {
+            await session.abortTransaction();
+            return res.status(404).json({ 
+                success: false, 
+                message: 'User not found' 
+            });
+        }
+
+        // Check if transaction already exists
+        const existingTransaction = await Transaction.findOne({ 
+            reference: reference 
+        }).session(session);
+        
+        if (existingTransaction) {
+            await session.abortTransaction();
+            return res.json({
+                success: true,
+                message: 'Transaction already processed',
+                amount: amount,
+                newBalance: user.walletBalance
+            });
+        }
+
+        const balanceBefore = user.walletBalance;
+        user.walletBalance += amount;
+        const balanceAfter = user.walletBalance;
+        
+        await user.save({ session });
+
+        // Create transaction record
+        await createTransaction(
+            userId,
+            amount,
+            'credit',
+            'successful',
+            description || `Wallet funding - Ref: ${reference}`,
+            balanceBefore,
+            balanceAfter,
+            session,
+            false,
+            'paystack'
+        );
+
+        await session.commitTransaction();
+        
+        console.log('✅ Wallet top-up successful:', {
+            userId,
+            amount,
+            newBalance: balanceAfter,
+            reference
+        });
+
+        res.json({
+            success: true,
+            message: 'Wallet topped up successfully',
+            amount: amount,
+            newBalance: balanceAfter,
+            transactionId: existingTransaction?._id
+        });
+
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('❌ Wallet top-up error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Wallet top-up failed' 
+        });
+    } finally {
+        session.endSession();
+    }
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
