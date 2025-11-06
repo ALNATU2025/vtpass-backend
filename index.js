@@ -2,7 +2,6 @@
 // --- File: index.js ---
 const express = require('express');
 const fetch = require("node-fetch");
-const app = express();
 const mongoose = require('mongoose');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
