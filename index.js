@@ -100,6 +100,31 @@ if (rateLimit && typeof rateLimit === 'function') {
     console.log('Error setting up rate limiter:', error);
   }
 }
+
+
+
+
+// ✅ ADD THIS DEBUG ROUTE HERE (BEFORE ANY 404 HANDLERS)
+app.get("/api/debug/ip", async (req, res) => {
+  try {
+    const response = await fetch("https://api.ipify.org?format=json");
+    const data = await response.json();
+    res.json({
+      actualOutboundIP: data.ip,
+      note: "This is the IP VTpass will see when your backend connects to them."
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ Then your other app.use('/api/...') route imports go below this
+
+// ❌ Your 404 handler should always come last
+app.use((req, res) => {
+  res.status(404).json({ message: "API endpoint not found" });
+});
+
 // Standard middleware
 app.use(express.json());
 app.use(cors());
@@ -3687,29 +3712,6 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       message: 'Service temporarily unavailable' 
     });
   }
-});
-
-
-
-
-
-// ✅ Put this above all app.use(...) 404 or error handlers
-app.get("/api/debug/ip", async (req, res) => {
-  try {
-    const response = await fetch("https://api.ipify.org?format=json");
-    const data = await response.json();
-    res.json({
-      actualOutboundIP: data.ip,
-      note: "This is the IP VTpass will see when your backend connects to them."
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 404 fallback should come last
-app.use((req, res) => {
-  res.status(404).json({ message: "API endpoint not found" });
 });
 
 
