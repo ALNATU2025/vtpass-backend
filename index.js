@@ -1,7 +1,8 @@
 
 // --- File: index.js ---
 const express = require('express');
-import fetch from "node-fetch";
+const fetch = require("node-fetch");
+const app = express();
 const mongoose = require('mongoose');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -3699,7 +3700,7 @@ app.get("/api/debug/ip", async (req, res) => {
     const data = await response.json();
     res.json({
       actualOutboundIP: data.ip,
-      note: "This is the IP you must whitelist with VTpass."
+      note: "This is the IP VTpass will see when your backend connects to them."
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
