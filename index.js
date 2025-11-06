@@ -3693,6 +3693,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
 
 
+// ✅ Put this above all app.use(...) 404 or error handlers
 app.get("/api/debug/ip", async (req, res) => {
   try {
     const response = await fetch("https://api.ipify.org?format=json");
@@ -3705,6 +3706,12 @@ app.get("/api/debug/ip", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// 404 fallback should come last
+app.use((req, res) => {
+  res.status(404).json({ message: "API endpoint not found" });
+});
+
 
 
 
