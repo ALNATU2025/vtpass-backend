@@ -3437,6 +3437,137 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 });
 
 
+// @desc    Execute atomic transaction (debit + VTpass call in one operation)
+// @route   POST /api/transactions/atomic
+// @access  Private
+app.post('/api/transactions/atomic', protect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      userId,
+      debitAmount,
+      debitService,
+      vtpassPayload,
+      creditService,
+      creditAmount,
+      transactionPin,
+      useBiometric
+    } = req.body;
+
+    console.log('⚛️ ATOMIC TRANSACTION REQUEST:', { userId, debitAmount, debitService });
+
+    // Verify user owns this transaction
+    if (req.user._id.toString() !== userId) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Check balance
+    if (user.walletBalance < debitAmount) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient balance. Required: ₦${debitAmount}, Available: ₦${user.walletBalance}`
+      });
+    }
+
+    // Verify transaction PIN if provided
+    if (transactionPin) {
+      const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+      if (!isPinMatch) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: 'Invalid transaction PIN' });
+      }
+    }
+
+    // Step 1: Debit user's wallet
+    const balanceBefore = user.walletBalance;
+    user.walletBalance -= debitAmount;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+
+    // Step 2: Create debit transaction
+    await createTransaction(
+      userId,
+      debitAmount,
+      'debit',
+      'pending',
+      `${debitService} purchase`,
+      balanceBefore,
+      balanceAfter,
+      session,
+      false,
+      transactionPin ? 'pin' : (useBiometric ? 'biometric' : 'none')
+    );
+
+    // Step 3: Call VTpass API
+    console.log('🚀 Calling VTpass from atomic transaction:', vtpassPayload);
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    let transactionStatus = 'failed';
+    let commissionAdded = false;
+
+    if (vtpassResult.success && vtpassResult.data?.code === '000') {
+      transactionStatus = 'successful';
+      
+      // Step 4: Credit commission if applicable
+      if (creditService && creditAmount && creditAmount > 0) {
+        user.commissionBalance += creditAmount;
+        await user.save({ session });
+        
+        await createTransaction(
+          userId,
+          creditAmount,
+          'credit',
+          'successful',
+          `Commission from ${debitService}`,
+          user.commissionBalance - creditAmount,
+          user.commissionBalance,
+          session,
+          true,
+          'none'
+        );
+        commissionAdded = true;
+      }
+    }
+
+    // Update transaction status
+    await Transaction.findOneAndUpdate(
+      { userId, description: `${debitService} purchase`, status: 'pending' },
+      { status: transactionStatus },
+      { session }
+    );
+
+    await session.commitTransaction();
+
+    console.log('✅ ATOMIC TRANSACTION COMPLETED:', { transactionStatus, commissionAdded });
+
+    res.json({
+      success: transactionStatus === 'successful',
+      message: transactionStatus === 'successful' ? 'Transaction completed successfully' : 'Transaction failed',
+      newBalance: user.walletBalance,
+      newCommissionBalance: user.commissionBalance,
+      vtpassResponse: vtpassResult.data,
+      transactionStatus
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ ATOMIC TRANSACTION ERROR:', error);
+    res.status(500).json({ success: false, message: 'Atomic transaction failed' });
+  } finally {
+    session.endSession();
+  }
+});
+
 
 // Start the server
 app.listen(PORT, () => {
