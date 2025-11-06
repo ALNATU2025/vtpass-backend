@@ -1,6 +1,7 @@
 
 // --- File: index.js ---
 const express = require('express');
+import fetch from "node-fetch";
 const mongoose = require('mongoose');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -3687,6 +3688,25 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+app.get("/api/debug/ip", async (req, res) => {
+  try {
+    const response = await fetch("https://api.ipify.org?format=json");
+    const data = await response.json();
+    res.json({
+      actualOutboundIP: data.ip,
+      note: "This is the IP you must whitelist with VTpass."
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 
 // Start the server
