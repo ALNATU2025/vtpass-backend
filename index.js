@@ -1,3 +1,4 @@
+
 // --- File: index.js ---
 const express = require('express');
 const mongoose = require('mongoose');
@@ -3189,6 +3190,186 @@ app.post('/api/wallet/top-up', async (req, res) => {
         session.endSession();
     }
 });
+
+
+
+// --- NEW: CORS Proxy Endpoint for VTpass ---
+// @desc    Proxy endpoint to handle CORS for VTpass API calls
+// @route   POST /api/proxy/vtpass
+// @access  Private
+app.post('/api/proxy/vtpass', protect, [
+  body('url').notEmpty().withMessage('URL is required'),
+  body('body').isObject().withMessage('Body must be an object'),
+  body('method').optional().isIn(['GET', 'POST', 'PUT', 'DELETE']).withMessage('Method must be one of: GET, POST, PUT, DELETE'),
+  body('headers').optional().isObject().withMessage('Headers must be an object')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { url, body, method = 'POST', headers = {} } = req.body;
+    
+    console.log('🔧 Proxy Request Details:');
+    console.log('   URL:', url);
+    console.log('   Method:', method);
+    console.log('   Headers:', Object.keys(headers));
+    console.log('   Body:', JSON.stringify(body, null, 2));
+
+    // Validate that the URL is a VTpass URL for security
+    const allowedDomains = [
+      'sandbox.vtpass.com',
+      'vtpass.com',
+      'api.vtpass.com'
+    ];
+    
+    const urlObj = new URL(url);
+    if (!allowedDomains.includes(urlObj.hostname)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Proxy access denied for this domain'
+      });
+    }
+
+    // Prepare request configuration
+    const config = {
+      method: method,
+      url: url,
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ...headers
+      },
+      data: body,
+      timeout: 30000, // 30 seconds timeout
+      validateStatus: function (status) {
+        return status >= 200 && status < 600; // Accept all status codes
+      }
+    };
+
+    console.log('🚀 Sending proxy request to VTpass...');
+
+    const response = await axios(config);
+
+    console.log('📦 Proxy Response:');
+    console.log('   Status:', response.status);
+    console.log('   Headers:', response.headers);
+    console.log('   Data:', JSON.stringify(response.data, null, 2));
+
+    // Forward the response exactly as received from VTpass
+    res.status(response.status).json({
+      success: response.status >= 200 && response.status < 300,
+      status: response.status,
+      data: response.data,
+      headers: response.headers,
+      proxy: true
+    });
+
+  } catch (error) {
+    console.error('❌ Proxy Error:', error.message);
+    
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      console.error('Response Data:', error.response.data);
+      console.error('Response Status:', error.response.status);
+      console.error('Response Headers:', error.response.headers);
+      
+      return res.status(error.response.status).json({
+        success: false,
+        status: error.response.status,
+        message: error.response.data?.message || 'Error from VTpass API',
+        data: error.response.data,
+        proxy: true
+      });
+    } else if (error.request) {
+      // The request was made but no response was received
+      console.error('No response received:', error.request);
+      return res.status(504).json({
+        success: false,
+        status: 504,
+        message: 'Timeout: No response from VTpass API',
+        proxy: true
+      });
+    } else {
+      // Something happened in setting up the request that triggered an Error
+      console.error('Request setup error:', error.message);
+      return res.status(500).json({
+        success: false,
+        status: 500,
+        message: error.message || 'Internal Server Error in proxy',
+        proxy: true
+      });
+    }
+  }
+});
+
+// --- NEW: Enhanced VTpass Services with Proxy Fallback ---
+// @desc    Get VTpass services with proxy fallback
+// @route   GET /api/vtpass/services-enhanced
+// @access  Private
+app.get('/api/vtpass/services-enhanced', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    // Try direct VTpass API first
+    try {
+      const vtpassResult = await callVtpassApi('/services', { serviceID });
+      
+      if (vtpassResult.success) {
+        return res.json({
+          success: true,
+          message: 'Services fetched successfully (direct)',
+          data: vtpassResult.data,
+          method: 'direct'
+        });
+      }
+    } catch (directError) {
+      console.log('Direct API failed, trying proxy...');
+    }
+
+    // Fallback to proxy
+    const proxyResult = await axios.post(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/proxy/vtpass`, {
+      url: `${vtpassConfig.baseUrl}/services`,
+      method: 'GET',
+      headers: {
+        'api-key': vtpassConfig.apiKey,
+        'secret-key': vtpassConfig.secretKey
+      },
+      body: { serviceID }
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': req.headers.authorization
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Services fetched successfully (proxy)',
+      data: proxyResult.data.data,
+      method: 'proxy'
+    });
+
+  } catch (error) {
+    console.error('Error in enhanced services fetch:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch services via all methods' 
+    });
+  }
+});
+
+
+
 
 // Start the server
 app.listen(PORT, () => {
