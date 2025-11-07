@@ -254,8 +254,9 @@ transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ reference: 1 });
 transactionSchema.index({ status: 1 });
 // Notification schema
+// FIX: Update the Notification schema - change required: false to required: true
 const notificationSchema = new mongoose.Schema({
-  recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
+  recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, // CHANGED from false to true
   title: { type: String, required: true },
   message: { type: String, required: true },
   isRead: { type: Boolean, default: false },
@@ -674,7 +675,6 @@ app.get('/health', (req, res) => {
     uptime: process.uptime()
   });
 });
-// --- API Routes ---
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -718,6 +718,19 @@ app.post('/api/users/register', [
       user.refreshToken = refreshToken;
       await user.save();
       
+      // AUTO-CREATE WELCOME NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: user._id,
+          title: "Welcome to VTPass! 🎉",
+          message: "Thank you for registering with VTPass. You can now enjoy seamless bill payments, airtime top-ups, data purchases, and more. Get started by funding your wallet!",
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating welcome notification:', notificationError);
+        // Don't fail registration if notification fails
+      }
+      
       res.status(201).json({
         success: true,
         message: 'Registration successful!',
@@ -743,6 +756,7 @@ app.post('/api/users/register', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Authenticate a user
 // @route   POST /api/users/login
 // @access  Public
@@ -1993,6 +2007,30 @@ app.post('/api/transfer', protect, verifyTransactionAuth, [
     
     await session.commitTransaction();
     
+    // AUTO-CREATE TRANSFER NOTIFICATION FOR SENDER
+    try {
+      await Notification.create({
+        recipientId: senderId,
+        title: "Transfer Successful 💸",
+        message: `You successfully transferred ₦${amount} to ${receiverEmail}. New balance: ₦${senderBalanceAfter}`,
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Error creating transfer notification:', notificationError);
+    }
+    
+    // AUTO-CREATE TRANSFER NOTIFICATION FOR RECEIVER
+    try {
+      await Notification.create({
+        recipientId: receiver._id,
+        title: "Money Received 💰",
+        message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Error creating received notification:', notificationError);
+    }
+    
     res.json({ 
       success: true, 
       message: `Transfer of ${amount} to ${receiverEmail} successful`,
@@ -2213,6 +2251,133 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+// @desc    Create test notifications for development
+// @route   POST /api/notifications/test
+// @access  Private
+app.post('/api/notifications/test', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Delete existing test notifications for this user
+    await Notification.deleteMany({ 
+      recipientId: userId,
+      title: { $regex: /test|welcome|maintenance|airtime/i }
+    });
+    
+    const testNotifications = [
+      {
+        recipientId: userId,
+        title: "Welcome to VTPass! 🎉",
+        message: "Thank you for joining our platform. Start enjoying seamless bill payments, airtime top-ups, and more.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "Airtime Purchase Successful ✅",
+        message: "Your airtime purchase of ₦500 for 08012345678 was completed successfully. Transaction ID: TXN_001",
+        isRead: true
+      },
+      {
+        recipientId: userId,
+        title: "Data Bundle Purchased 📱",
+        message: "1GB data bundle for MTN has been activated on your number 08012345678. Valid for 30 days.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "System Maintenance Notice 🔧",
+        message: "There will be scheduled maintenance on Saturday from 2-4 AM. Services may be temporarily unavailable.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "Wallet Funded Successfully 💰",
+        message: "Your wallet has been credited with ₦5,000. New balance: ₦7,250. Transaction Ref: FUND_001",
+        isRead: true
+      },
+      {
+        recipientId: userId,
+        title: "New Feature Available 🚀",
+        message: "Electricity bill payments are now available! Pay your PHCN, AEDC, and other utility bills seamlessly.",
+        isRead: false
+      }
+    ];
+    
+    const createdNotifications = await Notification.insertMany(testNotifications);
+    
+    res.json({ 
+      success: true, 
+      message: 'Test notifications created successfully',
+      count: createdNotifications.length,
+      notifications: createdNotifications
+    });
+  } catch (error) {
+    console.error('Error creating test notifications:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Mark multiple notifications as read
+// @route   POST /api/notifications/mark-all-read
+// @access  Private
+app.post('/api/notifications/mark-all-read', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const result = await Notification.updateMany(
+      { recipientId: userId, isRead: false },
+      { $set: { isRead: true } }
+    );
+    
+    res.json({ 
+      success: true, 
+      message: `Marked ${result.modifiedCount} notifications as read`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Get notification statistics
+// @route   GET /api/notifications/statistics
+// @access  Private
+app.get('/api/notifications/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const totalNotifications = await Notification.countDocuments({ recipientId: userId });
+    const unreadNotifications = await Notification.countDocuments({ 
+      recipientId: userId, 
+      isRead: false 
+    });
+    const readNotifications = totalNotifications - unreadNotifications;
+    
+    // Get latest notification date
+    const latestNotification = await Notification.findOne({ recipientId: userId })
+      .sort({ createdAt: -1 })
+      .select('createdAt');
+    
+    res.json({
+      success: true,
+      statistics: {
+        total: totalNotifications,
+        unread: unreadNotifications,
+        read: readNotifications,
+        latestNotification: latestNotification?.createdAt || null
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching notification statistics:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 // @desc    Get user's notifications
 // @route   GET /api/notifications
 // @access  Private
@@ -2274,7 +2439,8 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Send notification (Admin only)
+
+// @desc    Send notification (Admin only) - ENHANCED
 // @route   POST /api/notifications/send
 // @access  Private/Admin
 app.post('/api/notifications/send', adminProtect, [
@@ -2286,7 +2452,7 @@ app.post('/api/notifications/send', adminProtect, [
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   try {
-    const { title, message, recipientId } = req.body;
+    const { title, message, recipientId, notificationType } = req.body;
     
     if (recipientId) {
       const recipient = await User.findById(recipientId);
@@ -2299,6 +2465,11 @@ app.post('/api/notifications/send', adminProtect, [
         title,
         message
       });
+      
+      res.json({ 
+        success: true, 
+        message: 'Notification sent successfully to user'
+      });
     } else {
       const users = await User.find({ isActive: true });
       
@@ -2309,14 +2480,12 @@ app.post('/api/notifications/send', adminProtect, [
       }));
       
       await Notification.insertMany(notifications);
+      
+      res.json({ 
+        success: true, 
+        message: `Notification sent to ${users.length} users`
+      });
     }
-    
-    res.json({ 
-      success: true, 
-      message: recipientId 
-        ? 'Notification sent successfully' 
-        : `Notification sent to all users`
-    });
   } catch (error) {
     console.error('Error sending notification:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
@@ -2632,6 +2801,18 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
       
       await calculateAndAddCommission(userId, amount, session);
+      
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "TV Subscription Successful 📺",
+          message: `Your ${serviceID.toUpperCase()} TV subscription of ₦${amount} for ${billersCode} was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
     } else {
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
@@ -2671,7 +2852,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
 app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
-  body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
+  body('network').isIn(['mtn', 'airtel', 'glo', 'etisalat']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
   body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least 50')
 ], async (req, res) => {
@@ -2722,6 +2903,18 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
       
       await calculateAndAddCommission(userId, amount, session);
+      
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Airtime Purchase Successful ✅",
+          message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
     } else {
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
@@ -2761,7 +2954,7 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
 app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
-  body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
+  body('network').isIn(['mtn', 'airtel', 'glo', ' etisalat-data']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
@@ -2809,6 +3002,18 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
       
       await calculateAndAddCommission(userId, amount, session);
+      
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Data Purchase Successful 📱",
+          message: `Your data purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
     } else {
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
@@ -2944,6 +3149,18 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
       
       await calculateAndAddCommission(userId, amount, session);
+      
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Electricity Payment Successful ⚡",
+          message: `Your ${serviceID.toUpperCase()} electricity payment of ₦${amount} for meter ${billersCode} was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
     } else {
       await session.abortTransaction();
       return res.status(vtpassResult.status || 400).json(vtpassResult);
