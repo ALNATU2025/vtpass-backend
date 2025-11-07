@@ -118,12 +118,8 @@ app.get("/api/debug/ip", async (req, res) => {
   }
 });
 
-// ✅ Then your other app.use('/api/...') route imports go below this
 
-// ❌ Your 404 handler should always come last
-app.use((req, res) => {
-  res.status(404).json({ message: "API endpoint not found" });
-});
+
 
 // Standard middleware
 app.use(express.json());
