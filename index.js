@@ -3694,6 +3694,290 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
 
 
+// ==================== DATA PLANS ROUTES ====================
+
+// @desc    Get data plans for a specific network
+// @route   GET /api/data-plans
+// @access  Private
+app.get('/api/data-plans', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    console.log('📡 Fetching data plans for service:', serviceID);
+
+    // Validate service ID
+    const validServiceIDs = [
+      'mtn-data', 'airtel-data', 'glo-data', 
+      'glo-sme-data', 'etisalat-data'
+    ];
+    
+    if (!validServiceIDs.includes(serviceID)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid service ID. Valid IDs: ' + validServiceIDs.join(', ')
+      });
+    }
+
+    // Try to get from cache first
+    const cacheKey = `data-plans-${serviceID}`;
+    const cachedPlans = cache.get(cacheKey);
+    
+    if (cachedPlans) {
+      console.log('✅ Serving data plans from cache for:', serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: cachedPlans,
+        totalPlans: cachedPlans.length,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling VTpass API for data plans:', serviceID);
+
+    // Call VTpass API directly
+    const vtpassResult = await callVtpassApi('/service-variations', { serviceID });
+
+    if (!vtpassResult.success || !vtpassResult.data) {
+      console.log('❌ VTpass API call failed:', vtpassResult.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch data plans from provider',
+        error: vtpassResult.message
+      });
+    }
+
+    const vtpassData = vtpassResult.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      return res.status(400).json({
+        success: false,
+        message: vtpassData.response_description || 'Failed to fetch data plans'
+      });
+    }
+
+    // Process the variations (handle both 'variations' and 'varations' fields)
+    const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+    
+    console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
+
+    if (!variations || variations.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No data plans available for this network'
+      });
+    }
+
+    // Transform the data into a consistent format
+    const processedPlans = variations.map(plan => {
+      // Extract validity from name (e.g., "1.5GB Weekly Plan (7 Days)" -> "7 Days")
+      let validity = '30 days'; // default
+      const name = plan.name || '';
+      
+      // Extract validity from parentheses
+      const validityMatch = name.match(/\(([^)]+)\)/);
+      if (validityMatch) {
+        validity = validityMatch[1];
+      } else {
+        // Fallback: determine validity from name patterns
+        if (name.toLowerCase().includes('daily') || name.toLowerCase().includes('1 day')) {
+          validity = '1 day';
+        } else if (name.toLowerCase().includes('weekly') || name.toLowerCase().includes('7 days')) {
+          validity = '7 days';
+        } else if (name.toLowerCase().includes('monthly') || name.toLowerCase().includes('30 days')) {
+          validity = '30 days';
+        } else if (name.toLowerCase().includes('2-month') || name.toLowerCase().includes('60 days')) {
+          validity = '60 days';
+        } else if (name.toLowerCase().includes('3-month') || name.toLowerCase().includes('90 days')) {
+          validity = '90 days';
+        } else if (name.toLowerCase().includes('yearly') || name.toLowerCase().includes('365 days')) {
+          validity = '365 days';
+        }
+      }
+
+      return {
+        name: plan.name || 'Unknown Plan',
+        amount: plan.variation_amount?.toString() || '0',
+        validity: validity,
+        variation_code: plan.variation_code || '',
+        serviceID: serviceID,
+        fixedPrice: plan.fixedPrice === 'Yes'
+      };
+    }).filter(plan => plan.variation_code && plan.name !== 'Unknown Plan');
+
+    // Sort plans by amount (lowest to highest)
+    processedPlans.sort((a, b) => parseFloat(a.amount) - parseFloat(b.amount));
+
+    console.log(`✅ Processed ${processedPlans.length} plans for ${serviceID}`);
+
+    // Cache the result for 5 minutes
+    cache.set(cacheKey, processedPlans, 300);
+
+    res.json({
+      success: true,
+      service: vtpassData.content?.ServiceName || serviceID,
+      serviceID: serviceID,
+      plans: processedPlans,
+      totalPlans: processedPlans.length,
+      source: 'vtpass_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching data plans:', error);
+    
+    // Provide fallback mock data
+    const mockPlans = getMockDataPlans(req.query.serviceID);
+    
+    res.json({
+      success: true,
+      service: req.query.serviceID,
+      plans: mockPlans,
+      totalPlans: mockPlans.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using mock data due to service unavailability'
+    });
+  }
+});
+
+// Helper function for mock data fallback
+function getMockDataPlans(serviceID) {
+  const mockPlans = {
+    'mtn-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'mtn-500mb-200', fixedPrice: true },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'mtn-1gb-500', fixedPrice: true },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'mtn-2gb-1000', fixedPrice: true },
+      { name: '5GB Monthly Plan', amount: '2000', validity: '30 days', variation_code: 'mtn-5gb-2000', fixedPrice: true },
+    ],
+    'airtel-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'airtel-500mb-200', fixedPrice: true },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'airtel-1gb-500', fixedPrice: true },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'airtel-2gb-1000', fixedPrice: true },
+    ],
+    'glo-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'glo-500mb-200', fixedPrice: true },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'glo-1gb-500', fixedPrice: true },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'glo-2gb-1000', fixedPrice: true },
+    ],
+    'etisalat-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'etisalat-500mb-200', fixedPrice: true },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'etisalat-1gb-500', fixedPrice: true },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'etisalat-2gb-1000', fixedPrice: true },
+    ]
+  };
+
+  return mockPlans[serviceID] || [];
+}
+
+// @desc    Get all available data plans for all networks
+// @route   GET /api/data-plans/all
+// @access  Private
+app.get('/api/data-plans/all', protect, async (req, res) => {
+  try {
+    const networks = [
+      { name: 'MTN', serviceID: 'mtn-data' },
+      { name: 'Airtel', serviceID: 'airtel-data' },
+      { name: 'Glo', serviceID: 'glo-data' },
+      { name: '9mobile', serviceID: 'etisalat-data' }
+    ];
+
+    const allPlans = {};
+    
+    // Fetch plans for all networks
+    const planPromises = networks.map(async (network) => {
+      try {
+        // Use the existing data-plans endpoint
+        const response = await axios.get(
+          `http://localhost:${process.env.PORT || 5000}/api/data-plans?serviceID=${network.serviceID}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${req.headers.authorization?.split(' ')[1]}`
+            }
+          }
+        );
+        
+        return {
+          network: network.name,
+          serviceID: network.serviceID,
+          plans: response.data.success ? response.data.plans : [],
+          success: response.data.success
+        };
+      } catch (error) {
+        console.error(`Error fetching ${network.name} plans:`, error.message);
+        return {
+          network: network.name,
+          serviceID: network.serviceID,
+          plans: getMockDataPlans(network.serviceID),
+          success: false,
+          error: error.message
+        };
+      }
+    });
+
+    const results = await Promise.all(planPromises);
+    
+    // Organize by network
+    results.forEach(result => {
+      allPlans[result.network] = result.plans;
+    });
+
+    res.json({
+      success: true,
+      networks: networks.map(n => n.name),
+      plans: allPlans,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching all data plans:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch all data plans',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Clear data plans cache (Admin only)
+// @route   DELETE /api/data-plans/cache
+// @access  Private/Admin
+app.delete('/api/data-plans/cache', adminProtect, async (req, res) => {
+  try {
+    const keys = cache.keys();
+    const dataPlanKeys = keys.filter(key => key.startsWith('data-plans-'));
+    
+    dataPlanKeys.forEach(key => cache.del(key));
+    
+    res.json({
+      success: true,
+      message: `Cleared ${dataPlanKeys.length} data plan cache entries`,
+      clearedKeys: dataPlanKeys
+    });
+  } catch (error) {
+    console.error('Error clearing data plans cache:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear cache'
+    });
+  }
+});
+
+// ==================== END DATA PLANS ROUTES ====================
+
+
+
+
+
 
 // Start the server
 app.listen(PORT, () => {
