@@ -3333,7 +3333,7 @@ app.post('/api/errors/report', protect, async (req, res) => {
 
 // Catch-all 404 handler
 app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not found' });
+  res.status(404).json({ message: 'API endpoint not foundd' });
 });
 
 
@@ -3693,34 +3693,6 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
 
 
-// Add this RIGHT BEFORE your 404 handler to see all registered routes
-app.get('/api/debug/routes', (req, res) => {
-  const routes = [];
-  app._router.stack.forEach((middleware) => {
-    if (middleware.route) {
-      // Routes registered directly on the app
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
-    } else if (middleware.name === 'router') {
-      // Routes registered via router
-      middleware.handle.stack.forEach((handler) => {
-        if (handler.route) {
-          routes.push({
-            path: handler.route.path,
-            methods: Object.keys(handler.route.methods)
-          });
-        }
-      });
-    }
-  });
-  
-  res.json({
-    totalRoutes: routes.length,
-    routes: routes
-  });
-});
 
 
 
@@ -3961,11 +3933,6 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
-
-// Catch-all 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not found' });
-});
 
 // Start the server with graceful shutdown handling
 const server = app.listen(PORT, '0.0.0.0', () => {
