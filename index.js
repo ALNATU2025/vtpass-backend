@@ -3725,16 +3725,15 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
+// ==================== DATA PLANS ENDPOINT ====================
 
-// ==================== DATA PLANS ROUTE (KEEP ONLY THIS ONE) ====================
-
-// @desc    Get data plans directly from VTpass API (Enhanced)
+// @desc    Get data plans directly from VTpass API
 // @route   GET /api/data-plans
 // @access  Private
 app.get('/api/data-plans', protect, [
   query('serviceID').notEmpty().withMessage('Service ID is required')
 ], async (req, res) => {
-  console.log('🎯 ENHANCED DATA PLANS ENDPOINT HIT - serviceID:', req.query.serviceID);
+  console.log('🎯 DATA PLANS ENDPOINT HIT - serviceID:', req.query.serviceID);
   
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -3744,7 +3743,7 @@ app.get('/api/data-plans', protect, [
   try {
     const { serviceID } = req.query;
     
-    console.log('📡 Fetching LIVE data plans for service:', serviceID);
+    console.log('📡 Fetching data plans for service:', serviceID);
 
     // Validate service ID
     const validServiceIDs = [
@@ -3783,14 +3782,13 @@ app.get('/api/data-plans', protect, [
       params: { serviceID },
       headers: {
         'Content-Type': 'application/json',
-        'api-key': vtpassConfig.apiKey,
-        'secret-key': vtpassConfig.secretKey,
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
       },
       timeout: 15000
     });
 
     console.log('📦 LIVE VTpass API response status:', response.status);
-    console.log('📦 LIVE VTpass API response data received');
 
     const vtpassData = response.data;
 
@@ -3809,7 +3807,7 @@ app.get('/api/data-plans', protect, [
       });
     }
 
-    // Process the variations - handle both 'variations' and 'varations' fields
+    // Process the variations
     const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
     
     console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
@@ -3898,7 +3896,35 @@ app.get('/api/data-plans', protect, [
   }
 });
 
-// ==================== END DATA PLANS ROUTE ====================
+// Helper function for mock data plans
+function getMockDataPlans(serviceID) {
+  const mockPlans = {
+    'mtn-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'mtn-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'mtn-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'mtn-2gb-1000' },
+      { name: '5GB Monthly Plan', amount: '2000', validity: '30 days', variation_code: 'mtn-5gb-2000' },
+      { name: '10GB Monthly Plan', amount: '3000', validity: '30 days', variation_code: 'mtn-10gb-3000' },
+    ],
+    'airtel-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'airtel-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'airtel-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'airtel-2gb-1000' },
+    ],
+    'glo-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'glo-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'glo-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'glo-2gb-1000' },
+    ],
+    'etisalat-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'etisalat-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'etisalat-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'etisalat-2gb-1000' },
+    ]
+  };
+  
+  return mockPlans[serviceID] || [];
+}
 
 
 
