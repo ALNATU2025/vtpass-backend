@@ -3900,6 +3900,213 @@ app.get('/api/data-plans', protect, [
 
 // ==================== END DATA PLANS ROUTES ====================
 
+
+
+
+
+// @desc    Get data plans directly from VTpass API
+// @route   GET /api/data-plans
+// @access  Private
+app.get('/api/data-plans', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎯 DATA PLANS ENDPOINT HIT - serviceID:', req.query.serviceID);
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    console.log('📡 Fetching LIVE data plans for service:', serviceID);
+
+    // Validate service ID
+    const validServiceIDs = [
+      'mtn-data', 'airtel-data', 'glo-data', 
+      'glo-sme-data', 'etisalat-data'
+    ];
+    
+    if (!validServiceIDs.includes(serviceID)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid service ID. Valid IDs: ' + validServiceIDs.join(', ')
+      });
+    }
+
+    // Try to get from cache first (5 minutes cache)
+    const cacheKey = `data-plans-${serviceID}`;
+    const cachedPlans = cache.get(cacheKey);
+    
+    if (cachedPlans) {
+      console.log('✅ Serving data plans from cache for:', serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: cachedPlans,
+        totalPlans: cachedPlans.length,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling LIVE VTpass API for data plans:', serviceID);
+
+    // Call VTpass LIVE API directly
+    const vtpassUrl = 'https://vtpass.com/api/service-variations';
+    
+    const response = await axios.get(vtpassUrl, {
+      params: { serviceID },
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': vtpassConfig.apiKey,
+        'secret-key': vtpassConfig.secretKey,
+      },
+      timeout: 15000
+    });
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+    console.log('📦 LIVE VTpass API response data received');
+
+    const vtpassData = response.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      // Fallback to mock data
+      const mockPlans = getMockDataPlans(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: mockPlans,
+        totalPlans: mockPlans.length,
+        source: 'mock_fallback',
+        note: 'VTpass error: ' + vtpassData.response_description
+      });
+    }
+
+    // Process the variations - handle both 'variations' and 'varations' fields
+    const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+    
+    console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
+
+    if (!variations || variations.length === 0) {
+      const mockPlans = getMockDataPlans(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: mockPlans,
+        totalPlans: mockPlans.length,
+        source: 'mock_fallback',
+        note: 'No plans from VTpass, using mock data'
+      });
+    }
+
+    // Transform the data into a consistent format
+    const processedPlans = variations.map(plan => {
+      let validity = '30 days';
+      const name = plan.name || '';
+      
+      // Extract validity from plan name
+      const validityMatch = name.match(/\(([^)]+)\)/);
+      if (validityMatch) {
+        validity = validityMatch[1];
+      } else {
+        // Fallback validity detection
+        if (name.toLowerCase().includes('daily') || name.toLowerCase().includes('1 day')) {
+          validity = '1 day';
+        } else if (name.toLowerCase().includes('weekly') || name.toLowerCase().includes('7 days')) {
+          validity = '7 days';
+        } else if (name.toLowerCase().includes('monthly') || name.toLowerCase().includes('30 days')) {
+          validity = '30 days';
+        } else if (name.toLowerCase().includes('2-month') || name.toLowerCase().includes('60 days')) {
+          validity = '60 days';
+        } else if (name.toLowerCase().contains('3-month') || name.toLowerCase().includes('90 days')) {
+          validity = '90 days';
+        } else if (name.toLowerCase().includes('yearly') || name.toLowerCase().includes('365 days')) {
+          validity = '365 days';
+        }
+      }
+
+      return {
+        name: plan.name || 'Unknown Plan',
+        amount: plan.variation_amount?.toString() || plan.amount?.toString() || '0',
+        validity: validity,
+        variation_code: plan.variation_code || '',
+        serviceID: serviceID,
+        fixedPrice: plan.fixedPrice === 'Yes'
+      };
+    }).filter(plan => plan.variation_code && plan.name !== 'Unknown Plan');
+
+    // Sort plans by amount (lowest to highest)
+    processedPlans.sort((a, b) => parseFloat(a.amount) - parseFloat(b.amount));
+
+    console.log(`✅ Processed ${processedPlans.length} LIVE plans for ${serviceID}`);
+
+    // Cache the result for 5 minutes
+    cache.set(cacheKey, processedPlans, 300);
+
+    res.json({
+      success: true,
+      service: vtpassData.content?.ServiceName || serviceID,
+      serviceID: serviceID,
+      plans: processedPlans,
+      totalPlans: processedPlans.length,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching LIVE data plans:', error);
+    
+    // Provide fallback mock data
+    const mockPlans = getMockDataPlans(req.query.serviceID);
+    
+    res.json({
+      success: true,
+      service: req.query.serviceID,
+      plans: mockPlans,
+      totalPlans: mockPlans.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using mock data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// Helper function for mock data plans
+function getMockDataPlans(serviceID) {
+  const mockPlans = {
+    'mtn-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'mtn-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'mtn-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'mtn-2gb-1000' },
+      { name: '5GB Monthly Plan', amount: '2000', validity: '30 days', variation_code: 'mtn-5gb-2000' },
+      { name: '10GB Monthly Plan', amount: '3000', validity: '30 days', variation_code: 'mtn-10gb-3000' },
+    ],
+    'airtel-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'airtel-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'airtel-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'airtel-2gb-1000' },
+    ],
+    'glo-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'glo-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'glo-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'glo-2gb-1000' },
+    ],
+    'etisalat-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'etisalat-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'etisalat-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'etisalat-2gb-1000' },
+    ]
+  };
+  
+  return mockPlans[serviceID] || [];
+}
+
+
+
+
 // Catch-all 404 handler
 app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
