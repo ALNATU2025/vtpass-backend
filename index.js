@@ -3331,10 +3331,6 @@ app.post('/api/errors/report', protect, async (req, res) => {
   }
 });
 
-// Catch-all 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not foundd' });
-});
 
 
 
@@ -3931,6 +3927,11 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
+
+// Catch-all 404 handler
+app.use((req, res) => {
+  res.status(404).json({ message: 'API endpoint not foundd' });
+});
 
 
 
