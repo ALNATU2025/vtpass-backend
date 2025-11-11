@@ -13,7 +13,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
-const { query, validationResult } = require('express-validator');
 const NodeCache = require('node-cache');
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
