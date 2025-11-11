@@ -3938,17 +3938,26 @@ app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
 });
 
-// Start the server
-app.listen(PORT, () => {
+// Start the server with graceful shutdown handling
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
 
-
-
-
-
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
 });
