@@ -350,7 +350,24 @@ if (!process.env.REFRESH_TOKEN_SECRET) {
 
 // Auto-refresh token middleware
 // ✅ CORRECTED Auto-refresh token middleware
+// ✅ ENHANCED Auto-refresh token middleware
 const autoRefreshToken = async (req, res, next) => {
+  // Skip token refresh for public routes
+  const publicRoutes = [
+    '/api/users/register',
+    '/api/users/login', 
+    '/api/users/refresh-token',
+    '/api/users/forgot-password',
+    '/api/users/reset-password',
+    '/api/settings',
+    '/api/debug/ip',
+    '/health'
+  ];
+  
+  if (publicRoutes.includes(req.path)) {
+    return next();
+  }
+  
   const token = req.headers.authorization?.split(' ')[1];
   
   if (token) {
@@ -378,17 +395,27 @@ const autoRefreshToken = async (req, res, next) => {
               res.set('x-new-token', newToken);
               res.set('x-new-refresh-token', newRefreshToken);
               
+              // Add user to request for protect middleware
               req.user = user;
               return next();
             }
           } catch (refreshError) {
             console.error('Token refresh failed:', refreshError);
-            return res.status(401).json({ success: false, message: 'Token refresh failed' });
+            return res.status(401).json({ 
+              success: false, 
+              message: 'Token refresh failed. Please login again.',
+              code: 'REFRESH_FAILED'
+            });
           }
         }
+        
+        // If no refresh token provided, continue to protect middleware
+        // which will return the appropriate error
+        return next();
       }
-      // If token is invalid for other reasons, return error
-      return res.status(401).json({ success: false, message: 'Invalid token' });
+      
+      // If token is invalid for other reasons, continue to protect middleware
+      return next();
     }
   }
   
@@ -396,16 +423,21 @@ const autoRefreshToken = async (req, res, next) => {
   next();
 };
 
-// ✅ Use this middleware BEFORE protect middleware for specific routes
-app.use('/api/users/refresh-token', autoRefreshToken);
-// For other protected routes, use the regular protect middleware
+// ✅ Apply to ALL API routes (except public ones handled in middleware)
+app.use('/api', autoRefreshToken);
 
 
 
 // Middleware to protect routes with JWT
 // ✅ ENHANCED Protect middleware with better error handling
+// ✅ UPDATED Protect middleware that works with auto-refresh
 const protect = async (req, res, next) => {
   let token;
+  
+  // Check if we already have a user from auto-refresh middleware
+  if (req.user) {
+    return next();
+  }
   
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
@@ -435,7 +467,7 @@ const protect = async (req, res, next) => {
       if (error.name === 'TokenExpiredError') {
         return res.status(401).json({ 
           success: false, 
-          message: 'Token expired',
+          message: 'Token expired. Please refresh your token or login again.',
           code: 'TOKEN_EXPIRED'
         });
       }
@@ -446,9 +478,7 @@ const protect = async (req, res, next) => {
         code: 'INVALID_TOKEN'
       });
     }
-  }
-  
-  if (!token) {
+  } else {
     return res.status(401).json({ 
       success: false, 
       message: 'Not authorized, no token',
@@ -456,6 +486,100 @@ const protect = async (req, res, next) => {
     });
   }
 };
+
+
+
+// @desc    Check token status and refresh if needed
+// @route   POST /api/users/token-health
+// @access  Private
+app.post('/api/users/token-health', protect, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const refreshToken = req.headers['x-refresh-token'];
+    
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+    
+    try {
+      // Try to verify the current token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select('-password');
+      
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      return res.json({
+        success: true,
+        message: 'Token is valid',
+        user: {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName
+        },
+        tokenExpired: false,
+        expiresIn: 'valid'
+      });
+      
+    } catch (tokenError) {
+      if (tokenError.name === 'TokenExpiredError' && refreshToken) {
+        // Token expired, try to refresh
+        try {
+          const decodedRefresh = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+          const user = await User.findById(decodedRefresh.id);
+          
+          if (user && user.refreshToken === refreshToken) {
+            // Generate new tokens
+            const newToken = generateToken(user._id);
+            const newRefreshToken = generateRefreshToken(user._id);
+            
+            // Update refresh token in database
+            user.refreshToken = newRefreshToken;
+            await user.save();
+            
+            return res.json({
+              success: true,
+              message: 'Token refreshed successfully',
+              token: newToken,
+              refreshToken: newRefreshToken,
+              user: {
+                _id: user._id,
+                email: user.email,
+                fullName: user.fullName
+              },
+              tokenExpired: true,
+              refreshed: true
+            });
+          } else {
+            return res.status(401).json({
+              success: false,
+              message: 'Refresh token does not match stored token',
+              code: 'REFRESH_TOKEN_MISMATCH'
+            });
+          }
+        } catch (refreshError) {
+          console.error('Refresh token error:', refreshError.message);
+          return res.status(401).json({
+            success: false,
+            message: 'Refresh token invalid or expired',
+            code: 'REFRESH_TOKEN_INVALID'
+          });
+        }
+      }
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Token invalid and no valid refresh token provided',
+        code: 'TOKEN_INVALID'
+      });
+    }
+  } catch (error) {
+    console.error('Token health check error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
 
 
 // Middleware to protect routes for administrators only
