@@ -1115,41 +1115,83 @@ app.post('/api/users/login', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Refresh access token
+// @desc    Refresh access token - ENHANCED VERSION
 // @route   POST /api/users/refresh-token
 // @access  Public
 app.post('/api/users/refresh-token', async (req, res) => {
   const { refreshToken } = req.body;
   
   if (!refreshToken) {
-    return res.status(401).json({ success: false, message: 'Refresh token is required' });
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Refresh token is required',
+      code: 'REFRESH_TOKEN_REQUIRED'
+    });
   }
   
   try {
     const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
     const user = await User.findById(decoded.id);
     
-    if (!user || user.refreshToken !== refreshToken) {
-      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
     }
     
+    if (user.refreshToken !== refreshToken) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid refresh token',
+        code: 'INVALID_REFRESH_TOKEN'
+      });
+    }
+    
+    // Generate new tokens
     const token = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
     
-    // Update refresh token
+    // Update refresh token in database
     user.refreshToken = newRefreshToken;
     await user.save();
     
     res.json({
       success: true,
       token,
-      refreshToken: newRefreshToken
+      refreshToken: newRefreshToken,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName
+      }
     });
   } catch (error) {
     console.error('Refresh token error:', error);
-    res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Refresh token expired',
+        code: 'REFRESH_TOKEN_EXPIRED'
+      });
+    } else if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid refresh token',
+        code: 'INVALID_REFRESH_TOKEN'
+      });
+    }
+    
+    res.status(401).json({ 
+      success: false, 
+      message: 'Invalid refresh token',
+      code: 'REFRESH_TOKEN_INVALID'
+    });
   }
 });
+
 // @desc    Logout user
 // @route   POST /api/users/logout
 // @access  Private
