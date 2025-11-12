@@ -4249,14 +4249,14 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
-// Add to your index.js file in the routes section
 
 // @desc    Get cable TV variations for all providers
 // @route   GET /api/cable/variations
 // @access  Private
 app.get('/api/cable/variations', protect, async (req, res) => {
   try {
-    const providers = ['dstv', 'gotv', 'startimes'];
+    const { serviceID } = req.query;
+    const providers = serviceID ? [serviceID] : ['dstv', 'gotv', 'startimes'];
     const variations = {};
 
     for (const provider of providers) {
