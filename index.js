@@ -3928,6 +3928,215 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
+// Add to your index.js file in the routes section
+
+// @desc    Get cable TV variations for all providers
+// @route   GET /api/cable/variations
+// @access  Private
+app.get('/api/cable/variations', protect, async (req, res) => {
+  try {
+    const providers = ['dstv', 'gotv', 'startimes'];
+    const variations = {};
+
+    for (const provider of providers) {
+      try {
+        const vtpassResult = await callVtpassApi('/service-variations', {
+          serviceID: provider
+        });
+
+        if (vtpassResult.success && vtpassResult.data) {
+          variations[provider.toUpperCase()] = {
+            success: true,
+            serviceName: vtpassResult.data.content?.ServiceName || provider,
+            variations: vtpassResult.data.content?.variations || vtpassResult.data.content?.varations || [],
+            totalPlans: (vtpassResult.data.content?.variations || vtpassResult.data.content?.varations || []).length
+          };
+        } else {
+          variations[provider.toUpperCase()] = {
+            success: false,
+            variations: getMockCableVariations(provider),
+            totalPlans: getMockCableVariations(provider).length,
+            source: 'mock_fallback'
+          };
+        }
+      } catch (error) {
+        console.error(`Error fetching ${provider} variations:`, error);
+        variations[provider.toUpperCase()] = {
+          success: false,
+          variations: getMockCableVariations(provider),
+          totalPlans: getMockCableVariations(provider).length,
+          source: 'mock_fallback'
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Cable variations fetched successfully',
+      data: variations,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching cable variations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch cable variations',
+      error: error.message
+    });
+  }
+});
+
+// Helper function for mock cable variations
+function getMockCableVariations(provider) {
+  const mockVariations = {
+    'dstv': [
+      {
+        "name": "DStv Padi N1,850",
+        "variation_code": "dstv-padi",
+        "variation_amount": "1850.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "DStv Yanga N2,565", 
+        "variation_code": "dstv-yanga",
+        "variation_amount": "2565.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "Dstv Confam N4,615",
+        "variation_code": "dstv-confam", 
+        "variation_amount": "4615.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "DStv Compact N7900",
+        "variation_code": "dstv79",
+        "variation_amount": "7900.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "DStv Premium N18,400",
+        "variation_code": "dstv3",
+        "variation_amount": "18400.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'gotv': [
+      {
+        "name": "GOtv Smallie",
+        "variation_code": "gotv-smallie",
+        "variation_amount": "1300.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "GOtv Jinja", 
+        "variation_code": "gotv-jinja",
+        "variation_amount": "2700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "GOtv Max",
+        "variation_code": "gotv-max",
+        "variation_amount": "5700.00", 
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "GOtv Supa",
+        "variation_code": "gotv-supa",
+        "variation_amount": "7200.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'startimes': [
+      {
+        "name": "StarTimes Nova",
+        "variation_code": "nova",
+        "variation_amount": "1500.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "StarTimes Basic",
+        "variation_code": "basic", 
+        "variation_amount": "2700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "StarTimes Classic",
+        "variation_code": "classic",
+        "variation_amount": "4000.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "StarTimes Smart",
+        "variation_code": "smart",
+        "variation_amount": "5500.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
+
+  return mockVariations[provider] || [];
+}
+
+// @desc    Validate smart card number with enhanced details
+// @route   POST /api/cable/validate-smartcard
+// @access  Private  
+app.post('/api/cable/validate-smartcard', protect, [
+  body('serviceID').isIn(['dstv', 'gotv', 'startimes']).withMessage('Valid serviceID is required'),
+  body('billersCode').notEmpty().withMessage('Smart card number is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const { serviceID, billersCode } = req.body;
+
+  try {
+    const vtpassResult = await callVtpassApi('/merchant-verify', {
+      serviceID,
+      billersCode
+    });
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const content = vtpassResult.data.content;
+      
+      // Enhanced response with all available details
+      const enhancedResponse = {
+        success: true,
+        customerName: content.Customer_Name,
+        status: content.Status,
+        dueDate: content.Due_Date,
+        customerNumber: content.Customer_Number,
+        customerType: content.Customer_Type,
+        currentBouquet: content.Current_Bouquet,
+        renewalAmount: content.Renewal_Amount,
+        details: content
+      };
+
+      res.json(enhancedResponse);
+    } else {
+      res.status(400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Smart card validation failed',
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('Error validating smart card:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to validate smart card' 
+    });
+  }
+});
+
+
+
+
+
+
 // Catch-all 404 handler
 app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not foundd' });
