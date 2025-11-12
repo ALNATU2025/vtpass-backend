@@ -419,10 +419,7 @@ const autoRefreshToken = async (req, res, next) => {
     // For other token errors, continue to protect middleware
     return next();
   }
-};  
-  // If no token, continue to next middleware (protect will handle it)
-  next();
-};
+}; // This was missing - closing the autoRefreshToken function
 
 // ✅ Apply to ALL API routes (except public ones handled in middleware)
 app.use('/api', autoRefreshToken);
