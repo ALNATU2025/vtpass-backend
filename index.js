@@ -349,8 +349,7 @@ if (!process.env.REFRESH_TOKEN_SECRET) {
 }
 
 // Auto-refresh token middleware
-// ✅ CORRECTED Auto-refresh token middleware
-// ✅ ENHANCED Auto-refresh token middleware
+// ✅ IMPROVED Auto-refresh token middleware
 const autoRefreshToken = async (req, res, next) => {
   // Skip token refresh for public routes
   const publicRoutes = [
@@ -364,61 +363,63 @@ const autoRefreshToken = async (req, res, next) => {
     '/health'
   ];
   
-  if (publicRoutes.includes(req.path)) {
+  if (publicRoutes.some(route => req.path.startsWith(route))) {
     return next();
   }
   
   const token = req.headers.authorization?.split(' ')[1];
   
-  if (token) {
-    try {
-      // Try to verify the current token
-      jwt.verify(token, process.env.JWT_SECRET);
-      return next();
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        const refreshToken = req.headers['x-refresh-token'];
-        
-        if (refreshToken) {
-          try {
-            const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-            const user = await User.findById(decoded.id);
-            
-            if (user && user.refreshToken === refreshToken) {
-              const newToken = generateToken(user._id);
-              const newRefreshToken = generateRefreshToken(user._id);
-              
-              user.refreshToken = newRefreshToken;
-              await user.save();
-              
-              // Set new tokens in response headers
-              res.set('x-new-token', newToken);
-              res.set('x-new-refresh-token', newRefreshToken);
-              
-              // Add user to request for protect middleware
-              req.user = user;
-              return next();
-            }
-          } catch (refreshError) {
-            console.error('Token refresh failed:', refreshError);
-            return res.status(401).json({ 
-              success: false, 
-              message: 'Token refresh failed. Please login again.',
-              code: 'REFRESH_FAILED'
-            });
-          }
-        }
-        
-        // If no refresh token provided, continue to protect middleware
-        // which will return the appropriate error
+  if (!token) {
+    return next();
+  }
+  
+  try {
+    // Try to verify the current token
+    jwt.verify(token, process.env.JWT_SECRET);
+    return next();
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      const refreshToken = req.headers['x-refresh-token'];
+      
+      if (!refreshToken) {
+        // If no refresh token, continue to protect middleware which will handle the error
         return next();
       }
       
-      // If token is invalid for other reasons, continue to protect middleware
-      return next();
+      try {
+        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+        const user = await User.findById(decoded.id);
+        
+        if (user && user.refreshToken === refreshToken) {
+          const newToken = generateToken(user._id);
+          const newRefreshToken = generateRefreshToken(user._id);
+          
+          // Update refresh token in database
+          user.refreshToken = newRefreshToken;
+          await user.save();
+          
+          // Set new tokens in response headers
+          res.set('x-new-token', newToken);
+          res.set('x-new-refresh-token', newRefreshToken);
+          
+          // Add user to request for protect middleware
+          req.user = user;
+          req.tokenRefreshed = true;
+          return next();
+        } else {
+          console.log('Refresh token does not match stored token');
+          return next();
+        }
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError.message);
+        return next();
+      }
     }
+    
+    // For other token errors, continue to protect middleware
+    return next();
   }
-  
+};  
   // If no token, continue to next middleware (protect will handle it)
   next();
 };
@@ -431,11 +432,12 @@ app.use('/api', autoRefreshToken);
 // Middleware to protect routes with JWT
 // ✅ ENHANCED Protect middleware with better error handling
 // ✅ UPDATED Protect middleware that works with auto-refresh
+// ✅ UPDATED Protect middleware
 const protect = async (req, res, next) => {
   let token;
   
   // Check if we already have a user from auto-refresh middleware
-  if (req.user) {
+  if (req.user && req.tokenRefreshed) {
     return next();
   }
   
@@ -443,21 +445,23 @@ const protect = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(' ')[1];
       
-      // Check if we have a new token from auto-refresh middleware
-      const newToken = req.headers['x-new-token'];
-      if (newToken) {
-        token = newToken;
-      }
-      
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       req.user = await User.findById(decoded.id).select('-password');
       
       if (!req.user) {
-        return res.status(401).json({ success: false, message: 'Not authorized, user for token not found' });
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Not authorized, user for token not found',
+          code: 'USER_NOT_FOUND'
+        });
       }
       
       if (!req.user.isActive) {
-        return res.status(403).json({ success: false, message: 'Account has been deactivated. Please contact support.' });
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Account has been deactivated. Please contact support.',
+          code: 'ACCOUNT_DEACTIVATED'
+        });
       }
       
       next();
@@ -487,6 +491,58 @@ const protect = async (req, res, next) => {
   }
 };
 
+
+// @desc    Check token status and refresh if needed
+// @route   GET /api/users/token-status
+// @access  Private
+app.get('/api/users/token-status', protect, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+    
+    try {
+      // Verify token without checking expiration
+      const decoded = jwt.decode(token);
+      const user = await User.findById(decoded.id).select('-password');
+      
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      // Calculate token expiration time
+      const tokenExp = decoded.exp * 1000; // Convert to milliseconds
+      const now = Date.now();
+      const expiresIn = tokenExp - now;
+      const willExpireSoon = expiresIn < (30 * 60 * 1000); // 30 minutes
+      
+      return res.json({
+        success: true,
+        tokenStatus: 'valid',
+        user: {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName
+        },
+        expiresIn: Math.floor(expiresIn / 1000), // seconds
+        willExpireSoon,
+        shouldRefresh: willExpireSoon
+      });
+      
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Token invalid',
+        code: 'TOKEN_INVALID'
+      });
+    }
+  } catch (error) {
+    console.error('Token status check error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
 
 
 // @desc    Check token status and refresh if needed
