@@ -4503,8 +4503,6 @@ app.post('/api/cable/validate-smartcard', protect, [
 
 
 
-// ==================== EDUCATION SERVICE ENDPOINTS ====================
-
 // @desc    Get education service variations (WAEC, JAMB, etc.)
 // @route   GET /api/education/variations
 // @access  Private
@@ -4524,9 +4522,7 @@ app.get('/api/education/variations', protect, [
     console.log('📡 Fetching education variations for service:', serviceID);
 
     // Validate service ID
-    const validServiceIDs = [
-      'waec-registration', 'waec', 'jamb'
-    ];
+    const validServiceIDs = ['waec-registration', 'waec', 'jamb'];
     
     if (!validServiceIDs.includes(serviceID)) {
       return res.status(400).json({
@@ -4535,78 +4531,53 @@ app.get('/api/education/variations', protect, [
       });
     }
 
-    // Try to get from cache first (5 minutes cache)
-    const cacheKey = `education-variations-${serviceID}`;
-    const cachedVariations = cache.get(cacheKey);
-    
-    if (cachedVariations) {
-      console.log('✅ Serving education variations from cache for:', serviceID);
-      return res.json({
-        success: true,
-        service: serviceID,
-        variations: cachedVariations,
-        totalVariations: cachedVariations.length,
-        source: 'cache'
+    let variations = [];
+    let source = 'mock_fallback';
+    let vtpassError = null;
+
+    try {
+      // Try to get from VTpass first
+      console.log('🚀 Calling LIVE VTpass API for education variations:', serviceID);
+
+      const vtpassUrl = 'https://vtpass.com/api/service-variations';
+      
+      const response = await axios.get(vtpassUrl, {
+        params: { serviceID },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 10000 // 10 second timeout
       });
+
+      console.log('📦 LIVE VTpass API response status:', response.status);
+      console.log('📦 VTpass API response data:', JSON.stringify(response.data, null, 2));
+
+      const vtpassData = response.data;
+
+      // Check if VTpass API returned success - handle different response formats
+      if (vtpassData.response_description === '000' || vtpassData.code === '000') {
+        variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+        source = 'vtpass_live';
+        console.log(`✅ Got ${variations.length} LIVE variations from VTpass`);
+      } else {
+        vtpassError = vtpassData.response_description || vtpassData.message || 'VTpass API error';
+        console.log('❌ VTpass API error:', vtpassError);
+        throw new Error(vtpassError);
+      }
+    } catch (vtpassError) {
+      console.log('⚠️ VTpass failed, using mock data:', vtpassError.message);
+      variations = getMockEducationVariations(serviceID);
+      source = 'mock_fallback';
     }
 
-    console.log('🚀 Calling LIVE VTpass API for education variations:', serviceID);
-
-    // Call VTpass LIVE API directly
-    const vtpassUrl = 'https://vtpass.com/api/service-variations';
-    
-    const response = await axios.get(vtpassUrl, {
-      params: { serviceID },
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': process.env.VTPASS_API_KEY,
-        'secret-key': process.env.VTPASS_SECRET_KEY,
-      },
-      timeout: 15000
-    });
-
-    console.log('📦 LIVE VTpass API response status:', response.status);
-
-    const vtpassData = response.data;
-
-    // Check if VTpass API returned success
-    if (vtpassData.response_description !== '000') {
-      console.log('❌ VTpass API error:', vtpassData.response_description);
-      // Fallback to mock data
-      const mockVariations = getMockEducationVariations(serviceID);
-      return res.json({
-        success: true,
-        service: serviceID,
-        variations: mockVariations,
-        totalVariations: mockVariations.length,
-        source: 'mock_fallback',
-        note: 'VTpass error: ' + vtpassData.response_description
-      });
-    }
-
-    // Process the variations
-    const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
-    
-    console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
-
-    if (!variations || variations.length === 0) {
-      const mockVariations = getMockEducationVariations(serviceID);
-      return res.json({
-        success: true,
-        service: serviceID,
-        variations: mockVariations,
-        totalVariations: mockVariations.length,
-        source: 'mock_fallback',
-        note: 'No variations from VTpass, using mock data'
-      });
-    }
-
-    // Transform the data into a consistent format
+    // Process variations to ensure consistent format
     const processedVariations = variations.map(variation => {
       // Safely handle variation_amount
       let amount = variation.variation_amount;
       if (typeof amount === 'number') {
-        amount = amount.toString();
+        amount = amount.toFixed(2);
       } else if (amount === null || amount === undefined) {
         amount = '0.00';
       }
@@ -4614,33 +4585,30 @@ app.get('/api/education/variations', protect, [
       return {
         name: variation.name || 'Unknown Plan',
         variation_code: variation.variation_code || '',
-        variation_amount: amount,
-        fixedPrice: variation.fixedPrice === 'Yes'
+        variation_amount: amount.toString(),
+        fixedPrice: variation.fixedPrice === 'Yes' || variation.fixedPrice === true
       };
     }).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
 
     // Sort variations by amount (lowest to highest)
     processedVariations.sort((a, b) => parseFloat(a.variation_amount) - parseFloat(b.variation_amount));
 
-    console.log(`✅ Processed ${processedVariations.length} LIVE variations for ${serviceID}`);
+    console.log(`✅ Returning ${processedVariations.length} variations (source: ${source})`);
 
-    // Cache the result for 5 minutes
-    cache.set(cacheKey, processedVariations, 300);
-
+    // ALWAYS return success with the data we have
     res.json({
       success: true,
-      service: vtpassData.content?.ServiceName || serviceID,
-      serviceID: serviceID,
+      service: serviceID,
       variations: processedVariations,
       totalVariations: processedVariations.length,
-      source: 'vtpass_live_api',
+      source: source,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('❌ Error fetching LIVE education variations:', error);
+    console.error('❌ Unexpected error in education variations:', error);
     
-    // Provide fallback mock data
+    // Even on unexpected errors, return mock data
     const mockVariations = getMockEducationVariations(req.query.serviceID);
     
     res.json({
@@ -4648,12 +4616,65 @@ app.get('/api/education/variations', protect, [
       service: req.query.serviceID,
       variations: mockVariations,
       totalVariations: mockVariations.length,
-      source: 'mock_fallback',
+      source: 'mock_fallback_error',
       timestamp: new Date().toISOString(),
-      note: 'Using mock data due to service unavailability: ' + error.message
+      note: 'Using mock data due to unexpected error: ' + error.message
     });
   }
 });
+
+// @desc    Debug VTpass API connectivity
+// @route   GET /api/debug/vtpass-education
+// @access  Private
+app.get('/api/debug/vtpass-education', protect, async (req, res) => {
+  try {
+    const serviceIDs = ['waec-registration', 'waec', 'jamb'];
+    const results = {};
+    
+    for (const serviceID of serviceIDs) {
+      try {
+        console.log(`🔍 Testing VTpass for: ${serviceID}`);
+        
+        const vtpassUrl = 'https://vtpass.com/api/service-variations';
+        const response = await axios.get(vtpassUrl, {
+          params: { serviceID },
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': process.env.VTPASS_API_KEY,
+            'secret-key': process.env.VTPASS_SECRET_KEY,
+          },
+          timeout: 10000
+        });
+
+        results[serviceID] = {
+          status: response.status,
+          data: response.data,
+          success: response.data.response_description === '000' || response.data.code === '000'
+        };
+        
+        console.log(`✅ ${serviceID}: ${response.data.response_description}`);
+      } catch (error) {
+        results[serviceID] = {
+          error: error.message,
+          success: false
+        };
+        console.log(`❌ ${serviceID}: ${error.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      results: results,
+      environment: process.env.VTPASS_BASE_URL || 'live',
+      apiKeyExists: !!process.env.VTPASS_API_KEY,
+      apiKeyPrefix: process.env.VTPASS_API_KEY ? process.env.VTPASS_API_KEY.substring(0, 8) + '...' : 'missing'
+    });
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 
 // @desc    Validate education profile (JAMB Profile ID)
 // @route   POST /api/education/validate-profile
