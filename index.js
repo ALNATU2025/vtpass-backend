@@ -4299,7 +4299,7 @@ app.get('/api/debug/routes', (req, res) => {
 
 
 
-// @desc    Get cable TV variations for all providers
+// @desc    Get cable TV variations from LIVE VTpass
 // @route   GET /api/cable/variations
 // @access  Private
 app.get('/api/cable/variations', protect, async (req, res) => {
@@ -4310,32 +4310,61 @@ app.get('/api/cable/variations', protect, async (req, res) => {
 
     for (const provider of providers) {
       try {
-        const vtpassResult = await callVtpassApi('/service-variations', {
-          serviceID: provider
+        console.log(`🔄 Fetching LIVE variations for: ${provider}`);
+        
+        const vtpassUrl = `https://vtpass.com/api/service-variations?serviceID=${provider}`;
+        
+        const response = await axios.get(vtpassUrl, {
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': process.env.VTPASS_API_KEY,
+            'secret-key': process.env.VTPASS_SECRET_KEY,
+          },
+          timeout: 15000
         });
 
-        if (vtpassResult.success && vtpassResult.data) {
+        console.log(`📦 LIVE VTpass response for ${provider}:`, response.status);
+
+        const vtpassData = response.data;
+
+        if (vtpassData.response_description === '000') {
+          const rawVariations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+          
+          // Process variations to ensure consistent format
+          const processedVariations = rawVariations.map(plan => {
+            // Safely handle variation_amount
+            let amount = plan.variation_amount;
+            if (typeof amount === 'number') {
+              amount = amount.toString();
+            } else if (amount === null || amount === undefined) {
+              amount = '0.00';
+            }
+
+            return {
+              name: plan.name || 'Unknown Plan',
+              variation_code: plan.variation_code || '',
+              variation_amount: amount,
+              fixedPrice: plan.fixedPrice === 'Yes'
+            };
+          });
+
           variations[provider.toUpperCase()] = {
             success: true,
-            serviceName: vtpassResult.data.content?.ServiceName || provider,
-            variations: vtpassResult.data.content?.variations || vtpassResult.data.content?.varations || [],
-            totalPlans: (vtpassResult.data.content?.variations || vtpassResult.data.content?.varations || []).length
+            variations: processedVariations,
+            totalPlans: processedVariations.length,
+            source: 'vtpass_live'
           };
         } else {
-          variations[provider.toUpperCase()] = {
-            success: false,
-            variations: getMockCableVariations(provider),
-            totalPlans: getMockCableVariations(provider).length,
-            source: 'mock_fallback'
-          };
+          throw new Error(vtpassData.response_description || 'VTpass API error');
         }
       } catch (error) {
-        console.error(`Error fetching ${provider} variations:`, error);
+        console.error(`❌ Error fetching ${provider} variations:`, error);
         variations[provider.toUpperCase()] = {
           success: false,
           variations: getMockCableVariations(provider),
           totalPlans: getMockCableVariations(provider).length,
-          source: 'mock_fallback'
+          source: 'mock_fallback',
+          error: error.message
         };
       }
     }
@@ -4352,7 +4381,8 @@ app.get('/api/cable/variations', protect, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch cable variations',
-      error: error.message
+      error: error.message,
+      data: getAllMockCableVariations()
     });
   }
 });
@@ -4372,24 +4402,6 @@ function getMockCableVariations(provider) {
         "variation_code": "dstv-yanga",
         "variation_amount": "2565.00",
         "fixedPrice": "Yes"
-      },
-      {
-        "name": "Dstv Confam N4,615",
-        "variation_code": "dstv-confam", 
-        "variation_amount": "4615.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "DStv Compact N7900",
-        "variation_code": "dstv79",
-        "variation_amount": "7900.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "DStv Premium N18,400",
-        "variation_code": "dstv3",
-        "variation_amount": "18400.00",
-        "fixedPrice": "Yes"
       }
     ],
     'gotv': [
@@ -4397,24 +4409,6 @@ function getMockCableVariations(provider) {
         "name": "GOtv Smallie",
         "variation_code": "gotv-smallie",
         "variation_amount": "1300.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "GOtv Jinja", 
-        "variation_code": "gotv-jinja",
-        "variation_amount": "2700.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "GOtv Max",
-        "variation_code": "gotv-max",
-        "variation_amount": "5700.00", 
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "GOtv Supa",
-        "variation_code": "gotv-supa",
-        "variation_amount": "7200.00",
         "fixedPrice": "Yes"
       }
     ],
@@ -4424,29 +4418,34 @@ function getMockCableVariations(provider) {
         "variation_code": "nova",
         "variation_amount": "1500.00",
         "fixedPrice": "Yes"
-      },
-      {
-        "name": "StarTimes Basic",
-        "variation_code": "basic", 
-        "variation_amount": "2700.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "StarTimes Classic",
-        "variation_code": "classic",
-        "variation_amount": "4000.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "StarTimes Smart",
-        "variation_code": "smart",
-        "variation_amount": "5500.00",
-        "fixedPrice": "Yes"
       }
     ]
   };
 
   return mockVariations[provider] || [];
+}
+
+function getAllMockCableVariations() {
+  return {
+    'DSTV': {
+      success: false,
+      variations: getMockCableVariations('dstv'),
+      totalPlans: getMockCableVariations('dstv').length,
+      source: 'mock_fallback'
+    },
+    'GOTV': {
+      success: false,
+      variations: getMockCableVariations('gotv'),
+      totalPlans: getMockCableVariations('gotv').length,
+      source: 'mock_fallback'
+    },
+    'STARTIMES': {
+      success: false,
+      variations: getMockCableVariations('startimes'),
+      totalPlans: getMockCableVariations('startimes').length,
+      source: 'mock_fallback'
+    }
+  };
 }
 
 // @desc    Validate smart card number with enhanced details
