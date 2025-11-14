@@ -4503,7 +4503,9 @@ app.post('/api/cable/validate-smartcard', protect, [
 
 
 
-// @desc    Get education service variations (WAEC, JAMB, etc.)
+// Add this to your index.js backend file
+
+// @desc    Get education service variations with VTpass fallback
 // @route   GET /api/education/variations
 // @access  Private
 app.get('/api/education/variations', protect, [
@@ -4533,7 +4535,6 @@ app.get('/api/education/variations', protect, [
 
     let variations = [];
     let source = 'mock_fallback';
-    let vtpassError = null;
 
     try {
       // Try to get from VTpass first
@@ -4548,23 +4549,21 @@ app.get('/api/education/variations', protect, [
           'api-key': process.env.VTPASS_API_KEY,
           'secret-key': process.env.VTPASS_SECRET_KEY,
         },
-        timeout: 10000 // 10 second timeout
+        timeout: 10000
       });
 
       console.log('📦 LIVE VTpass API response status:', response.status);
-      console.log('📦 VTpass API response data:', JSON.stringify(response.data, null, 2));
 
       const vtpassData = response.data;
 
-      // Check if VTpass API returned success - handle different response formats
+      // Check if VTpass API returned success
       if (vtpassData.response_description === '000' || vtpassData.code === '000') {
-        variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+        variations = vtpassData.content?.variations || [];
         source = 'vtpass_live';
         console.log(`✅ Got ${variations.length} LIVE variations from VTpass`);
       } else {
-        vtpassError = vtpassData.response_description || vtpassData.message || 'VTpass API error';
-        console.log('❌ VTpass API error:', vtpassError);
-        throw new Error(vtpassError);
+        console.log('❌ VTpass API error:', vtpassData.response_description);
+        throw new Error(vtpassData.response_description || 'VTpass API error');
       }
     } catch (vtpassError) {
       console.log('⚠️ VTpass failed, using mock data:', vtpassError.message);
@@ -4574,28 +4573,16 @@ app.get('/api/education/variations', protect, [
 
     // Process variations to ensure consistent format
     const processedVariations = variations.map(variation => {
-      // Safely handle variation_amount
-      let amount = variation.variation_amount;
-      if (typeof amount === 'number') {
-        amount = amount.toFixed(2);
-      } else if (amount === null || amount === undefined) {
-        amount = '0.00';
-      }
-
       return {
         name: variation.name || 'Unknown Plan',
         variation_code: variation.variation_code || '',
-        variation_amount: amount.toString(),
+        variation_amount: variation.variation_amount?.toString() || '0.00',
         fixedPrice: variation.fixedPrice === 'Yes' || variation.fixedPrice === true
       };
     }).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
 
-    // Sort variations by amount (lowest to highest)
-    processedVariations.sort((a, b) => parseFloat(a.variation_amount) - parseFloat(b.variation_amount));
-
     console.log(`✅ Returning ${processedVariations.length} variations (source: ${source})`);
 
-    // ALWAYS return success with the data we have
     res.json({
       success: true,
       service: serviceID,
@@ -4617,64 +4604,66 @@ app.get('/api/education/variations', protect, [
       variations: mockVariations,
       totalVariations: mockVariations.length,
       source: 'mock_fallback_error',
-      timestamp: new Date().toISOString(),
-      note: 'Using mock data due to unexpected error: ' + error.message
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// @desc    Debug VTpass API connectivity
-// @route   GET /api/debug/vtpass-education
-// @access  Private
-app.get('/api/debug/vtpass-education', protect, async (req, res) => {
-  try {
-    const serviceIDs = ['waec-registration', 'waec', 'jamb'];
-    const results = {};
-    
-    for (const serviceID of serviceIDs) {
-      try {
-        console.log(`🔍 Testing VTpass for: ${serviceID}`);
-        
-        const vtpassUrl = 'https://vtpass.com/api/service-variations';
-        const response = await axios.get(vtpassUrl, {
-          params: { serviceID },
-          headers: {
-            'Content-Type': 'application/json',
-            'api-key': process.env.VTPASS_API_KEY,
-            'secret-key': process.env.VTPASS_SECRET_KEY,
-          },
-          timeout: 10000
-        });
-
-        results[serviceID] = {
-          status: response.status,
-          data: response.data,
-          success: response.data.response_description === '000' || response.data.code === '000'
-        };
-        
-        console.log(`✅ ${serviceID}: ${response.data.response_description}`);
-      } catch (error) {
-        results[serviceID] = {
-          error: error.message,
-          success: false
-        };
-        console.log(`❌ ${serviceID}: ${error.message}`);
+// Enhanced mock data fallback
+function getMockEducationVariations(serviceID) {
+  const mockVariations = {
+    'waec-registration': [
+      {
+        "variation_code": "waec-registration",
+        "name": "WASSCE for Private Candidates - Second Series (2024)",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "waec-registration-2",
+        "name": "WASSCE for Private Candidates - First Series (2024)",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
       }
-    }
+    ],
+    'waec': [
+      {
+        "variation_code": "waecdirect",
+        "name": "WASSCE Result Checker",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "waecdirect-2",
+        "name": "WASSCE GCE Result Checker",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'jamb': [
+      {
+        "variation_code": "utme-mock",
+        "name": "UTME PIN (with mock)",
+        "variation_amount": "6300.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "utme-no-mock",
+        "name": "UTME PIN (without mock)",
+        "variation_amount": "4700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "direct-entry",
+        "name": "Direct Entry PIN",
+        "variation_amount": "5300.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
 
-    res.json({
-      success: true,
-      results: results,
-      environment: process.env.VTPASS_BASE_URL || 'live',
-      apiKeyExists: !!process.env.VTPASS_API_KEY,
-      apiKeyPrefix: process.env.VTPASS_API_KEY ? process.env.VTPASS_API_KEY.substring(0, 8) + '...' : 'missing'
-    });
-  } catch (error) {
-    console.error('Debug error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
+  return mockVariations[serviceID] || [];
+}
 
 // @desc    Validate education profile (JAMB Profile ID)
 // @route   POST /api/education/validate-profile
@@ -4934,6 +4923,444 @@ function getMockEducationVariations(serviceID) {
   };
 
   return mockVariations[serviceID] || [];
+}
+
+
+
+// @desc    Get insurance variations automatically from VTpass
+// @route   GET /api/insurance/variations
+// @access  Private
+app.get('/api/insurance/variations', protect, async (req, res) => {
+  try {
+    console.log('🛡️ Fetching insurance variations from VTpass...');
+    
+    // Try to get from cache first
+    const cacheKey = 'insurance-variations';
+    const cachedVariations = cache.get(cacheKey);
+    
+    if (cachedVariations) {
+      console.log('✅ Serving insurance variations from cache');
+      return res.json({
+        success: true,
+        service: 'Third Party Motor Insurance - Universal Insurance',
+        serviceID: 'ui-insure',
+        variations: cachedVariations,
+        totalVariations: cachedVariations.length,
+        source: 'cache'
+      });
+    }
+
+    // Call VTpass LIVE API directly for insurance variations
+    console.log('🚀 Calling LIVE VTpass API for insurance variations');
+    const vtpassUrl = 'https://vtpass.com/api/service-variations?serviceID=ui-insure';
+    
+    const response = await axios.get(vtpassUrl, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 15000
+    });
+
+    console.log('📦 VTpass insurance variations response status:', response.status);
+
+    const vtpassData = response.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description === '000') {
+      const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+      
+      console.log(`✅ Successfully fetched ${variations.length} insurance variations from VTpass`);
+      
+      // Process variations to ensure consistent format
+      const processedVariations = variations.map(variation => ({
+        name: variation.name || 'Unknown Plan',
+        variation_code: variation.variation_code || '',
+        variation_amount: variation.variation_amount?.toString() || '0.00',
+        fixedPrice: variation.fixedPrice === 'Yes'
+      })).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
+
+      // Cache the result for 10 minutes
+      cache.set(cacheKey, processedVariations, 600);
+
+      res.json({
+        success: true,
+        service: vtpassData.content?.ServiceName || 'Third Party Motor Insurance - Universal Insurance',
+        serviceID: 'ui-insure',
+        variations: processedVariations,
+        totalVariations: processedVariations.length,
+        source: 'vtpass_live',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      throw new Error(vtpassData.response_description || 'Failed to fetch insurance variations');
+    }
+
+  } catch (error) {
+    console.error('❌ Error fetching insurance variations:', error);
+    
+    // Fallback to mock data
+    const mockVariations = [
+      {
+        "variation_code": "1",
+        "name": "Private",
+        "variation_amount": "3000.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "2", 
+        "name": "Commercial",
+        "variation_amount": "5000.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "3",
+        "name": "Tricycles", 
+        "variation_amount": "1500.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "4",
+        "name": "Motorcycle",
+        "variation_amount": "3000.00", 
+        "fixedPrice": "Yes"
+      }
+    ];
+
+    res.json({
+      success: true,
+      service: 'Third Party Motor Insurance - Universal Insurance',
+      serviceID: 'ui-insure',
+      variations: mockVariations,
+      totalVariations: mockVariations.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using fallback data due to service unavailability'
+    });
+  }
+});
+
+
+
+
+// @desc    Purchase insurance with correct variation codes
+// @route   POST /api/insurance/purchase
+// @access  Private
+app.post('/api/insurance/purchase', protect, verifyTransactionAuth, [
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('insuredName').notEmpty().withMessage('Insured name is required'),
+  body('engineCapacity').notEmpty().withMessage('Engine capacity is required'),
+  body('chasisNumber').notEmpty().withMessage('Chasis number is required'),
+  body('plateNumber').notEmpty().withMessage('Plate number is required'),
+  body('vehicleMake').notEmpty().withMessage('Vehicle make is required'),
+  body('vehicleColor').notEmpty().withMessage('Vehicle color is required'),
+  body('vehicleModel').notEmpty().withMessage('Vehicle model is required'),
+  body('yearOfMake').notEmpty().withMessage('Year of make is required'),
+  body('state').notEmpty().withMessage('State is required'),
+  body('lga').notEmpty().withMessage('LGA is required'),
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  console.log('🛡️ INSURANCE PURCHASE REQUEST');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const {
+    variationCode,
+    phone,
+    insuredName,
+    engineCapacity,
+    chasisNumber,
+    plateNumber,
+    vehicleMake,
+    vehicleColor,
+    vehicleModel,
+    yearOfMake,
+    state,
+    lga,
+    email
+  } = req.body;
+
+  const userId = req.user._id;
+  const reference = generateRequestId();
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Get variation details to determine amount
+    let amount = 0;
+    try {
+      const variationsResponse = await axios.get('https://vtpass.com/api/service-variations?serviceID=ui-insure', {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        }
+      });
+
+      if (variationsResponse.data.response_description === '000') {
+        const variations = variationsResponse.data.content?.variations || [];
+        const selectedVariation = variations.find(v => v.variation_code === variationCode);
+        
+        if (selectedVariation) {
+          amount = parseFloat(selectedVariation.variation_amount) || 0;
+          console.log(`💰 Insurance amount determined: ₦${amount}`);
+        } else {
+          throw new Error('Invalid variation code');
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Could not fetch variation details, using default amounts');
+      // Fallback amounts based on variation code
+      const amountMap = {
+        '1': 3000, // Private
+        '2': 5000, // Commercial  
+        '3': 1500, // Tricycles
+        '4': 3000  // Motorcycle
+      };
+      amount = amountMap[variationCode] || 3000;
+    }
+
+    if (user.walletBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+      });
+    }
+
+    console.log('🚀 Calling VTpass for insurance purchase...');
+    
+    // Prepare VTpass payload for insurance purchase
+    const vtpassPayload = {
+      request_id: reference,
+      serviceID: 'ui-insure',
+      billersCode: plateNumber,
+      variation_code: variationCode,
+      amount: amount.toString(),
+      phone: phone,
+      Insured_Name: insuredName,
+      engine_capacity: engineCapacity,
+      Chasis_Number: chasisNumber,
+      Plate_Number: plateNumber,
+      vehicle_make: vehicleMake,
+      vehicle_color: vehicleColor,
+      vehicle_model: vehicleModel,
+      YearofMake: yearOfMake,
+      state: state,
+      lga: lga,
+      email: email
+    };
+
+    console.log('📦 VTpass Insurance Payload:', vtpassPayload);
+
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    console.log('📦 VTpass Insurance Response:', JSON.stringify(vtpassResult, null, 2));
+
+    const balanceBefore = user.walletBalance;
+    let transactionStatus = 'failed';
+    let newBalance = balanceBefore;
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
+
+      // Credit commission
+      await calculateAndAddCommission(userId, amount, session);
+
+      // Create notification
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Insurance Purchase Successful 🛡️",
+          message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating insurance notification:', notificationError);
+      }
+    } else {
+      await session.abortTransaction();
+      return res.status(vtpassResult.status || 400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Insurance purchase failed',
+        details: vtpassResult.data
+      });
+    }
+
+    // Create transaction record
+    const newTransaction = await createTransaction(
+      userId,
+      amount,
+      'debit',
+      transactionStatus,
+      `Third Party Motor Insurance for ${plateNumber}`,
+      balanceBefore,
+      newBalance,
+      session,
+      false,
+      req.authenticationMethod
+    );
+
+    await session.commitTransaction();
+
+    // Extract certificate URL from response
+    const certUrl = vtpassResult.data.certUrl || 
+                   vtpassResult.data.purchased_code?.replace('Download Certificate : ', '') || 
+                   '';
+
+    console.log('✅ Insurance purchase completed successfully');
+    console.log('📄 Certificate URL:', certUrl);
+
+    res.json({
+      success: true,
+      message: `Insurance purchase completed successfully`,
+      transactionId: newTransaction._id,
+      newBalance: newBalance,
+      status: newTransaction.status,
+      vtpassResponse: vtpassResult.data,
+      certificateUrl: certUrl,
+      purchased_code: vtpassResult.data.purchased_code
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error in insurance purchase:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Insurance purchase failed',
+      error: error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+// @desc    Get all insurance-related options (makes, colors, states, etc.)
+// @route   GET /api/insurance/options/:type
+// @access  Private
+app.get('/api/insurance/options/:type', protect, async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { stateCode } = req.query;
+
+    console.log(`🛡️ Fetching insurance options for: ${type}`);
+
+    const endpoints = {
+      'vehicle-makes': 'https://vtpass.com/api/universal-insurance/options/brand',
+      'vehicle-colors': 'https://vtpass.com/api/universal-insurance/options/color', 
+      'engine-capacities': 'https://vtpass.com/api/universal-insurance/options/engine-capacity',
+      'states': 'https://vtpass.com/api/universal-insurance/options/state',
+      'lgas': `https://vtpass.com/api/universal-insurance/options/lga/${stateCode}`
+    };
+
+    const url = endpoints[type];
+    if (!url) {
+      return res.status(400).json({ success: false, message: 'Invalid option type' });
+    }
+
+    // Try cache first
+    const cacheKey = `insurance-options-${type}-${stateCode || ''}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        data: cachedData,
+        source: 'cache'
+      });
+    }
+
+    const response = await axios.get(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 10000
+    });
+
+    if (response.data.response_description === '000') {
+      const data = response.data.content || [];
+      
+      // Cache for 1 hour
+      cache.set(cacheKey, data, 3600);
+
+      res.json({
+        success: true,
+        data: data,
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error(response.data.response_description);
+    }
+
+  } catch (error) {
+    console.error(`❌ Error fetching insurance options for ${req.params.type}:`, error);
+    
+    // Return fallback data
+    const fallbackData = getFallbackInsuranceOptions(req.params.type);
+    
+    res.json({
+      success: true,
+      data: fallbackData,
+      source: 'fallback',
+      note: 'Using fallback data while service is unavailable'
+    });
+  }
+});
+
+// Helper function for fallback insurance options
+function getFallbackInsuranceOptions(type) {
+  const fallbacks = {
+    'vehicle-makes': [
+      { "VehicleMakeCode": "1", "VehicleMakeName": "Toyota" },
+      { "VehicleMakeCode": "2", "VehicleMakeName": "Honda" },
+      { "VehicleMakeCode": "3", "VehicleMakeName": "Ford" },
+      { "VehicleMakeCode": "4", "VehicleMakeName": "BMW" }
+    ],
+    'vehicle-colors': [
+      { "ColourCode": "20", "ColourName": "Ash" },
+      { "ColourCode": "1004", "ColourName": "Black" },
+      { "ColourCode": "1005", "ColourName": "White" },
+      { "ColourCode": "1006", "ColourName": "Red" }
+    ],
+    'engine-capacities': [
+      { "CapacityCode": "1", "CapacityName": "0.1 - 1.59" },
+      { "CapacityCode": "2", "CapacityName": "1.6 - 2.0" },
+      { "CapacityCode": "3", "CapacityName": "2.1 - 3.0" },
+      { "CapacityCode": "4", "CapacityName": "3.1 - 4.0" }
+    ],
+    'states': [
+      { "StateCode": "1", "StateName": "Lagos" },
+      { "StateCode": "2", "StateName": "Abuja" },
+      { "StateCode": "3", "StateName": "Rivers" },
+      { "StateCode": "4", "StateName": "Oyo" }
+    ],
+    'lgas': [
+      { "LGACode": "1", "LGAName": "Ikeja" },
+      { "LGACode": "2", "LGAName": "Lagos Island" },
+      { "LGACode": "3", "LGAName": "Surulere" }
+    ]
+  };
+
+  return fallbacks[type] || [];
 }
 
 
