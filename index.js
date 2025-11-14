@@ -4503,6 +4503,420 @@ app.post('/api/cable/validate-smartcard', protect, [
 
 
 
+// ==================== EDUCATION SERVICE ENDPOINTS ====================
+
+// @desc    Get education service variations (WAEC, JAMB, etc.)
+// @route   GET /api/education/variations
+// @access  Private
+app.get('/api/education/variations', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎓 EDUCATION VARIATIONS ENDPOINT HIT - serviceID:', req.query.serviceID);
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    console.log('📡 Fetching education variations for service:', serviceID);
+
+    // Validate service ID
+    const validServiceIDs = [
+      'waec-registration', 'waec', 'jamb'
+    ];
+    
+    if (!validServiceIDs.includes(serviceID)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid education service ID. Valid IDs: ' + validServiceIDs.join(', ')
+      });
+    }
+
+    // Try to get from cache first (5 minutes cache)
+    const cacheKey = `education-variations-${serviceID}`;
+    const cachedVariations = cache.get(cacheKey);
+    
+    if (cachedVariations) {
+      console.log('✅ Serving education variations from cache for:', serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        variations: cachedVariations,
+        totalVariations: cachedVariations.length,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling LIVE VTpass API for education variations:', serviceID);
+
+    // Call VTpass LIVE API directly
+    const vtpassUrl = 'https://vtpass.com/api/service-variations';
+    
+    const response = await axios.get(vtpassUrl, {
+      params: { serviceID },
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 15000
+    });
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      // Fallback to mock data
+      const mockVariations = getMockEducationVariations(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        variations: mockVariations,
+        totalVariations: mockVariations.length,
+        source: 'mock_fallback',
+        note: 'VTpass error: ' + vtpassData.response_description
+      });
+    }
+
+    // Process the variations
+    const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+    
+    console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
+
+    if (!variations || variations.length === 0) {
+      const mockVariations = getMockEducationVariations(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        variations: mockVariations,
+        totalVariations: mockVariations.length,
+        source: 'mock_fallback',
+        note: 'No variations from VTpass, using mock data'
+      });
+    }
+
+    // Transform the data into a consistent format
+    const processedVariations = variations.map(variation => {
+      // Safely handle variation_amount
+      let amount = variation.variation_amount;
+      if (typeof amount === 'number') {
+        amount = amount.toString();
+      } else if (amount === null || amount === undefined) {
+        amount = '0.00';
+      }
+
+      return {
+        name: variation.name || 'Unknown Plan',
+        variation_code: variation.variation_code || '',
+        variation_amount: amount,
+        fixedPrice: variation.fixedPrice === 'Yes'
+      };
+    }).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
+
+    // Sort variations by amount (lowest to highest)
+    processedVariations.sort((a, b) => parseFloat(a.variation_amount) - parseFloat(b.variation_amount));
+
+    console.log(`✅ Processed ${processedVariations.length} LIVE variations for ${serviceID}`);
+
+    // Cache the result for 5 minutes
+    cache.set(cacheKey, processedVariations, 300);
+
+    res.json({
+      success: true,
+      service: vtpassData.content?.ServiceName || serviceID,
+      serviceID: serviceID,
+      variations: processedVariations,
+      totalVariations: processedVariations.length,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching LIVE education variations:', error);
+    
+    // Provide fallback mock data
+    const mockVariations = getMockEducationVariations(req.query.serviceID);
+    
+    res.json({
+      success: true,
+      service: req.query.serviceID,
+      variations: mockVariations,
+      totalVariations: mockVariations.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using mock data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// @desc    Validate education profile (JAMB Profile ID)
+// @route   POST /api/education/validate-profile
+// @access  Private
+app.post('/api/education/validate-profile', protect, [
+  body('profileId').notEmpty().withMessage('Profile ID is required'),
+  body('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎓 EDUCATION PROFILE VALIDATION ENDPOINT HIT');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { profileId, serviceID } = req.body;
+    
+    console.log('🔍 Validating education profile:', { profileId, serviceID });
+
+    // For JAMB profile validation
+    if (serviceID === 'jamb') {
+      const vtpassResult = await callVtpassApi('/merchant-verify', {
+        serviceID: 'jamb',
+        billersCode: profileId
+      });
+
+      console.log('📦 VTpass Profile Validation Response:', {
+        success: vtpassResult.success,
+        code: vtpassResult.data?.code,
+        message: vtpassResult.data?.response_description
+      });
+
+      if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+        const content = vtpassResult.data.content;
+        
+        res.json({
+          success: true,
+          customerName: content.Customer_Name || 'Valid JAMB Profile',
+          message: 'Profile validated successfully',
+          details: content
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: vtpassResult.data?.response_description || 'Profile validation failed',
+          details: vtpassResult.data
+        });
+      }
+    } else {
+      // For other education services that don't require profile validation
+      res.json({
+        success: true,
+        customerName: 'Valid Profile',
+        message: 'Profile validation not required for this service'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error validating education profile:', error);
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Profile validation service temporarily unavailable'
+    });
+  }
+});
+
+// @desc    Purchase education service (WAEC, JAMB, etc.)
+// @route   POST /api/education/purchase
+// @access  Private
+app.post('/api/education/purchase', protect, verifyTransactionAuth, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+  body('quantity').optional().isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
+  body('profileId').optional().isString().withMessage('Profile ID must be a string')
+], async (req, res) => {
+  console.log('🎓 EDUCATION PURCHASE ENDPOINT HIT');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const { serviceID, variationCode, phone, amount, quantity = 1, profileId } = req.body;
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.walletBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+      });
+    }
+
+    // Prepare VTpass payload
+    const vtpassPayload = {
+      request_id: reference,
+      serviceID,
+      variation_code: variationCode,
+      phone,
+      amount: amount.toString(),
+      quantity: quantity.toString()
+    };
+
+    // Add profile ID for JAMB
+    if (profileId && serviceID === 'jamb') {
+      vtpassPayload.billersCode = profileId;
+    }
+
+    console.log('🚀 Calling VTpass for education purchase:', vtpassPayload);
+
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    console.log('📦 VTpass Education Purchase Response:', {
+      success: vtpassResult.success,
+      code: vtpassResult.data?.code,
+      message: vtpassResult.data?.response_description
+    });
+
+    const balanceBefore = user.walletBalance;
+    let transactionStatus = 'failed';
+    let newBalance = balanceBefore;
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
+
+      // Credit commission
+      await calculateAndAddCommission(userId, amount, session);
+
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Education Purchase Successful 🎓",
+          message: `Your ${serviceID.toUpperCase()} purchase of ₦${amount} was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
+    } else {
+      await session.abortTransaction();
+      return res.status(vtpassResult.status || 400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Education purchase failed',
+        details: vtpassResult.data
+      });
+    }
+
+    const newTransaction = await createTransaction(
+      userId,
+      amount,
+      'debit',
+      transactionStatus,
+      `${serviceID} education purchase for ${phone}`,
+      balanceBefore,
+      newBalance,
+      session,
+      false,
+      req.authenticationMethod
+    );
+
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      message: `Education purchase completed. Status: ${newTransaction.status}.`,
+      transactionId: newTransaction._id,
+      newBalance: newBalance,
+      status: newTransaction.status,
+      vtpassResponse: vtpassResult.data,
+      purchased_code: vtpassResult.data?.content?.purchased_code,
+      cards: vtpassResult.data?.content?.cards || [],
+      tokens: vtpassResult.data?.content?.tokens || []
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error in education purchase:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Education purchase failed' 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// Helper function for mock education variations
+function getMockEducationVariations(serviceID) {
+  const mockVariations = {
+    'waec-registration': [
+      {
+        "name": "WASSCE for Private Candidates - Second Series (2024)",
+        "variation_code": "waec-registration",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "WASSCE for Private Candidates - First Series (2024)",
+        "variation_code": "waec-registration-2", 
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'waec': [
+      {
+        "name": "WASSCE Result Checker",
+        "variation_code": "waecdirect",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "WASSCE GCE Result Checker",
+        "variation_code": "waecdirect-2",
+        "variation_amount": "1200.00", 
+        "fixedPrice": "Yes"
+      }
+    ],
+    'jamb': [
+      {
+        "name": "UTME PIN (with mock)",
+        "variation_code": "utme-mock",
+        "variation_amount": "6300.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "UTME PIN (without mock)",
+        "variation_code": "utme-no-mock",
+        "variation_amount": "4700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "Direct Entry PIN",
+        "variation_code": "direct-entry", 
+        "variation_amount": "5300.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
+
+  return mockVariations[serviceID] || [];
+}
+
+
+
 
 
 
