@@ -3930,11 +3930,11 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FIXED VERSION
+// @desc    VTpass Proxy Endpoint - FIXED FOR METER VALIDATION
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - FIXED VERSION');
+  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR VALIDATION');
   console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
 
   const session = await mongoose.startSession();
@@ -3944,7 +3944,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     
     const { request_id, serviceID, amount, phone, variation_code, billersCode, type, environment } = req.body;
 
-    // 1. Get user and check balance
+    // 1. Get user
     const user = await User.findById(req.user._id).session(session);
     if (!user) {
       await session.abortTransaction();
@@ -3954,42 +3954,31 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    console.log('💰 Balance check:', {
-      userBalance: user.walletBalance,
-      required: amount,
-      sufficient: user.walletBalance >= parseFloat(amount || 0)
-    });
-
-    // Validate amount
-    const paymentAmount = parseFloat(amount);
-    if (isNaN(paymentAmount) || paymentAmount <= 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid amount provided' 
-      });
-    }
-
-    if (user.walletBalance < paymentAmount) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: `Insufficient balance. Required: ₦${paymentAmount}, Available: ₦${user.walletBalance}` 
-      });
-    }
-
     // 2. Prepare VTpass payload based on service type
     const vtpassPayload = {
       request_id: request_id || generateRequestId(),
       serviceID,
-      amount: paymentAmount.toString(),
-      phone,
     };
 
     // Add optional fields only if they exist
+    if (phone) vtpassPayload.phone = phone;
     if (variation_code) vtpassPayload.variation_code = variation_code;
     if (billersCode) vtpassPayload.billersCode = billersCode;
     if (type) vtpassPayload.type = type;
+
+    // Handle amount only for payment requests, not validation
+    if (amount && parseFloat(amount) > 0) {
+      vtpassPayload.amount = parseFloat(amount).toString();
+      
+      // Check balance only for payment requests
+      if (user.walletBalance < parseFloat(amount)) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+        });
+      }
+    }
 
     console.log('🚀 Calling VTpass with:', vtpassPayload);
 
@@ -4010,14 +3999,14 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     // 4. Handle VTpass response
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       // SUCCESS - Deduct from balance only for payments, not validations
-      if (vtpassEndpoint === '/pay') {
+      if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0) {
         const balanceBefore = user.walletBalance;
-        user.walletBalance -= paymentAmount;
+        user.walletBalance -= parseFloat(amount);
         await user.save({ session });
 
         await createTransaction(
           user._id,
-          paymentAmount,
+          parseFloat(amount),
           'debit',
           'successful',
           `${serviceID} purchase for ${phone}`,
