@@ -3370,48 +3370,90 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-// @desc    Verify electricity meter number
+
+// @desc    Verify electricity meter number - FIXED VERSION
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
 app.post('/api/vtpass/validate-electricity', protect, [
   body('serviceID').notEmpty().withMessage('Service ID is required'),
-  body('billersCode').notEmpty().withMessage('Billers code is required')
+  body('billersCode').notEmpty().withMessage('Meter number is required'),
+  body('type').isIn(['prepaid', 'postpaid']).withMessage('Type must be prepaid or postpaid')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  console.log('Received electricity meter verification request.');
-  console.log('Request Body:', req.body);
   
-  const { serviceID, billersCode } = req.body;
+  console.log('🔌 ELECTRICITY VALIDATION REQUEST:', req.body);
+  
+  const { serviceID, billersCode, type } = req.body;
   
   try {
-    const vtpassResult = await callVtpassApi('/merchant-verify', {
+    // Prepare the payload for electricity verification
+    const vtpassPayload = {
       serviceID,
       billersCode,
+      type: type // prepaid or postpaid
+    };
+    
+    console.log('🚀 Calling VTpass for electricity validation:', vtpassPayload);
+    
+    // Use the correct endpoint for electricity verification
+    const vtpassResult = await callVtpassApi('/merchant-verify', vtpassPayload);
+    
+    console.log('📦 VTpass Electricity Validation Response:', {
+      success: vtpassResult.success,
+      code: vtpassResult.data?.code,
+      message: vtpassResult.data?.response_description,
+      content: vtpassResult.data?.content
     });
     
-    console.log('VTPass Electricity Verification Response:', JSON.stringify(vtpassResult, null, 2));
-    
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const content = vtpassResult.data.content;
+      
       res.json({
         success: true,
-        message: 'Electricity meter verified successfully.',
-        data: vtpassResult.data
+        message: 'Meter validated successfully',
+        customerName: content.Customer_Name || 'N/A',
+        address: content.Address || 'N/A',
+        meterNumber: content.Meter_Number || billersCode,
+        businessUnit: content.Business_Unit || 'N/A',
+        details: content
       });
     } else {
+      // Enhanced error handling
+      let errorMessage = 'Meter validation failed';
+      
+      if (vtpassResult.data?.response_description) {
+        errorMessage = vtpassResult.data.response_description;
+      } else if (vtpassResult.message) {
+        errorMessage = vtpassResult.message;
+      }
+      
       res.status(400).json({
         success: false,
-        message: 'Electricity meter verification failed.',
+        message: errorMessage,
         details: vtpassResult.data
       });
     }
   } catch (error) {
-    console.error('Error verifying electricity meter:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('💥 ELECTRICITY VALIDATION ERROR:', error);
+    
+    // More specific error messages
+    let errorMessage = 'Service temporarily unavailable';
+    if (error.message.includes('timeout')) {
+      errorMessage = 'Validation timeout. Please try again.';
+    } else if (error.message.includes('Network Error')) {
+      errorMessage = 'Network error. Please check your connection.';
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: errorMessage 
+    });
   }
 });
+
 // @desc    Pay for electricity
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
@@ -3888,50 +3930,76 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FIX FOR 404 ERROR
+// @desc    VTpass Proxy Endpoint - FIXED VERSION
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - FIXING 404 ERROR');
-  console.log('📦 Received body:', req.body);
+  console.log('🔐 PROXY ENDPOINT HIT - FIXED VERSION');
+  console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
 
+  const session = await mongoose.startSession();
+  
   try {
-    const { request_id, serviceID, amount, phone, variation_code, billersCode } = req.body;
+    await session.startTransaction();
+    
+    const { request_id, serviceID, amount, phone, variation_code, billersCode, type, environment } = req.body;
 
     // 1. Get user and check balance
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).session(session);
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
     }
 
     console.log('💰 Balance check:', {
       userBalance: user.walletBalance,
       required: amount,
-      sufficient: user.walletBalance >= parseFloat(amount)
+      sufficient: user.walletBalance >= parseFloat(amount || 0)
     });
 
-    if (user.walletBalance < parseFloat(amount)) {
+    // Validate amount
+    const paymentAmount = parseFloat(amount);
+    if (isNaN(paymentAmount) || paymentAmount <= 0) {
+      await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
-        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+        message: 'Invalid amount provided' 
       });
     }
 
-    // 2. Prepare VTpass payload
+    if (user.walletBalance < paymentAmount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Required: ₦${paymentAmount}, Available: ₦${user.walletBalance}` 
+      });
+    }
+
+    // 2. Prepare VTpass payload based on service type
     const vtpassPayload = {
-      request_id,
+      request_id: request_id || generateRequestId(),
       serviceID,
-      amount: amount.toString(),
+      amount: paymentAmount.toString(),
       phone,
     };
 
+    // Add optional fields only if they exist
     if (variation_code) vtpassPayload.variation_code = variation_code;
     if (billersCode) vtpassPayload.billersCode = billersCode;
+    if (type) vtpassPayload.type = type;
 
     console.log('🚀 Calling VTpass with:', vtpassPayload);
 
-    // 3. Call VTpass
-    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+    // 3. Call VTpass - Determine which endpoint to use
+    let vtpassEndpoint = '/pay';
+    if (serviceID.includes('electric') && billersCode && !variation_code) {
+      vtpassEndpoint = '/merchant-verify'; // For meter validation
+    }
+
+    const vtpassResult = await callVtpassApi(vtpassEndpoint, vtpassPayload);
 
     console.log('📦 VTpass response:', {
       success: vtpassResult.success,
@@ -3941,18 +4009,15 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
     // 4. Handle VTpass response
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
-      // SUCCESS - Deduct from balance
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      try {
+      // SUCCESS - Deduct from balance only for payments, not validations
+      if (vtpassEndpoint === '/pay') {
         const balanceBefore = user.walletBalance;
-        user.walletBalance -= parseFloat(amount);
+        user.walletBalance -= paymentAmount;
         await user.save({ session });
 
         await createTransaction(
           user._id,
-          parseFloat(amount),
+          paymentAmount,
           'debit',
           'successful',
           `${serviceID} purchase for ${phone}`,
@@ -3963,34 +4028,26 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           'pin'
         );
 
-        await session.commitTransaction();
-
-        console.log('✅ TRANSACTION SUCCESS:', {
+        console.log('✅ PAYMENT SUCCESS:', {
           transactionId: vtpassResult.data.content?.transactions?.transactionId,
           newBalance: user.walletBalance
         });
-
-        res.json({
-          success: true,
-          message: 'Transaction successful',
-          transactionId: vtpassResult.data.content?.transactions?.transactionId,
-          newBalance: user.walletBalance,
-          vtpassResponse: vtpassResult.data
-        });
-
-      } catch (transactionError) {
-        await session.abortTransaction();
-        console.error('❌ Transaction error:', transactionError);
-        res.status(500).json({ 
-          success: false, 
-          message: 'Transaction processing failed' 
-        });
-      } finally {
-        session.endSession();
       }
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: vtpassEndpoint === '/pay' ? 'Transaction successful' : 'Validation successful',
+        transactionId: vtpassResult.data.content?.transactions?.transactionId,
+        newBalance: user.walletBalance,
+        vtpassResponse: vtpassResult.data,
+        customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName
+      });
 
     } else {
       // VTpass failed
+      await session.abortTransaction();
       console.log('❌ VTpass failed:', vtpassResult.data);
       res.status(400).json({
         success: false,
@@ -4000,14 +4057,17 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     }
 
   } catch (error) {
+    await session.abortTransaction();
     console.error('❌ PROXY ERROR:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Service temporarily unavailable' 
+      message: 'Service temporarily unavailable',
+      error: error.message 
     });
+  } finally {
+    session.endSession();
   }
 });
-
 
 
 
