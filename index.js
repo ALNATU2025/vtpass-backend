@@ -5632,6 +5632,200 @@ app.get('/api/users/find-by-email/:email', async (req, res) => {
 
 
 
+// @desc    Verify PayStack transaction (Backend Proxy)
+// @route   POST /api/paystack/verify-transaction
+// @access  Public
+app.post('/api/paystack/verify-transaction', async (req, res) => {
+  try {
+    const { reference } = req.body;
+    
+    console.log('🔍 Verifying PayStack transaction via backend:', reference);
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction reference is required'
+      });
+    }
+
+    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+    
+    if (!PAYSTACK_SECRET_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'PayStack configuration error'
+      });
+    }
+
+    // Verify with PayStack
+    const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'VTPass-Backend/1.0'
+      },
+      timeout: 30000
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ PayStack API Error:', response.status, errorText);
+      
+      return res.status(response.status).json({
+        success: false,
+        message: `PayStack verification failed: ${response.statusText}`,
+        status: response.status
+      });
+    }
+
+    const data = await response.json();
+    
+    console.log('✅ PayStack verification result:', {
+      success: data.status,
+      message: data.message,
+      transactionStatus: data.data?.status,
+      amount: data.data?.amount
+    });
+
+    // Return the PayStack response
+    res.json({
+      success: data.status === true,
+      data: data.data,
+      message: data.message,
+      status: data.data?.status,
+      amount: data.data?.amount ? data.data.amount / 100 : 0 // Convert from kobo to naira
+    });
+
+  } catch (error) {
+    console.error('💥 PayStack verification error:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: `PayStack verification failed: ${error.message}`,
+      error: error.message
+    });
+  }
+});
+
+// @desc    Force wallet top-up after verification
+// @route   POST /api/wallet/force-topup
+// @access  Public
+app.post('/api/wallet/force-topup', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { userId, amount, reference, description } = req.body;
+    
+    console.log('🚀 Force top-up request:', { userId, amount, reference });
+
+    // Validate required fields
+    if (!userId || !amount || !reference) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: userId, amount, reference' 
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({ 
+      reference: reference 
+    }).session(session);
+    
+    if (existingTransaction) {
+      await session.abortTransaction();
+      return res.json({
+        success: true,
+        message: 'Transaction already processed',
+        amount: amount,
+        newBalance: user.walletBalance,
+        alreadyProcessed: true
+      });
+    }
+
+    // Update user balance
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += parseFloat(amount);
+    const balanceAfter = user.walletBalance;
+    
+    await user.save({ session });
+
+    // Create transaction record
+    const newTransaction = await createTransaction(
+      userId,
+      parseFloat(amount),
+      'credit',
+      'successful',
+      description || `Manual wallet funding - Ref: ${reference}`,
+      balanceBefore,
+      balanceAfter,
+      session,
+      false,
+      'manual'
+    );
+
+    await session.commitTransaction();
+    
+    console.log('✅ Force top-up successful:', {
+      userId,
+      amount,
+      newBalance: balanceAfter,
+      reference
+    });
+
+    // Create notification
+    try {
+      await Notification.create({
+        recipientId: userId,
+        title: "Wallet Funded Successfully 💰",
+        message: `Your wallet has been credited with ₦${amount}. New balance: ₦${balanceAfter}`,
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Notification creation error:', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Wallet topped up successfully',
+      amount: amount,
+      newBalance: balanceAfter,
+      transactionId: newTransaction._id
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Force top-up error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Force top-up failed: ' + error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+
+
+
+
+
+
+
 // Catch-all 404 handler
 app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not foundd' });
