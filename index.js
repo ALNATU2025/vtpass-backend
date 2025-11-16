@@ -5270,160 +5270,166 @@ function getFallbackInsuranceOptions(type) {
 
 
 
+// ==================== WALLET TOP-UP ROUTES ====================
 
-
-
-
-
+// @desc    Debug all wallet routes
+// @route   GET /api/wallet/debug
+// @access  Public
+app.get('/api/wallet/debug', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Wallet routes are working',
+    availableEndpoints: [
+      'POST /api/wallet/top-up',
+      'GET /api/wallet/test-top-up',
+      'GET /api/wallet/debug'
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
 
 // @desc    Test wallet top-up endpoint
 // @route   GET /api/wallet/test-top-up
 // @access  Public
 app.get('/api/wallet/test-top-up', async (req, res) => {
-    try {
-        console.log('🧪 Testing wallet top-up endpoint');
-        
-        res.json({
-            success: true,
-            message: 'Wallet top-up endpoint is working',
-            endpoint: 'POST /api/wallet/top-up',
-            requiredFields: ['userId', 'amount', 'reference'],
-            examplePayload: {
-                userId: 'user_id_here',
-                amount: 1000,
-                reference: 'test_ref_123',
-                description: 'Test wallet funding',
-                source: 'paystack'
-            },
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('Test endpoint error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Test endpoint failed' 
-        });
-    }
+  try {
+    console.log('🧪 Testing wallet top-up endpoint');
+    
+    res.json({
+      success: true,
+      message: 'Wallet top-up endpoint is working',
+      endpoint: 'POST /api/wallet/top-up',
+      requiredFields: ['userId', 'amount', 'reference'],
+      examplePayload: {
+        userId: 'user_id_here',
+        amount: 1000,
+        reference: 'test_ref_123',
+        description: 'Test wallet funding',
+        source: 'paystack'
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Test endpoint error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Test endpoint failed' 
+    });
+  }
 });
-
-
-
 
 // @desc    Top up wallet from virtual account payment - PRODUCTION
 // @route   POST /api/wallet/top-up
 // @access  Public (for virtual account backend integration)
 app.post('/api/wallet/top-up', async (req, res) => {
-    console.log('💰 PRODUCTION: Wallet top-up request received');
+  console.log('💰 PRODUCTION: Wallet top-up request received');
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { userId, amount, reference, description, source } = req.body;
     
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-        const { userId, amount, reference, description, source } = req.body;
-        
-        console.log('🔍 Processing wallet top-up:', { userId, amount, reference });
+    console.log('🔍 Processing wallet top-up:', { userId, amount, reference });
 
-        // Validate required fields
-        if (!userId || !amount || !reference) {
-            await session.abortTransaction();
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Missing required fields: userId, amount, reference' 
-            });
-        }
-
-        // Find user
-        const user = await User.findById(userId).session(session);
-        if (!user) {
-            await session.abortTransaction();
-            return res.status(404).json({ 
-                success: false, 
-                message: 'User not found' 
-            });
-        }
-
-        // Check if transaction already exists to prevent duplicates
-        const existingTransaction = await Transaction.findOne({ 
-            reference: reference 
-        }).session(session);
-        
-        if (existingTransaction) {
-            await session.abortTransaction();
-            console.log('ℹ️ Transaction already processed:', reference);
-            return res.json({
-                success: true,
-                message: 'Transaction already processed',
-                amount: amount,
-                newBalance: user.walletBalance,
-                alreadyProcessed: true
-            });
-        }
-
-        // Update user balance
-        const balanceBefore = user.walletBalance;
-        user.walletBalance += parseFloat(amount);
-        const balanceAfter = user.walletBalance;
-        
-        await user.save({ session });
-
-        // Create transaction record
-        const newTransaction = await createTransaction(
-            userId,
-            parseFloat(amount),
-            'credit',
-            'successful',
-            description || `Wallet funding via ${source || 'PayStack'} - Ref: ${reference}`,
-            balanceBefore,
-            balanceAfter,
-            session,
-            false,
-            'paystack'
-        );
-
-        await session.commitTransaction();
-        
-        console.log('✅ PRODUCTION: Wallet top-up successful', {
-            userId,
-            amount,
-            newBalance: balanceAfter,
-            reference,
-            transactionId: newTransaction._id
-        });
-
-        // Create notification for user
-        try {
-            await Notification.create({
-                recipientId: userId,
-                title: "Wallet Funded Successfully 💰",
-                message: `Your wallet has been credited with ₦${amount}. New balance: ₦${balanceAfter}`,
-                isRead: false
-            });
-        } catch (notificationError) {
-            console.error('Notification creation error:', notificationError);
-        }
-
-        res.json({
-            success: true,
-            message: 'Wallet topped up successfully',
-            amount: amount,
-            newBalance: balanceAfter,
-            transactionId: newTransaction._id
-        });
-
-    } catch (error) {
-        await session.abortTransaction();
-        console.error('❌ PRODUCTION: Wallet top-up error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Wallet top-up failed' 
-        });
-    } finally {
-        session.endSession();
+    // Validate required fields
+    if (!userId || !amount || !reference) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields: userId, amount, reference' 
+      });
     }
+
+    // Find user
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Check if transaction already exists to prevent duplicates
+    const existingTransaction = await Transaction.findOne({ 
+      reference: reference 
+    }).session(session);
+    
+    if (existingTransaction) {
+      await session.abortTransaction();
+      console.log('ℹ️ Transaction already processed:', reference);
+      return res.json({
+        success: true,
+        message: 'Transaction already processed',
+        amount: amount,
+        newBalance: user.walletBalance,
+        alreadyProcessed: true
+      });
+    }
+
+    // Update user balance
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += parseFloat(amount);
+    const balanceAfter = user.walletBalance;
+    
+    await user.save({ session });
+
+    // Create transaction record
+    const newTransaction = await createTransaction(
+      userId,
+      parseFloat(amount),
+      'credit',
+      'successful',
+      description || `Wallet funding via ${source || 'PayStack'} - Ref: ${reference}`,
+      balanceBefore,
+      balanceAfter,
+      session,
+      false,
+      'paystack'
+    );
+
+    await session.commitTransaction();
+    
+    console.log('✅ PRODUCTION: Wallet top-up successful', {
+      userId,
+      amount,
+      newBalance: balanceAfter,
+      reference,
+      transactionId: newTransaction._id
+    });
+
+    // Create notification for user
+    try {
+      await Notification.create({
+        recipientId: userId,
+        title: "Wallet Funded Successfully 💰",
+        message: `Your wallet has been credited with ₦${amount}. New balance: ₦${balanceAfter}`,
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Notification creation error:', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Wallet topped up successfully',
+      amount: amount,
+      newBalance: balanceAfter,
+      transactionId: newTransaction._id
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ PRODUCTION: Wallet top-up error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Wallet top-up failed' 
+    });
+  } finally {
+    session.endSession();
+  }
 });
-
-
-
 
 
 
