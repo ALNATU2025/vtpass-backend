@@ -5319,123 +5319,148 @@ app.get('/api/wallet/test-top-up', async (req, res) => {
   }
 });
 
-// @desc    Top up wallet from virtual account payment - PRODUCTION
-// @route   POST /api/wallet/top-up
-// @access  Public (for virtual account backend integration)
-app.post('/api/wallet/top-up', async (req, res) => {
-  console.log('💰 PRODUCTION: Wallet top-up request received');
-  
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const { userId, amount, reference, description, source } = req.body;
-    
-    console.log('🔍 Processing wallet top-up:', { userId, amount, reference });
-
-    // Validate required fields
-    if (!userId || !amount || !reference) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required fields: userId, amount, reference' 
-      });
-    }
-
-    // Find user
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    // Check if transaction already exists to prevent duplicates
-    const existingTransaction = await Transaction.findOne({ 
-      reference: reference 
-    }).session(session);
-    
-    if (existingTransaction) {
-      await session.abortTransaction();
-      console.log('ℹ️ Transaction already processed:', reference);
-      return res.json({
-        success: true,
-        message: 'Transaction already processed',
-        amount: amount,
-        newBalance: user.walletBalance,
-        alreadyProcessed: true
-      });
-    }
-
-    // Update user balance
-    const balanceBefore = user.walletBalance;
-    user.walletBalance += parseFloat(amount);
-    const balanceAfter = user.walletBalance;
-    
-    await user.save({ session });
-
-    // Create transaction record
-    const newTransaction = await createTransaction(
-      userId,
-      parseFloat(amount),
-      'credit',
-      'successful',
-      description || `Wallet funding via ${source || 'PayStack'} - Ref: ${reference}`,
-      balanceBefore,
-      balanceAfter,
-      session,
-      false,
-      'paystack'
-    );
-
-    await session.commitTransaction();
-    
-    console.log('✅ PRODUCTION: Wallet top-up successful', {
-      userId,
-      amount,
-      newBalance: balanceAfter,
-      reference,
-      transactionId: newTransaction._id
-    });
-
-    // Create notification for user
+// PRODUCTION: Enhanced sync with main backend - FIXED VERSION
+async function syncWithMainBackendWithRetry(userId, amount, reference, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await Notification.create({
-        recipientId: userId,
-        title: "Wallet Funded Successfully 💰",
-        message: `Your wallet has been credited with ₦${amount}. New balance: ₦${balanceAfter}`,
-        isRead: false
+      console.log(`🔄 PRODUCTION: Syncing with main backend (Attempt ${attempt}/${maxRetries})`);
+      
+      // FIX: Send amount in kobo (as received from PayStack)
+      // Main backend will convert to Naira
+      const syncPayload = {
+        userId: userId,
+        amount: amount, // Keep as kobo, backend will convert
+        reference: reference,
+        description: `Wallet funding via PayStack - Ref: ${reference}`,
+        source: 'paystack_webhook',
+        timestamp: new Date().toISOString()
+      };
+
+      console.log('📦 Sync payload:', syncPayload);
+
+      const response = await axios.post(
+        `${MAIN_BACKEND_URL}/api/wallet/top-up`,
+        syncPayload,
+        {
+          timeout: 15000,
+          headers: { 
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('✅ PRODUCTION: Main backend sync response:', {
+        status: response.status,
+        success: response.data.success,
+        message: response.data.message,
+        newBalance: response.data.newBalance
       });
-    } catch (notificationError) {
-      console.error('Notification creation error:', notificationError);
+
+      if (response.data.success) {
+        return {
+          success: true,
+          data: response.data
+        };
+      } else {
+        // If transaction already processed, consider it success
+        if (response.data.alreadyProcessed) {
+          console.log('ℹ️ Transaction already processed in main backend');
+          return {
+            success: true,
+            data: response.data,
+            alreadyProcessed: true
+          };
+        }
+        throw new Error(response.data.message || 'Main backend rejected sync');
+      }
+    } catch (error) {
+      console.error(`❌ PRODUCTION: Sync attempt ${attempt} failed:`, error.message);
+      
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', error.response.data);
+        
+        // If it's a client error (4xx), don't retry
+        if (error.response.status >= 400 && error.response.status < 500) {
+          throw error;
+        }
+      }
+      
+      if (attempt === maxRetries) {
+        throw new Error(`All sync attempts failed. Last error: ${error.message}`);
+      }
+      
+      // Wait before retry (exponential backoff)
+      const delay = attempt * 2000;
+      console.log(`⏳ Waiting ${delay}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
-
-    res.json({
-      success: true,
-      message: 'Wallet topped up successfully',
-      amount: amount,
-      newBalance: balanceAfter,
-      transactionId: newTransaction._id
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('❌ PRODUCTION: Wallet top-up error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Wallet top-up failed' 
-    });
-  } finally {
-    session.endSession();
   }
+}
+
+
+
+
+// @desc    Quick test wallet top-up
+// @route   POST /api/wallet/quick-test
+// @access  Public
+app.post('/api/wallet/quick-test', async (req, res) => {
+    try {
+        const { userId, amount = 10000, reference = 'test_' + Date.now() } = req.body;
+        
+        console.log('🧪 Quick test wallet top-up:', { userId, amount, reference });
+
+        if (!userId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'userId is required' 
+            });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'User not found' 
+            });
+        }
+
+        const amountInNaira = amount / 100;
+        const balanceBefore = user.walletBalance;
+        user.walletBalance += amountInNaira;
+        const balanceAfter = user.walletBalance;
+        
+        await user.save();
+
+        console.log('✅ Quick test successful:', {
+            amountKobo: amount,
+            amountNaira: amountInNaira,
+            balanceBefore,
+            balanceAfter
+        });
+
+        res.json({
+            success: true,
+            message: 'Quick test completed',
+            amountKobo: amount,
+            amountNaira: amountInNaira,
+            balanceBefore: balanceBefore,
+            balanceAfter: balanceAfter,
+            user: {
+                _id: user._id,
+                email: user.email,
+                fullName: user.fullName
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Quick test error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Quick test failed: ' + error.message 
+        });
+    }
 });
-
-
-
-
-
 
 
 
