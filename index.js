@@ -5463,6 +5463,42 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 });
 
 
+// @desc    Find user by email
+// @route   GET /api/users/find-by-email/:email
+// @access  Public (for virtual account backend integration)
+app.get('/api/users/find-by-email/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    console.log('🔍 Finding user by email:', email);
+
+    const user = await User.findOne({ email: email.toLowerCase() }).select('-password');
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        walletBalance: user.walletBalance
+      }
+    });
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error finding user' 
+    });
+  }
+});
+
+
 
 
 
