@@ -123,6 +123,7 @@ app.get("/api/debug/ip", async (req, res) => {
 
 // Standard middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 // Initialize cache
 const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
