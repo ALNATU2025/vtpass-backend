@@ -5921,6 +5921,218 @@ app.post('/api/wallet/sync-balance', async (req, res) => {
 
 
 
+// Add these endpoints to your vtpass-backend/index.js
+
+// @desc    Get transaction by reference
+// @route   GET /api/transactions/by-reference/:reference
+// @access  Private
+app.get('/api/transactions/by-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    
+    console.log('🔍 Checking transaction by reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference 
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found',
+        exists: false
+      });
+    }
+
+    res.json({
+      success: true,
+      transaction: transaction,
+      exists: true,
+      alreadyProcessed: transaction.status === 'successful',
+      balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore
+    });
+
+  } catch (error) {
+    console.error('Error fetching transaction by reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch transaction'
+    });
+  }
+});
+
+// @desc    Record verified transaction with balance update tracking
+// @route   POST /api/transactions/record-verified
+// @access  Private
+app.post('/api/transactions/record-verified', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('reference').notEmpty().withMessage('Reference is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+  body('previousBalance').isFloat({ min: 0 }).withMessage('Previous balance is required'),
+  body('newBalance').isFloat({ min: 0 }).withMessage('New balance is required'),
+  body('verifiedAt').notEmpty().withMessage('Verification timestamp is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      userId,
+      reference,
+      amount,
+      previousBalance,
+      newBalance,
+      verifiedAt,
+      type = 'wallet_funding',
+      status = 'completed',
+      source = 'paystack_verification'
+    } = req.body;
+
+    console.log('📝 Recording verified transaction:', { userId, reference, amount });
+
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({ reference }).session(session);
+    
+    if (existingTransaction && existingTransaction.status === 'successful') {
+      await session.abortTransaction();
+      return res.json({
+        success: false,
+        message: 'Transaction already recorded and processed',
+        alreadyProcessed: true
+      });
+    }
+
+    // Create or update transaction
+    let transaction;
+    if (existingTransaction) {
+      // Update existing transaction
+      transaction = await Transaction.findOneAndUpdate(
+        { reference },
+        {
+          status: 'successful',
+          balanceBefore: previousBalance,
+          balanceAfter: newBalance,
+          description: `Wallet funding via ${source} - Ref: ${reference}`,
+          metadata: {
+            ...existingTransaction.metadata,
+            verifiedAt: new Date(verifiedAt),
+            source: source,
+            balanceUpdated: true
+          }
+        },
+        { new: true, session }
+      );
+    } else {
+      // Create new transaction
+      transaction = await Transaction.create([{
+        userId,
+        type: 'credit',
+        amount: amount,
+        status: 'successful',
+        description: `Wallet funding via ${source} - Ref: ${reference}`,
+        balanceBefore: previousBalance,
+        balanceAfter: newBalance,
+        reference: reference,
+        isCommission: false,
+        authenticationMethod: 'paystack',
+        metadata: {
+          verifiedAt: new Date(verifiedAt),
+          source: source,
+          balanceUpdated: true,
+          verificationMethod: 'manual'
+        }
+      }], { session });
+      transaction = transaction[0];
+    }
+
+    // Update user balance
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { walletBalance: newBalance },
+      { new: true, session }
+    );
+
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    await session.commitTransaction();
+
+    console.log('✅ Verified transaction recorded successfully:', reference);
+
+    res.json({
+      success: true,
+      message: 'Transaction recorded and balance updated',
+      transaction: transaction,
+      newBalance: user.walletBalance
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error recording verified transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record transaction'
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// @desc    Get transactions needing verification
+// @route   GET /api/transactions/pending-verifications
+// @access  Private
+app.get('/api/transactions/pending-verifications', protect, [
+  query('days').optional().isInt({ min: 1, max: 30 }).withMessage('Days must be between 1 and 30')
+], async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const userId = req.user._id;
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
+
+    console.log('🔍 Fetching pending verifications for user:', userId);
+
+    const pendingTransactions = await Transaction.find({
+      userId: userId,
+      status: { $in: ['pending', 'processing'] },
+      createdAt: { $gte: cutoffDate },
+      $or: [
+        { 'metadata.source': 'paystack' },
+        { 'description': /paystack/i }
+      ]
+    }).sort({ createdAt: -1 });
+
+    console.log(`📊 Found ${pendingTransactions.length} pending transactions`);
+
+    res.json({
+      success: true,
+      pendingTransactions: pendingTransactions,
+      count: pendingTransactions.length,
+      cutoffDate: cutoffDate
+    });
+
+  } catch (error) {
+    console.error('Error fetching pending verifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending transactions'
+    });
+  }
+});
+
+
+
 
 
 
