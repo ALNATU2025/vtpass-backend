@@ -195,6 +195,11 @@ function validatePassword(password) {
          hasNumbers && 
          hasSpecialChar;
 }
+
+
+
+
+
 // Mongoose Models
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
@@ -6311,6 +6316,263 @@ app.get('/api/transactions/check-reference/:reference', protect, async (req, res
     res.status(500).json({
       success: false,
       message: 'Failed to check transaction reference'
+    });
+  }
+});
+
+
+
+// @desc    Enhanced PayStack verification with database duplicate protection
+// @route   POST /api/payments/verify-paystack
+// @access  Private
+app.post('/api/payments/verify-paystack', protect, [
+  body('reference').notEmpty().withMessage('Reference is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { reference } = req.body;
+    const userId = req.user._id;
+
+    console.log('🔍 DATABASE VERIFICATION: Checking reference:', reference);
+
+    // ✅ CRITICAL: Database-level duplicate check
+    const existingTransaction = await Transaction.findOne({
+      reference: reference,
+      status: 'successful'
+    }).session(session);
+
+    if (existingTransaction) {
+      await session.abortTransaction();
+      console.log('✅ DATABASE: Transaction already processed:', reference);
+      
+      return res.json({
+        success: false,
+        message: 'This transaction was already verified and processed',
+        alreadyProcessed: true,
+        amount: existingTransaction.amount,
+        newBalance: req.user.walletBalance,
+        transactionId: existingTransaction._id
+      });
+    }
+
+    // Verify with PayStack API
+    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+    
+    const paystackResponse = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+
+    const paystackData = paystackResponse.data;
+
+    if (paystackData.status === true && paystackData.data.status === 'success') {
+      const amount = paystackData.data.amount / 100; // Convert to Naira
+      
+      // ✅ Get fresh user data within transaction
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      const balanceBefore = user.walletBalance;
+      user.walletBalance += amount;
+      const balanceAfter = user.walletBalance;
+      
+      await user.save({ session });
+
+      // ✅ Create transaction record with UNIQUE reference constraint
+      const transaction = await Transaction.create([{
+        userId: userId,
+        type: 'credit',
+        amount: amount,
+        status: 'successful',
+        description: `Wallet funding via PayStack - Ref: ${reference}`,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        reference: reference, // This will fail if duplicate due to schema unique constraint
+        isCommission: false,
+        authenticationMethod: 'paystack',
+        metadata: {
+          source: 'paystack_direct',
+          verifiedAt: new Date(),
+          customerEmail: paystackData.data.customer?.email,
+          paymentMethod: paystackData.data.channel,
+          balanceUpdated: true
+        }
+      }], { session });
+
+      await session.commitTransaction();
+
+      // Create notification
+      await Notification.create({
+        recipientId: userId,
+        title: "Payment Verified Successfully ✅",
+        message: `Your payment of ₦${amount} has been verified and credited to your wallet. New balance: ₦${balanceAfter}`,
+        isRead: false
+      });
+
+      console.log('✅ DATABASE VERIFICATION COMPLETE:', {
+        reference,
+        amount,
+        newBalance: balanceAfter,
+        transactionId: transaction[0]._id
+      });
+
+      res.json({
+        success: true,
+        message: 'Payment verified successfully',
+        amount: amount,
+        newBalance: balanceAfter,
+        transaction: transaction[0],
+        paystackData: paystackData.data
+      });
+
+    } else {
+      await session.abortTransaction();
+      res.status(400).json({
+        success: false,
+        message: 'Payment verification failed or not successful',
+        paystackData: paystackData.data
+      });
+    }
+
+  } catch (error) {
+    await session.abortTransaction();
+    
+    // ✅ Handle duplicate key error (MongoDB unique constraint)
+    if (error.code === 11000 || error.message.includes('duplicate key')) {
+      console.log('✅ DATABASE UNIQUE CONSTRAINT: Transaction already exists:', req.body.reference);
+      return res.json({
+        success: false,
+        message: 'Transaction was already processed',
+        alreadyProcessed: true,
+        databaseConstraint: true
+      });
+    }
+    
+    console.error('❌ DATABASE VERIFICATION ERROR:', error);
+    
+    if (error.response) {
+      res.status(error.response.status).json({
+        success: false,
+        message: `PayStack API error: ${error.response.status}`,
+        details: error.response.data
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Payment verification failed',
+        error: error.message
+      });
+    }
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+// @desc    Check if transaction reference exists in database
+// @route   GET /api/transactions/check-reference/:reference
+// @access  Private
+app.get('/api/transactions/check-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const userId = req.user._id;
+
+    console.log('🔍 DATABASE CHECK: Verifying reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference,
+      userId: userId
+    });
+
+    if (!transaction) {
+      return res.json({
+        exists: false,
+        message: 'Transaction reference not found in database'
+      });
+    }
+
+    res.json({
+      exists: true,
+      alreadyProcessed: transaction.status === 'successful',
+      transaction: {
+        _id: transaction._id,
+        amount: transaction.amount,
+        status: transaction.status,
+        createdAt: transaction.createdAt,
+        balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore,
+        description: transaction.description
+      },
+      message: transaction.status === 'successful' 
+        ? 'Transaction already processed successfully' 
+        : `Transaction is ${transaction.status}`
+    });
+
+  } catch (error) {
+    console.error('Error checking transaction reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check transaction reference'
+    });
+  }
+});
+
+
+// @desc    Get user's pending transaction verifications
+// @route   GET /api/transactions/pending-verifications
+// @access  Private
+app.get('/api/transactions/pending-verifications', protect, [
+  query('days').optional().isInt({ min: 1, max: 30 }).withMessage('Days must be between 1 and 30')
+], async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const userId = req.user._id;
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
+
+    console.log('🔍 Fetching pending verifications for user:', userId);
+
+    const pendingTransactions = await Transaction.find({
+      userId: userId,
+      status: { $in: ['pending', 'processing'] },
+      createdAt: { $gte: cutoffDate },
+      $or: [
+        { 'metadata.source': 'paystack' },
+        { 'description': /paystack/i }
+      ]
+    }).sort({ createdAt: -1 });
+
+    console.log(`📊 Found ${pendingTransactions.length} pending transactions`);
+
+    res.json({
+      success: true,
+      pendingTransactions: pendingTransactions,
+      count: pendingTransactions.length,
+      cutoffDate: cutoffDate
+    });
+
+  } catch (error) {
+    console.error('Error fetching pending verifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending transactions'
     });
   }
 });
