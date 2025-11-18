@@ -6133,6 +6133,188 @@ app.get('/api/transactions/pending-verifications', protect, [
 
 
 
+// @desc    Enhanced transaction verification with duplicate protection
+// @route   POST /api/transactions/verify-payment
+// @access  Private
+app.post('/api/transactions/verify-payment', protect, [
+  body('reference').notEmpty().withMessage('Reference is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { reference } = req.body;
+    const userId = req.user._id;
+
+    console.log('🔍 Enhanced verification for reference:', reference);
+
+    // Check if transaction already exists and is successful
+    const existingTransaction = await Transaction.findOne({
+      reference: reference,
+      status: 'successful'
+    }).session(session);
+
+    if (existingTransaction) {
+      await session.abortTransaction();
+      return res.json({
+        success: true,
+        message: 'Transaction already verified',
+        alreadyProcessed: true,
+        transaction: existingTransaction,
+        newBalance: req.user.walletBalance
+      });
+    }
+
+    // Verify with PayStack
+    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+    const paystackResponse = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+
+    const paystackData = paystackResponse.data;
+
+    if (paystackData.status === true && paystackData.data.status === 'success') {
+      const amount = paystackData.data.amount / 100; // Convert to Naira
+      
+      // Update user balance
+      const user = await User.findById(userId).session(session);
+      const balanceBefore = user.walletBalance;
+      user.walletBalance += amount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+
+      // Create transaction record
+      const transaction = await Transaction.create([{
+        userId: userId,
+        type: 'credit',
+        amount: amount,
+        status: 'successful',
+        description: `Wallet funding via PayStack - Ref: ${reference}`,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        reference: reference,
+        isCommission: false,
+        authenticationMethod: 'paystack',
+        metadata: {
+          source: 'paystack_direct',
+          verifiedAt: new Date(),
+          customerEmail: paystackData.data.customer?.email,
+          paymentMethod: paystackData.data.channel
+        }
+      }], { session });
+
+      await session.commitTransaction();
+
+      // Create notification
+      await Notification.create({
+        recipientId: userId,
+        title: "Payment Verified Successfully ✅",
+        message: `Your payment of ₦${amount} has been verified and credited to your wallet. New balance: ₦${balanceAfter}`,
+        isRead: false
+      });
+
+      console.log('✅ Payment verified and processed:', reference);
+
+      res.json({
+        success: true,
+        message: 'Payment verified successfully',
+        amount: amount,
+        newBalance: balanceAfter,
+        transaction: transaction[0],
+        paystackData: paystackData.data
+      });
+
+    } else {
+      await session.abortTransaction();
+      res.status(400).json({
+        success: false,
+        message: 'Payment verification failed or not successful',
+        paystackData: paystackData.data
+      });
+    }
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Payment verification error:', error);
+    
+    if (error.response) {
+      res.status(error.response.status).json({
+        success: false,
+        message: `PayStack API error: ${error.response.status}`,
+        details: error.response.data
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Payment verification failed',
+        error: error.message
+      });
+    }
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+
+
+// @desc    Check if transaction reference already exists
+// @route   GET /api/transactions/check-reference/:reference
+// @access  Private
+app.get('/api/transactions/check-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    
+    console.log('🔍 Checking transaction reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference,
+      status: 'successful' 
+    });
+
+    if (transaction) {
+      return res.json({
+        exists: true,
+        alreadyProcessed: true,
+        transaction: {
+          _id: transaction._id,
+          amount: transaction.amount,
+          status: transaction.status,
+          createdAt: transaction.createdAt,
+          balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore
+        },
+        message: 'Transaction already processed successfully'
+      });
+    }
+
+    res.json({
+      exists: false,
+      alreadyProcessed: false,
+      message: 'Transaction reference not found'
+    });
+
+  } catch (error) {
+    console.error('Error checking transaction reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check transaction reference'
+    });
+  }
+});
+
 
 
 
