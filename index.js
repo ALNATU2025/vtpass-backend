@@ -5819,54 +5819,107 @@ app.post('/api/wallet/force-topup', async (req, res) => {
 
 
 
+// ==================== WALLET SYNC ENDPOINTS ====================
 
-// In your main backend routes (vtpass-backend)
-
-// Add balance update endpoint
-router.post('/api/users/update-balance', async (req, res) => {
+// @desc    Update user balance
+// @route   POST /api/users/update-balance
+// @access  Public (for virtual account backend)
+app.post('/api/users/update-balance', async (req, res) => {
   try {
     const { userId, newBalance, updateType, timestamp } = req.body;
     
-    // Update user balance in your database
-    const user = await User.findByIdAndUpdate(
+    console.log('🔄 Updating user balance:', { userId, newBalance });
+
+    if (!userId || newBalance === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'userId and newBalance are required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    const previousBalance = user.walletBalance;
+    user.walletBalance = parseFloat(newBalance);
+    await user.save();
+
+    console.log('✅ Balance updated successfully:', {
       userId,
-      { 
-        walletBalance: newBalance,
-        $push: {
-          balanceHistory: {
-            previousBalance: user.walletBalance,
-            newBalance: newBalance,
-            updateType: updateType,
-            timestamp: new Date(timestamp)
-          }
-        }
-      },
-      { new: true }
-    );
+      previousBalance,
+      newBalance: user.walletBalance
+    });
 
     res.json({
       success: true,
       newBalance: user.walletBalance,
+      previousBalance: previousBalance,
       message: 'Balance updated successfully'
     });
   } catch (error) {
-    console.error('Balance update error:', error);
-    res.status(500).json({ success: false, message: 'Balance update failed' });
+    console.error('❌ Balance update error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Balance update failed: ' + error.message 
+    });
   }
 });
 
-// Add wallet sync endpoint
-router.post('/api/wallet/sync-balance', async (req, res) => {
+// @desc    Sync wallet balance
+// @route   POST /api/wallet/sync-balance
+// @access  Public (for virtual account backend)
+app.post('/api/wallet/sync-balance', async (req, res) => {
   try {
     const { userId, newBalance } = req.body;
     
-    await User.findByIdAndUpdate(userId, { walletBalance: newBalance });
-    
-    res.json({ success: true, message: 'Wallet synced successfully' });
+    console.log('🔄 Syncing wallet balance:', { userId, newBalance });
+
+    if (!userId || newBalance === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'userId and newBalance are required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    const previousBalance = user.walletBalance;
+    user.walletBalance = parseFloat(newBalance);
+    await user.save();
+
+    console.log('✅ Wallet synced successfully:', {
+      userId,
+      previousBalance,
+      newBalance: user.walletBalance
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Wallet synced successfully',
+      previousBalance: previousBalance,
+      newBalance: user.walletBalance
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Wallet sync failed' });
+    console.error('❌ Wallet sync error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Wallet sync failed: ' + error.message 
+    });
   }
 });
+
+
 
 
 
