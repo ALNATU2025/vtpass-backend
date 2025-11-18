@@ -5820,6 +5820,54 @@ app.post('/api/wallet/force-topup', async (req, res) => {
 
 
 
+// In your main backend routes (vtpass-backend)
+
+// Add balance update endpoint
+router.post('/api/users/update-balance', async (req, res) => {
+  try {
+    const { userId, newBalance, updateType, timestamp } = req.body;
+    
+    // Update user balance in your database
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { 
+        walletBalance: newBalance,
+        $push: {
+          balanceHistory: {
+            previousBalance: user.walletBalance,
+            newBalance: newBalance,
+            updateType: updateType,
+            timestamp: new Date(timestamp)
+          }
+        }
+      },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      newBalance: user.walletBalance,
+      message: 'Balance updated successfully'
+    });
+  } catch (error) {
+    console.error('Balance update error:', error);
+    res.status(500).json({ success: false, message: 'Balance update failed' });
+  }
+});
+
+// Add wallet sync endpoint
+router.post('/api/wallet/sync-balance', async (req, res) => {
+  try {
+    const { userId, newBalance } = req.body;
+    
+    await User.findByIdAndUpdate(userId, { walletBalance: newBalance });
+    
+    res.json({ success: true, message: 'Wallet synced successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Wallet sync failed' });
+  }
+});
+
 
 
 
