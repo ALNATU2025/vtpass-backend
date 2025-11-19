@@ -1,17 +1,18 @@
-// vtpass-backend/routes/fundWalletRoutes.js - UPDATED
+// vtpass-backend/routes/fundWalletRoutes.js - FIXED & UPDATED
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
-const { protect } = require('../middleware/authMiddleware'); 
+const { protect } = require('../middleware/authMiddleware'); // Optional auth
 
-// @desc    Fund user wallet (for virtual account deposits too)
-// @route   POST /api/fund-wallet
-// @access  Private (requires authentication) OR from virtual account backend
-router.post('/', async (req, res) => { // Temporarily remove 'protect' for testing
-    const { userId, amount, type, transactionId, details } = req.body;
+// ------------------------
+// POST /api/fund-wallet
+// Fund user wallet (general or virtual account)
+// ------------------------
+router.post('/', async (req, res) => {
+    const { userId, amount, transactionId, details } = req.body;
 
-    console.log('💰 Fund wallet request:', { userId, amount, type, transactionId });
+    console.log('💰 Fund wallet request:', { userId, amount, transactionId });
 
     if (!userId || !amount || amount <= 0) {
         return res.status(400).json({ 
@@ -22,22 +23,13 @@ router.post('/', async (req, res) => { // Temporarily remove 'protect' for testi
 
     try {
         const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
-        if (!user) {
-            return res.status(404).json({ 
-                success: false,
-                message: 'User not found.' 
-            });
-        }
-
-        // Check if transaction already exists (using transactionId)
+        // Check duplicate transaction
         if (transactionId) {
-            const existingTransaction = await Transaction.findOne({
-                transactionId: transactionId
-            });
-
+            const existingTransaction = await Transaction.findOne({ transactionId });
             if (existingTransaction) {
-                console.log('⚠️ Transaction already processed in main backend:', transactionId);
+                console.log('⚠️ Transaction already processed:', transactionId);
                 return res.json({
                     success: true,
                     message: 'Transaction already processed',
@@ -47,57 +39,53 @@ router.post('/', async (req, res) => { // Temporarily remove 'protect' for testi
             }
         }
 
-        // Calculate balances
-        const userPreviousBalance = user.walletBalance;
-        user.walletBalance += amount;
-        const userNewBalance = user.walletBalance;
-
-        // Update wallet balance
+        // Update balances
+        const balanceBefore = user.walletBalance;
+        user.walletBalance += parseFloat(amount);
+        const balanceAfter = user.walletBalance;
         await user.save();
 
-        // Create a transaction record in main backend
+        // Create transaction with correct enums & required fields
         const transaction = new Transaction({
-            userId,
-            type: type || 'FundWallet',
-            amount,
-            status: 'Successful',
-            transactionId: transactionId || `VA_${Date.now()}`, // Use provided or generate
+            userId: user._id,
+            type: 'credit',             // ✅ matches enum
+            amount: parseFloat(amount),
+            status: 'success',          // ✅ matches enum
+            transactionId: transactionId || `VA_${Date.now()}`,
+            balanceBefore,              // ✅ required
+            balanceAfter,               // ✅ required
             details: {
-                description: details?.description || `Wallet funded with ${amount} via virtual account.`,
-                userPreviousBalance: userPreviousBalance,
-                userNewBalance: userNewBalance,
+                description: details?.description || `Wallet funded with ${amount}`,
                 source: details?.source || 'virtual_account',
                 reference: details?.reference || transactionId
-            },
+            }
         });
-        
+
         await transaction.save();
 
-        console.log('✅ Main backend wallet funded:', {
-            userId,
-            amount,
-            previousBalance: userPreviousBalance,
-            newBalance: userNewBalance
-        });
+        console.log('✅ Wallet funded:', { userId, amount, balanceBefore, balanceAfter });
 
         res.status(200).json({
             success: true,
             message: 'Wallet funded successfully.',
             newBalance: user.walletBalance,
-            transactionId: transaction._id,
+            transactionId: transaction._id
         });
 
     } catch (error) {
         console.error('❌ Error funding wallet:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            message: 'Server error during wallet funding.', 
-            error: error.message 
+            message: 'Server error during wallet funding.',
+            error: error.message
         });
     }
 });
 
-// ADD THIS NEW ENDPOINT specifically for virtual account webhooks
+// ------------------------
+// POST /api/fund-wallet/virtual-account-deposit
+// Specifically for virtual account webhooks
+// ------------------------
 router.post('/virtual-account-deposit', async (req, res) => {
     try {
         const { userId, amount, reference, description } = req.body;
@@ -111,20 +99,11 @@ router.post('/virtual-account-deposit', async (req, res) => {
             });
         }
 
-        // Find user
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
-        }
+        if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-        // Check if transaction already exists
-        const existingTransaction = await Transaction.findOne({
-            transactionId: reference
-        });
-
+        // Check duplicate transaction
+        const existingTransaction = await Transaction.findOne({ transactionId: reference });
         if (existingTransaction) {
             console.log('⚠️ Virtual account transaction already processed:', reference);
             return res.json({
@@ -134,22 +113,23 @@ router.post('/virtual-account-deposit', async (req, res) => {
             });
         }
 
-        // Update wallet balance
-        const previousBalance = user.walletBalance;
+        // Update balances
+        const balanceBefore = user.walletBalance;
         user.walletBalance += parseFloat(amount);
+        const balanceAfter = user.walletBalance;
         await user.save();
 
-        // Create transaction record
+        // Create transaction with correct enums
         const transaction = new Transaction({
-            userId: userId,
-            type: 'FundWallet',
+            userId: user._id,
+            type: 'virtual_account_deposit', // ✅ matches enum for VA deposits
             amount: parseFloat(amount),
+            status: 'success',               // ✅ matches enum
             transactionId: reference,
-            status: 'Successful',
+            balanceBefore,                   // ✅ required
+            balanceAfter,                    // ✅ required
             details: {
                 description: description || `Virtual account deposit - ${reference}`,
-                userPreviousBalance: previousBalance,
-                userNewBalance: user.walletBalance,
                 source: 'virtual_account',
                 reference: reference
             }
@@ -157,12 +137,12 @@ router.post('/virtual-account-deposit', async (req, res) => {
 
         await transaction.save();
 
-        console.log('✅ Virtual account deposit recorded in main backend:', reference);
+        console.log('✅ Virtual account deposit recorded:', reference);
 
         res.json({
             success: true,
             message: 'Virtual account deposit processed',
-            amount: amount,
+            amount,
             newBalance: user.walletBalance,
             transactionId: transaction._id
         });
