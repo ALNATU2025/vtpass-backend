@@ -6578,6 +6578,50 @@ app.get('/api/transactions/pending-verifications', protect, [
 });
 
 
+// Add this route to your main backend (index.js)
+app.post('/api/transactions/record', async (req, res) => {
+  try {
+    const { userId, amount, reference, type, status, description, service, metadata } = req.body;
+    
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({ reference, userId });
+    if (existingTransaction) {
+      return res.json({
+        success: true,
+        message: 'Transaction already exists',
+        transactionId: existingTransaction._id
+      });
+    }
+    
+    const transaction = new Transaction({
+      userId,
+      amount,
+      reference,
+      type: type || 'wallet_funding',
+      status: status || 'completed',
+      description: description || `Wallet funding - ${reference}`,
+      service: service || 'paystack',
+      timestamp: new Date(),
+      metadata: metadata || {}
+    });
+    
+    await transaction.save();
+    
+    res.json({
+      success: true,
+      message: 'Transaction recorded successfully',
+      transactionId: transaction._id
+    });
+  } catch (error) {
+    console.error('Error recording transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record transaction: ' + error.message
+    });
+  }
+});
+
+
 
 
 
