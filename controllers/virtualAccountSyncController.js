@@ -4,40 +4,65 @@ const Transaction = require("../models/Transaction");
 
 exports.syncVirtualAccountCredit = async (req, res) => {
   try {
+    // Optional: keep the internal key if you want extra security
     const internalKey = req.headers["x-internal-api-key"];
-    if (!internalKey || internalKey !== process.env.MAIN_BACKEND_API_KEY) {
+    if (process.env.MAIN_BACKEND_API_KEY && (!internalKey || internalKey !== process.env.MAIN_BACKEND_API_KEY)) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    const { userId, amount, reference } = req.body;
-    if (!userId || !amount || !reference) return res.status(400).json({ error: "Missing fields" });
+    const { userId, amount: amountKobo, reference } = req.body;
 
-    const existing = await Transaction.findOne({ reference });
-    if (existing) return res.status(200).json({ message: "Already synced" });
+    if (!userId || !amountKobo || !reference) {
+      return res.status(400).json({ error: "Missing fields: userId, amount (kobo), reference" });
+    }
+
+    // CRITICAL: Convert from kobo to naira
+    const amountNaira = amountKobo / 100;
+
+    // Prevent duplicate ONLY for virtual account deposits
+    const existing = await Transaction.findOne({
+      reference,
+      type: "virtual_account_topup"   // or "virtual_account_deposit" — whatever you use
+    });
+
+    if (existing) {
+      console.log(`Duplicate sync ignored: ₦${amountNaira} | Ref: ${reference}`);
+      return res.json({ success: true, message: "Already processed", alreadySynced: true });
+    }
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ error: "User not found" });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    const before = user.walletBalance || 0;
-    user.walletBalance += amount;
+    const balanceBefore = user.walletBalance || 0;
+    user.walletBalance = balanceBefore + amountNaira;
     await user.save();
 
     await Transaction.create({
       userId,
-      amount,
+      amount: amountNaira,                    // ← Save in Naira
       reference,
-      type: "virtual_account_topup",
-      gateway: "paystack",
+      type: "virtual_account_topup",          // ← Keep your type
+      gateway: "paystack_virtual_account",
       status: "success",
-      description: "Virtual account auto-credit",
-      balanceBefore: before,
-      balanceAfter: user.walletBalance
+      description: `Virtual Account Deposit • ${reference}`,
+      balanceBefore,
+      balanceAfter: user.walletBalance,
+      metadata: { source: "automatic_webhook" }
     });
 
-    return res.json({ success: true, newBalance: user.walletBalance });
+    console.log(`SYNCED & RECORDED: ₦${amountNaira} → ${user.email} | Ref: ${reference}`);
+
+    return res.json({
+      success: true,
+      newBalance: user.walletBalance,
+      amount: amountNaira,
+      message: "Virtual account deposit synced successfully"
+    });
 
   } catch (err) {
-    console.error("SYNC ERROR:", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error("VIRTUAL ACCOUNT SYNC ERROR:", err);
+    return res.status(500).json({ error: "Server error", details: err.message });
   }
 };
