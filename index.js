@@ -1197,59 +1197,70 @@ app.post('/api/users/reset-password', [
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
 app.post('/api/users/set-transaction-pin', protect, [
-  body('userId').notEmpty().withMessage('User ID is required'),
-  body('pin').isLength({ min: 6, max: 8 }).withMessage('PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+  body('pin').isLength({ min: 4, max: 6 }).withMessage('PIN must be 4-6 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   try {
-    const { userId, pin } = req.body;
-    const ipAddress = req.ip;
-    const userAgent = req.get('User-Agent');
+    const { pin } = req.body;
+    const userId = req.user._id;
     
-    if (req.user._id.toString() !== userId) {
-      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Unauthorized access');
-      return res.status(403).json({ success: false, message: 'Unauthorized access' });
-    }
-    
-    // Check for common PINs
-    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333', '12345678', '11111111', '00000000'];
-    if (commonPins.includes(pin)) {
-      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
-      return res.status(400).json({ 
-        success: false, 
-        message: 'PIN is too common. Please choose a more secure PIN' 
-      });
-    }
-    
+    console.log(`🔐 Setting PIN for user: ${userId}`);
+
     const user = await User.findById(userId);
     if (!user) {
-      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'User not found');
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
+
+    // Debug current state
+    console.log('📊 Before setting PIN:', {
+      hasExistingPin: !!user.transactionPin,
+      pinLength: user.transactionPin ? user.transactionPin.length : 0
+    });
+
+    // Check if PIN is already set
+    if (user.transactionPin) {
+      console.log('⚠️ PIN already set for user:', userId);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction PIN is already set. Use change PIN endpoint instead.',
+        pinAlreadySet: true
+      });
+    }
+
     // Hash the PIN
     const salt = await bcrypt.genSalt(12);
     const hashedPin = await bcrypt.hash(pin, salt);
-    
+
+    // Update user with hashed PIN
     user.transactionPin = hashedPin;
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
+    
     await user.save();
-    
-    await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN set successfully');
-    
+
+    console.log(`✅ PIN set successfully for user: ${userId}`);
+    console.log('📊 After setting PIN:', {
+      hasPin: !!user.transactionPin,
+      pinLength: user.transactionPin.length
+    });
+
     res.json({ 
       success: true, 
       message: 'Transaction PIN set successfully',
+      transactionPinSet: true
     });
+    
   } catch (error) {
-    console.error('Error setting transaction PIN:', error);
+    console.error('❌ Error setting transaction PIN:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // @desc    Change transaction PIN
 // @route   POST /api/users/change-transaction-pin
 // @access  Private
