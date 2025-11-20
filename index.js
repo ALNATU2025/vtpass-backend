@@ -6561,6 +6561,88 @@ app.post('/api/users/generate-referral-code', protect, [
 });
 
 
+// @desc    Get user referral statistics
+// @route   GET /api/users/referral-stats/:userId
+// @access  Private
+app.get('/api/users/referral-stats/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Check if user is accessing their own data or is admin
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Get direct referrals
+    const directReferrals = await User.find({ referrerId: userId });
+    
+    // Calculate total earnings from referrals (you might want to calculate this from transactions)
+    const totalEarned = user.totalReferralEarnings || 0;
+
+    res.json({
+      success: true,
+      referralStats: {
+        referralCode: user.referralCode,
+        totalReferrals: directReferrals.length,
+        activeReferrals: directReferrals.filter(ref => ref.isActive).length,
+        totalEarned: totalEarned,
+        referrals: directReferrals.map(ref => ({
+          _id: ref._id,
+          fullName: ref.fullName,
+          email: ref.email,
+          joinedAt: ref.createdAt,
+          isActive: ref.isActive
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching referral stats:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Debug endpoint to check user status
+// @route   GET /api/debug/user-status
+// @access  Private
+app.get('/api/debug/user-status', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId).select('-password -transactionPin');
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const status = {
+      user: {
+        id: user._id,
+        email: user.email,
+        phone: user.phone,
+        hasPhone: !!user.phone,
+        referralCode: user.referralCode,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        hasTransactionPin: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+        isFirstTransaction: user.isFirstTransaction
+      },
+      virtualAccount: user.virtualAccount,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({ success: true, status });
+  } catch (error) {
+    console.error('Debug status error:', error);
+    res.status(500).json({ success: false, message: 'Debug status check failed' });
+  }
+});
+
 
 // @desc    Update user phone number
 // @route   PATCH /api/users/update-phone
