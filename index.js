@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
+const User = require('./models/User');
 
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
