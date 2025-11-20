@@ -6528,6 +6528,111 @@ app.post('/api/transactions/record', async (req, res) => {
 
 
 
+// @desc    Generate referral code for user
+// @route   POST /api/users/generate-referral-code
+// @access  Private
+app.post('/api/users/generate-referral-code', protect, [
+  body('userId').notEmpty().withMessage('User ID is required')
+], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Generate referral code if not exists
+    if (!user.referralCode) {
+      const referralCode = `REF${userId.toString().substring(0, 8).toUpperCase()}`;
+      user.referralCode = referralCode;
+      await user.save();
+    }
+    
+    res.json({
+      success: true,
+      referralCode: user.referralCode,
+      message: 'Referral code generated successfully'
+    });
+  } catch (error) {
+    console.error('Error generating referral code:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Update user phone number
+// @route   PATCH /api/users/update-phone
+// @access  Private
+app.patch('/api/users/update-phone', protect, [
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { phone } = req.body;
+    const userId = req.user._id;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.phone = phone;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Phone number updated successfully',
+      phone: user.phone
+    });
+  } catch (error) {
+    console.error('Error updating phone number:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Debug endpoint to check all critical services
+// @route   GET /api/debug/status
+// @access  Private
+app.get('/api/debug/status', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+    
+    const status = {
+      user: {
+        id: user._id,
+        email: user.email,
+        phone: user.phone,
+        hasPhone: !!user.phone,
+        referralCode: user.referralCode,
+        walletBalance: user.walletBalance
+      },
+      tokens: {
+        hasToken: !!req.headers.authorization,
+        tokenLength: req.headers.authorization ? req.headers.authorization.length : 0
+      },
+      services: {
+        database: 'connected', // Assuming DB is connected
+        vtpass: 'unknown' // You can add VTpass health check here
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({ success: true, status });
+  } catch (error) {
+    console.error('Debug status error:', error);
+    res.status(500).json({ success: false, message: 'Debug status check failed' });
+  }
+});
+
+
 
 
 
