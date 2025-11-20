@@ -751,8 +751,10 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
   }
 };
 // Transaction Helper Function
+// Transaction Helper Function - FIXED VERSION
 const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none') => {
   const newTransaction = new Transaction({
+    transactionId: uuidv4(), // Add this line - generate unique transaction ID
     userId,
     type,
     amount,
@@ -760,7 +762,7 @@ const createTransaction = async (userId, amount, type, status, description, bala
     description,
     balanceBefore,
     balanceAfter,
-    reference: uuidv4(),
+    reference: uuidv4(), // Keep this as reference if needed
     isCommission,
     authenticationMethod
   });
