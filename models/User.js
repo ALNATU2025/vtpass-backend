@@ -21,6 +21,9 @@ const userSchema = mongoose.Schema(
       unique: true,
       trim: true,
     },
+   transactionPin: { 
+      type: String 
+    },    
     password: {
       type: String,
       required: true,
