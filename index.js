@@ -5375,130 +5375,108 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 
 
 
-// @desc    Top up wallet from virtual account payment - PRODUCTION
+// @desc    Top up wallet from virtual account / PayStack webhook - FIXED & ROBUST
 // @route   POST /api/wallet/top-up
-// @access  Public (for virtual account backend integration)
+// @access  Public (called by virtual-account-backend)
 app.post('/api/wallet/top-up', async (req, res) => {
-    console.log('💰 PRODUCTION: Wallet top-up request received');
-    
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-        const { userId, amount, reference, description, source } = req.body;
-        
-        console.log('🔍 Processing wallet top-up:', { userId, amount, reference });
+  console.log(' MAIN BACKEND: Wallet top-up request received', req.body);
 
-        // Validate required fields
-        if (!userId || !amount || !reference) {
-            await session.abortTransaction();
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Missing required fields: userId, amount, reference' 
-            });
-        }
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-        // Find user
-        const user = await User.findById(userId).session(session);
-        if (!user) {
-            await session.abortTransaction();
-            return res.status(404).json({ 
-                success: false, 
-                message: 'User not found' 
-            });
-        }
+  try {
+    const { userId, amount, reference, description, source } = req.body;
 
-        // Convert amount from kobo to Naira
-        const amountInNaira = parseFloat(amount) / 100;
-        console.log(`💰 Amount conversion: ${amount} kobo → ${amountInNaira} Naira`);
-
-        // Check if transaction already exists (successful ones)
-        const existingTransaction = await Transaction.findOne({ 
-            reference: reference,
-            status: 'successful'
-        }).session(session);
-        
-        if (existingTransaction) {
-            await session.abortTransaction();
-            console.log('ℹ️ Transaction already processed successfully:', reference);
-            return res.json({
-                success: true,
-                message: 'Transaction already processed successfully',
-                amount: amountInNaira,
-                newBalance: user.walletBalance,
-                alreadyProcessed: true
-            });
-        }
-
-        // Delete any pending/failed transactions with same reference
-        await Transaction.deleteMany({
-            reference: reference,
-            status: { $in: ['pending', 'failed'] }
-        }).session(session);
-
-        // Update user balance
-        const balanceBefore = user.walletBalance;
-        user.walletBalance += amountInNaira;
-        const balanceAfter = user.walletBalance;
-        
-        await user.save({ session });
-
-        // Create transaction record
-        const newTransaction = await createTransaction(
-            userId,
-            amountInNaira,
-            'credit',
-            'successful',
-            description || `Wallet funding via ${source || 'PayStack'} - Ref: ${reference}`,
-            balanceBefore,
-            balanceAfter,
-            session,
-            false,
-            'paystack'
-        );
-
-        await session.commitTransaction();
-        
-        console.log('✅ PRODUCTION: Wallet top-up successful', {
-            userId,
-            amountInNaira,
-            newBalance: balanceAfter,
-            reference,
-            transactionId: newTransaction._id
-        });
-
-        // Create notification for user
-        try {
-            await Notification.create({
-                recipientId: userId,
-                title: "Wallet Funded Successfully 💰",
-                message: `Your wallet has been credited with ₦${amountInNaira}. New balance: ₦${balanceAfter}`,
-                isRead: false
-            });
-        } catch (notificationError) {
-            console.error('Notification creation error:', notificationError);
-        }
-
-        res.json({
-            success: true,
-            message: 'Wallet topped up successfully',
-            amount: amountInNaira,
-            newBalance: balanceAfter,
-            transactionId: newTransaction._id
-        });
-
-    } catch (error) {
-        await session.abortTransaction();
-        console.error('❌ PRODUCTION: Wallet top-up error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Wallet top-up failed: ' + error.message 
-        });
-    } finally {
-        session.endSession();
+    if (!userId || !reference) {
+      return res.status(400).json({ success: false, message: 'userId and reference required' });
     }
-});
 
+    // IMPORTANT: amount comes in KOBO from PayStack webhook
+    // Convert only once
+    const amountInKobo = Number(amount);
+    const amountInNaira = amountInKobo / 100;
+
+    if (isNaN(amountInNaira) || amountInNaira <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid amount' });
+    }
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // ONLY block if a SUCCESSFUL transaction with this reference already exists
+    const existing = await Transaction.findOne({ 
+      reference, 
+      status: 'successful',
+      userId 
+    }).session(session);
+
+    if (existing) {
+      await session.abortTransaction();
+      console.log('ℹ️ Already processed (idempotent)', reference);
+      return res.json({
+        success: true,
+        alreadyProcessed: true,
+        newBalance: user.walletBalance,
+        message: 'Transaction already processed'
+      });
+    }
+
+    // Delete any previous failed/pending attempts
+    await Transaction.deleteMany({ reference, status: { $ne: 'successful' } }).session(session);
+
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += amountInNaira;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+
+    await Transaction.create([{
+      userId,
+      type: 'credit',
+      amount: amountInNaira,
+      status: 'successful',
+      reference,
+      description: description || `Wallet funding - ${reference}`,
+      balanceBefore,
+      balanceAfter,
+      gateway: source || 'virtual_account',
+      metadata: { source: source || 'virtual_account_webhook' }
+    }], { session });
+
+    await session.commitTransaction();
+
+    console.log(` MAIN BACKEND: SUCCESS ₦${amountInNaira} credited | Ref: ${reference} | New balance: ₦${balanceAfter}`);
+
+    // Send notification
+    try {
+      await Notification.create({
+        recipientId: userId,
+        title: "Wallet Credited 💰",
+        message: `₦${amountInNaira.toFixed(2)} deposited via virtual account. New balance: ₦${balanceAfter.toFixed(2)}`,
+        isRead: false
+      });
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      newBalance: balanceAfter,
+      amount: amountInNaira,
+      message: 'Wallet topped up successfully'
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error(' MAIN BACKEND TOP-UP ERROR:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Top-up failed: ' + error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
 
 
 
