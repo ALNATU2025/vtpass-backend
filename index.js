@@ -1192,6 +1192,7 @@ app.post('/api/users/reset-password', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
