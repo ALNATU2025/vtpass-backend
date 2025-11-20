@@ -206,34 +206,10 @@ function validatePassword(password) {
 
 
 
-// Mongoose Models
-const userSchema = new mongoose.Schema({
-  fullName: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  phone: { type: String, required: true },
-  password: { type: String, required: true },
-  transactionPin: { type: String },
-  biometricEnabled: { type: Boolean, default: false },
-  biometricKey: { type: String },
-  biometricCredentialId: { type: String },
-  walletBalance: { type: Number, default: 0 },
-  commissionBalance: { type: Number, default: 0 },
-  isAdmin: { type: Boolean, default: false },
-  isActive: { type: Boolean, default: true },
-  failedPinAttempts: { type: Number, default: 0 },
-  pinLockedUntil: { type: Date },
-  lastLoginAt: { type: Date },
-  profileImage: { type: String },
-  resetPasswordToken: { type: String },
-  resetPasswordExpire: { type: Date },
-  virtualAccount: {
-    assigned: { type: Boolean, default: false },
-    bankName: { type: String },
-    accountNumber: { type: String },
-    accountName: { type: String },
-  },
-  refreshToken: { type: String },
-}, { timestamps: true });
+
+  
+  // API Rate Limiting// Mongoose Models
+
 // Add indexes for performance
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
@@ -248,19 +224,8 @@ const authLogSchema = new mongoose.Schema({
   details: { type: String },
   timestamp: { type: Date, default: Date.now }
 });
-// Transaction schema
-const transactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  type: { type: String, required: true, enum: ['credit', 'debit'] },
-  amount: { type: Number, required: true },
-  status: { type: String, required: true, enum: ['pending', 'successful', 'failed'] },
-  description: { type: String, required: true },
-  balanceBefore: { type: Number, required: true },
-  balanceAfter: { type: Number, required: true },
-  reference: { type: String, required: true, unique: true },
-  isCommission: { type: Boolean, default: false },
-  authenticationMethod: { type: String, enum: ['pin', 'biometric', 'none'], default: 'none' },
-}, { timestamps: true });
+
+
 // Add indexes for performance
 transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ reference: 1 });
@@ -306,11 +271,7 @@ const settingsSchema = new mongoose.Schema({
   // User Management Defaults
   newUserDefaultWalletBalance: { type: Number, default: 0.0 },
   
-  // Notification Settings
-  emailNotificationsEnabled: { type: Boolean, default: true },
-  pushNotificationsEnabled: { type: Boolean, default: true },
-  smsNotificationsEnabled: { type: Boolean, default: false },
-  notificationMessage: { type: String, default: 'System maintenance scheduled' },
+ 
   
   // Security Settings
   twoFactorAuthRequired: { type: Boolean, default: false },
@@ -318,8 +279,9 @@ const settingsSchema = new mongoose.Schema({
   sessionTimeout: { type: Number, default: 30 },
   transactionPinRequired: { type: Boolean, default: true },
   biometricAuthEnabled: { type: Boolean, default: true },
+
+
   
-  // API Rate Limiting
   apiRateLimit: { type: Number, default: 100 },
   apiTimeWindow: { type: Number, default: 60 }
 }, { timestamps: true });
