@@ -10,7 +10,7 @@ const transactionSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['Transfer-Sent', 'Transfer-Received', 'Airtime', 'Data', 'CableTV', 'CashWithdraw', 'FundWallet'],
+        enum: ['Transfer-Sent', 'Transfer-Received', 'Airtime', 'Data', 'CableTV', 'CashWithdraw', 'FundWallet', 'wallet_funding'],
         required: true,
     },
     amount: {
@@ -19,8 +19,8 @@ const transactionSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed'],
-        default: 'Pending', // It's safer to default to 'Pending'
+        enum: ['Successful', 'Pending', 'Failed', 'completed'],
+        default: 'Pending',
     },
     transactionId: {
         type: String,
@@ -28,13 +28,9 @@ const transactionSchema = new mongoose.Schema({
         required: true,
     },
     details: {
-        // Use a flexible object to store service-specific details
-        // e.g., { network: 'MTN', phoneNumber: '080...', plan: '500MB' }
-        // e.g., { smartCardNumber: '123...', packageName: 'dstv-padi', serviceID: 'dstv' }
         type: mongoose.Schema.Types.Mixed,
         default: {}
     },
 }, { timestamps: true });
 
-// Prevent Mongoose from overwriting the model if it's already defined
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
