@@ -14,11 +14,14 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
+
+
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 const Notification = require('./models/Notification');
 const Beneficiary = require('./models/Beneficiary');
 const Settings = require('./models/AppSettings');
+const AuthLog = require('./models/AuthLog');
 
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
