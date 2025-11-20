@@ -15,6 +15,10 @@ const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
 const User = require('./models/User');
+const Transaction = require('./models/Transaction');
+const Notification = require('./models/Notification');
+const Beneficiary = require('./models/Beneficiary');
+const Settings = require('./models/AppSettings');
 
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
@@ -207,91 +211,6 @@ function validatePassword(password) {
 
 
 
-
-  
-  // API Rate Limiting// Mongoose Models
-
-// Add indexes for performance
-userSchema.index({ email: 1 });
-userSchema.index({ phone: 1 });
-userSchema.index({ isActive: 1 });
-// Authentication log schema
-const authLogSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
-  action: { type: String, required: true },
-  ipAddress: { type: String, required: true },
-  userAgent: { type: String },
-  success: { type: Boolean, required: true },
-  details: { type: String },
-  timestamp: { type: Date, default: Date.now }
-});
-
-
-// Add indexes for performance
-transactionSchema.index({ userId: 1, createdAt: -1 });
-transactionSchema.index({ reference: 1 });
-transactionSchema.index({ status: 1 });
-// Notification schema
-// FIX: Update the Notification schema - change required: false to required: true
-const notificationSchema = new mongoose.Schema({
-  recipientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, // CHANGED from false to true
-  title: { type: String, required: true },
-  message: { type: String, required: true },
-  isRead: { type: Boolean, default: false },
-}, { timestamps: true });
-// Beneficiary schema
-const beneficiarySchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  name: { type: String, required: true },
-  type: { type: String, required: true, enum: ['phone', 'email'] },
-  value: { type: String, required: true },
-  network: { type: String },
-}, { timestamps: true });
-// Settings schema
-const settingsSchema = new mongoose.Schema({
-  appVersion: { type: String, default: '1.0.0' },
-  maintenanceMode: { type: Boolean, default: false },
-  minTransactionAmount: { type: Number, default: 100 },
-  maxTransactionAmount: { type: Number, default: 1000000 },
-  vtpassCommission: { type: Number, default: 0.05 },
-  commissionRate: { type: Number, default: 0.02 },
-  
-  // Service Availability
-  airtimeEnabled: { type: Boolean, default: true },
-  dataEnabled: { type: Boolean, default: true },
-  cableTvEnabled: { type: Boolean, default: true },
-  electricityEnabled: { type: Boolean, default: true },
-  transferEnabled: { type: Boolean, default: true },
-  
-  // Commission/Fee Management
-  airtimeCommission: { type: Number, default: 1.5 },
-  dataCommission: { type: Number, default: 1.0 },
-  transferFee: { type: Number, default: 50.0 },
-  isTransferFeePercentage: { type: Boolean, default: false },
-  
-  // User Management Defaults
-  newUserDefaultWalletBalance: { type: Number, default: 0.0 },
-  
- 
-  
-  // Security Settings
-  twoFactorAuthRequired: { type: Boolean, default: false },
-  autoLogoutEnabled: { type: Boolean, default: true },
-  sessionTimeout: { type: Number, default: 30 },
-  transactionPinRequired: { type: Boolean, default: true },
-  biometricAuthEnabled: { type: Boolean, default: true },
-
-
-  
-  apiRateLimit: { type: Number, default: 100 },
-  apiTimeWindow: { type: Number, default: 60 }
-}, { timestamps: true });
-const User = mongoose.model('User', userSchema);
-const Transaction = mongoose.model('Transaction', transactionSchema);
-const Notification = mongoose.model('Notification', notificationSchema);
-const Beneficiary = mongoose.model('Beneficiary', beneficiarySchema);
-const Settings = mongoose.model('Settings', settingsSchema);
-const AuthLog = mongoose.model('AuthLog', authLogSchema);
 // Database Connection
 const connectDB = async () => {
   try {
