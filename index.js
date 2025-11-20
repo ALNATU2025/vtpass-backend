@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
+
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
 try {
@@ -125,6 +126,11 @@ app.get("/api/debug/ip", async (req, res) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
+
+const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
+app.use("/", virtualAccountSyncRoutes);
+
+
 // Initialize cache
 const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
 // Create uploads directory if it doesn't exist
@@ -489,6 +495,8 @@ const protect = async (req, res, next) => {
     });
   }
 };
+
+
 
 
 // @desc    Check token status and refresh if needed
