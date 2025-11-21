@@ -6693,6 +6693,80 @@ app.get('/api/debug/status', protect, async (req, res) => {
 });
 
 
+// ==================== PAYSTACK INITIALIZATION ENDPOINT ====================
+// This is the missing endpoint your Flutter app is calling
+app.post('/api/payments/initialize-paystack', async (req, res) => {
+  console.log('INITIALIZE-PAYSTACK: Request received', req.body);
+
+  try {
+    const { userId, email, amount, reference, transactionPin, useBiometric } = req.body;
+
+    if (!userId || !email || !amount || !reference) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields' 
+      });
+    }
+
+    // Generate proper PayStack reference
+    const paystackReference = `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Call PayStack directly
+    const paystackResponse = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: email,
+        amount: Math.round(amount * 100), // Convert to kobo
+        reference: paystackReference,
+        callback_url: 'https://your-app.com/payment-callback', // Change to your actual URL
+        metadata: { userId, originalReference: reference }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (paystackResponse.data.status) {
+      console.log('PayStack initialization successful');
+
+      // Store pending transaction
+      const pendingTransaction = new Transaction({
+        userId,
+        amount,
+        reference: paystackReference,
+        originalReference: reference,
+        type: 'wallet_funding',
+        status: 'pending',
+        gateway: 'paystack',
+        metadata: { source: 'initialize-paystack', useBiometric }
+      });
+      await pendingTransaction.save();
+
+      res.json({
+        success: true,
+        authorizationUrl: paystackResponse.data.data.authorization_url,
+        reference: paystackResponse.data.data.reference,
+        accessCode: paystackResponse.data.data.access_code,
+        message: 'Payment initialized successfully'
+      });
+    } else {
+      throw new Error(paystackResponse.data.message || 'PayStack initialization failed');
+    }
+
+  } catch (error) {
+    console.error('initialize-paystack error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Payment initialization failed',
+      error: error.message
+    });
+  }
+});
+
+
 
 
 
