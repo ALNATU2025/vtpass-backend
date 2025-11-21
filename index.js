@@ -5409,23 +5409,21 @@ app.post('/api/wallet/top-up', async (req, res) => {
     }
 
     // ONLY block if a SUCCESSFUL transaction with this reference already exists
-    const existing = await Transaction.findOne({ 
-      reference, 
-      status: 'successful',
-      userId 
-    }).session(session);
-
-    if (existing) {
-      await session.abortTransaction();
-      console.log('ℹ️ Already processed (idempotent)', reference);
-      return res.json({
-        success: true,
-        alreadyProcessed: true,
-        newBalance: user.walletBalance,
-        message: 'Transaction already processed'
-      });
-    }
-
+   // BLOCK REPLAY ATTACKS FROM MANUAL VALIDATION
+  const existing = await Transaction.findOne({
+    reference,
+    status: { $in: ['Successful', 'success', 'completed'] }
+  });
+  
+  if (existing) {
+    console.log(`REPLAY ATTACK BLOCKED: Reference ${reference} already used (status: ${existing.status})`);
+    return res.json({
+      success: false,
+      alreadyProcessed: true,
+      message: "This transaction was already processed automatically",
+      amount: existing.amount
+    });
+  }
     // Delete any previous failed/pending attempts
     await Transaction.deleteMany({ reference, status: { $ne: 'successful' } }).session(session);
 
