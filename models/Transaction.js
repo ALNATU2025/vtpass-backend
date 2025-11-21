@@ -31,10 +31,21 @@ const transactionSchema = new mongoose.Schema({
     },
     status: {
     type: String,
-    enum: ['Successful', 'Pending', 'Failed', 'completed'],
-    set: (v) => v.charAt(0).toUpperCase() + v.slice(1).toLowerCase(), // ← Auto-corrects 'successful' → 'Successful'
-    default: 'Pending',
+    enum: ['Successful', 'Pending', 'Failed', 'Completed'],  // ← 'Completed' added to enum
+    set: (v) => {
+      if (!v) return 'Pending';
+      const normalized = v.toString().trim().toLowerCase();
+      if (normalized === 'successful' || normalized === 'success') {
+        return 'Successful';
+      }
+      if (normalized === 'completed' || normalized === 'complete') {
+        return 'Completed';
+      }
+      // Capitalize first letter for any other value
+      return normalized.charAt(0).toUpperCase() + normalized.slice(1);
     },
+    default: 'Pending',
+},
     transactionId: {
         type: String,
         unique: true,
