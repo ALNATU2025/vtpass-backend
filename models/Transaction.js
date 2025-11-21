@@ -51,6 +51,15 @@ const transactionSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    balanceBefore: {
+    type: Number,
+    default: 0
+    },
+    balanceAfter: {
+    type: Number,
+    default: 0
+    },
+    
     details: {
         type: mongoose.Schema.Types.Mixed,
         default: {}
