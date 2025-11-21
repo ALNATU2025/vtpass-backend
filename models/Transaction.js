@@ -30,9 +30,10 @@ const transactionSchema = new mongoose.Schema({
         required: true,
     },
     status: {
-        type: String,
-        enum: ['Successful', 'Pending', 'Failed', 'completed', 'success'], // ← Added 'success'
-        default: 'Pending',
+    type: String,
+    enum: ['Successful', 'Pending', 'Failed', 'completed'],
+    set: (v) => v.charAt(0).toUpperCase() + v.slice(1).toLowerCase(), // ← Auto-corrects 'successful' → 'Successful'
+    default: 'Pending',
     },
     transactionId: {
         type: String,
