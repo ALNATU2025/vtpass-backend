@@ -20,15 +20,21 @@ exports.syncVirtualAccountCredit = async (req, res) => {
     const amountNaira = amountKobo / 100;
 
     // Prevent duplicate ONLY for virtual account deposits
-    const existing = await Transaction.findOne({
-      reference,
-      type: "virtual_account_topup"   // or "virtual_account_deposit" — whatever you use
-    });
+ 
+    const existing = await Transaction.findOne({ 
+    reference,
+    $or: [
+    { type: "virtual_account_topup" },
+    { type: "FundWallet" },
+    { type: "wallet_funding" },
+    { gateway: "paystack_virtual_account" }
+  ]
+});
 
-    if (existing) {
-      console.log(`Duplicate sync ignored: ₦${amountNaira} | Ref: ${reference}`);
-      return res.json({ success: true, message: "Already processed", alreadySynced: true });
-    }
+  if (existing) {
+  console.log(`MAIN BACKEND: Already synced - ignoring duplicate | Ref: ${reference}`);
+  return res.json({ success: true, message: "Already processed", alreadySynced: true });
+  }
 
     const user = await User.findById(userId);
     if (!user) {
