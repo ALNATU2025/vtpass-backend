@@ -3748,11 +3748,11 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FIXED FOR METER VALIDATION
+// @desc    VTpass Proxy Endpoint - FIXED FOR REQUEST ID GENERATION
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR VALIDATION');
+  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR REQUEST ID');
   console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
 
   const session = await mongoose.startSession();
@@ -3772,9 +3772,12 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    // 2. Prepare VTpass payload based on service type
+    // 2. Generate a UNIQUE request ID for every transaction (FIXED)
+    const uniqueRequestId = generateRequestId(); // Always generate new ID
+    
+    // 3. Prepare VTpass payload with unique request ID
     const vtpassPayload = {
-      request_id: request_id || generateRequestId(),
+      request_id: uniqueRequestId, // Use the newly generated ID instead of request from body
       serviceID,
     };
 
@@ -3800,7 +3803,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
     console.log('🚀 Calling VTpass with:', vtpassPayload);
 
-    // 3. Call VTpass - Determine which endpoint to use
+    // 4. Determine which endpoint to use
     let vtpassEndpoint = '/pay';
     if (serviceID.includes('electric') && billersCode && !variation_code) {
       vtpassEndpoint = '/merchant-verify'; // For meter validation
@@ -3814,7 +3817,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       message: vtpassResult.data?.response_description
     });
 
-    // 4. Handle VTpass response
+    // 5. Handle VTpass response
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       // SUCCESS - Deduct from balance only for payments, not validations
       if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0) {
@@ -3849,13 +3852,25 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         transactionId: vtpassResult.data.content?.transactions?.transactionId,
         newBalance: user.walletBalance,
         vtpassResponse: vtpassResult.data,
-        customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName
+        customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName,
+        requestId: uniqueRequestId // Return the generated request ID
       });
 
     } else {
       // VTpass failed
       await session.abortTransaction();
       console.log('❌ VTpass failed:', vtpassResult.data);
+      
+      // Handle "REQUEST ID ALREADY EXIST" specifically (NEW CODE)
+      if (vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+        return res.status(400).json({
+          success: false,
+          message: 'Transaction ID conflict. Please try again with a new transaction.',
+          code: 'REQUEST_ID_CONFLICT',
+          retryable: true
+        });
+      }
+      
       res.status(400).json({
         success: false,
         message: vtpassResult.data?.response_description || 'VTpass transaction failed',
