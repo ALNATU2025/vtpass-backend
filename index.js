@@ -3748,11 +3748,11 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FIXED FOR REQUEST ID GENERATION
+// @desc    VTpass Proxy Endpoint - FIXED FOR DUPLICATE TRANSACTIONS
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR REQUEST ID');
+  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR DUPLICATE TRANSACTIONS');
   console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
 
   const session = await mongoose.startSession();
@@ -3772,12 +3772,32 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    // 2. Generate a UNIQUE request ID for every transaction (FIXED)
-    const uniqueRequestId = generateRequestId(); // Always generate new ID
+    // ✅ FIX: Use the original request_id from client, don't generate new one!
+    const uniqueRequestId = request_id; // Use the client's request_id
     
-    // 3. Prepare VTpass payload with unique request ID
+    console.log('✅ Using original request_id:', uniqueRequestId);
+
+    // 2. Check if this transaction was already processed
+    const existingTransaction = await Transaction.findOne({
+      reference: uniqueRequestId,
+      status: 'successful'
+    }).session(session);
+
+    if (existingTransaction) {
+      await session.abortTransaction();
+      console.log('✅ Transaction already processed:', uniqueRequestId);
+      return res.json({
+        success: true,
+        message: 'Transaction already processed successfully',
+        alreadyProcessed: true,
+        transactionId: existingTransaction._id,
+        newBalance: user.walletBalance
+      });
+    }
+
+    // 3. Prepare VTpass payload with ORIGINAL request ID
     const vtpassPayload = {
-      request_id: uniqueRequestId, // Use the newly generated ID instead of request from body
+      request_id: uniqueRequestId, // ✅ Use original request_id
       serviceID,
     };
 
@@ -3801,7 +3821,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       }
     }
 
-    console.log('🚀 Calling VTpass with:', vtpassPayload);
+    console.log('🚀 Calling VTpass with ORIGINAL request_id:', vtpassPayload);
 
     // 4. Determine which endpoint to use
     let vtpassEndpoint = '/pay';
@@ -3825,6 +3845,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         user.walletBalance -= parseFloat(amount);
         await user.save({ session });
 
+        // ✅ FIX: Use the enhanced createTransaction function
         await createTransaction(
           user._id,
           parseFloat(amount),
@@ -3835,12 +3856,14 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           user.walletBalance,
           session,
           false,
-          'pin'
+          'pin',
+          uniqueRequestId // ✅ Pass the original reference
         );
 
         console.log('✅ PAYMENT SUCCESS:', {
           transactionId: vtpassResult.data.content?.transactions?.transactionId,
-          newBalance: user.walletBalance
+          newBalance: user.walletBalance,
+          requestId: uniqueRequestId
         });
       }
 
@@ -3853,7 +3876,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         newBalance: user.walletBalance,
         vtpassResponse: vtpassResult.data,
         customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName,
-        requestId: uniqueRequestId // Return the generated request ID
+        requestId: uniqueRequestId // ✅ Return the original request ID
       });
 
     } else {
@@ -3861,13 +3884,15 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       await session.abortTransaction();
       console.log('❌ VTpass failed:', vtpassResult.data);
       
-      // Handle "REQUEST ID ALREADY EXIST" specifically (NEW CODE)
-      if (vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+      // Handle "LIKELY DUPLICATE TRANSACTION" specifically
+      if (vtpassResult.data?.response_description?.includes('LIKELY DUPLICATE TRANSACTION') || 
+          vtpassResult.data?.response_description?.includes('DUPLICATE TRANSACTION')) {
         return res.status(400).json({
           success: false,
-          message: 'Transaction ID conflict. Please try again with a new transaction.',
-          code: 'REQUEST_ID_CONFLICT',
-          retryable: true
+          message: 'Duplicate transaction detected. Please wait 15 seconds before retrying with the same recipient.',
+          code: 'DUPLICATE_TRANSACTION',
+          retryable: true,
+          waitTime: 15 // seconds
         });
       }
       
@@ -3890,6 +3915,55 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     session.endSession();
   }
 });
+
+
+// FIXED Transaction Helper Function
+const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none', reference = null) => {
+  try {
+    // Generate a unique reference if not provided
+    const transactionReference = reference || uuidv4();
+    
+    // Check for existing transaction with same reference
+    const existingTransaction = await Transaction.findOne({ 
+      reference: transactionReference 
+    }).session(session);
+    
+    if (existingTransaction) {
+      console.log('⚠️ Transaction with reference already exists, updating:', transactionReference);
+      // Update existing transaction instead of creating new one
+      existingTransaction.status = status;
+      existingTransaction.amount = amount;
+      existingTransaction.description = description;
+      existingTransaction.balanceBefore = balanceBefore;
+      existingTransaction.balanceAfter = balanceAfter;
+      existingTransaction.updatedAt = new Date();
+      await existingTransaction.save({ session });
+      return existingTransaction;
+    }
+    
+    // Create new transaction
+    const newTransaction = new Transaction({
+      transactionId: uuidv4(),
+      userId,
+      type,
+      amount,
+      status,
+      description,
+      balanceBefore,
+      balanceAfter,
+      reference: transactionReference,
+      isCommission,
+      authenticationMethod
+    });
+    
+    await newTransaction.save({ session });
+    console.log('✅ Transaction saved successfully:', transactionReference);
+    return newTransaction;
+  } catch (error) {
+    console.error('❌ Error creating transaction:', error);
+    throw error;
+  }
+};
 
 
 
