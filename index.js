@@ -827,21 +827,7 @@ const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, det
   }
 };
 
-// Helper function to log authentication attempts
-const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
-  try {
-    await AuthLog.create({
-      userId,
-      action,
-      ipAddress,
-      userAgent,
-      success,
-      details
-    });
-  } catch (error) {
-    console.error('Error logging auth attempt:', error);
-  }
-};
+
 // Create default settings if they don't exist
 const initializeSettings = async () => {
   try {
