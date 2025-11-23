@@ -750,26 +750,9 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
     }
   }
 };
-// Transaction Helper Function
-// Transaction Helper Function - FIXED VERSION
-const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none') => {
-  const newTransaction = new Transaction({
-    transactionId: uuidv4(), // Add this line - generate unique transaction ID
-    userId,
-    type,
-    amount,
-    status,
-    description,
-    balanceBefore,
-    balanceAfter,
-    reference: uuidv4(), // Keep this as reference if needed
-    isCommission,
-    authenticationMethod
-  });
-  await newTransaction.save({ session });
-  return newTransaction;
-};
-// Commission Helper Function
+
+
+// Commission Helper Function - ADD THIS MISSING FUNCTION
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
     const settings = await Settings.findOne().session(session);
@@ -804,6 +787,80 @@ const calculateAndAddCommission = async (userId, amount, session) => {
     return 0;
   }
 };
+
+
+// Transaction Helper Function - ENHANCED VERSION
+const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none', reference = null) => {
+  const newTransaction = new Transaction({
+    transactionId: uuidv4(), // Add this line - generate unique transaction ID
+    userId,
+    type,
+    amount,
+    status,
+    description,
+    balanceBefore,
+    balanceAfter,
+    reference: reference || uuidv4(), // Use provided reference or generate new one
+    isCommission,
+    authenticationMethod
+  });
+  await newTransaction.save({ session });
+  return newTransaction;
+};
+
+
+// Commission Helper Function - ADD THIS MISSING FUNCTION
+const calculateAndAddCommission = async (userId, amount, session) => {
+  try {
+    const settings = await Settings.findOne().session(session);
+    const commissionRate = settings ? settings.commissionRate : 0.02;
+    
+    const commissionAmount = amount * commissionRate;
+    
+    const user = await User.findById(userId).session(session);
+    if (user) {
+      user.commissionBalance += commissionAmount;
+      await user.save({ session });
+      
+      await createTransaction(
+        userId,
+        commissionAmount,
+        'credit',
+        'successful',
+        `Commission earned from transaction`,
+        user.commissionBalance - commissionAmount,
+        user.commissionBalance,
+        session,
+        true,
+        'none'
+      );
+      
+      return commissionAmount;
+    }
+    
+    return 0;
+  } catch (error) {
+    console.error('Error calculating commission:', error);
+    return 0;
+  }
+};
+
+// Helper function to log authentication attempts
+const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
+  try {
+    await AuthLog.create({
+      userId,
+      action,
+      ipAddress,
+      userAgent,
+      success,
+      details
+    });
+  } catch (error) {
+    console.error('Error logging auth attempt:', error);
+  }
+};
+
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
   try {
@@ -855,6 +912,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime()
   });
 });
+
+
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
@@ -3837,7 +3896,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       message: vtpassResult.data?.response_description
     });
 
-    // 5. Handle VTpass response
+    // 5. Handle VTpass response - CRITICAL FIX HERE
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       // SUCCESS - Deduct from balance only for payments, not validations
       if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0) {
@@ -3880,13 +3939,32 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
 
     } else {
-      // VTpass failed
+      // VTpass failed - DO NOT RETRY WITH SAME REQUEST ID
       await session.abortTransaction();
       console.log('❌ VTpass failed:', vtpassResult.data);
       
       // Handle "LIKELY DUPLICATE TRANSACTION" specifically
       if (vtpassResult.data?.response_description?.includes('LIKELY DUPLICATE TRANSACTION') || 
           vtpassResult.data?.response_description?.includes('DUPLICATE TRANSACTION')) {
+        
+        // ✅ CRITICAL FIX: Check if we already have a successful transaction for this request
+        const existingSuccessTx = await Transaction.findOne({
+          reference: uniqueRequestId,
+          status: 'successful'
+        });
+        
+        if (existingSuccessTx) {
+          console.log('✅ Found existing successful transaction, returning it');
+          return res.json({
+            success: true,
+            message: 'Transaction was already processed successfully',
+            alreadyProcessed: true,
+            transactionId: existingSuccessTx._id,
+            newBalance: user.walletBalance,
+            vtpassResponse: vtpassResult.data
+          });
+        }
+        
         return res.status(400).json({
           success: false,
           message: 'Duplicate transaction detected. Please wait 15 seconds before retrying with the same recipient.',
@@ -3916,54 +3994,6 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
   }
 });
 
-
-// FIXED Transaction Helper Function
-const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none', reference = null) => {
-  try {
-    // Generate a unique reference if not provided
-    const transactionReference = reference || uuidv4();
-    
-    // Check for existing transaction with same reference
-    const existingTransaction = await Transaction.findOne({ 
-      reference: transactionReference 
-    }).session(session);
-    
-    if (existingTransaction) {
-      console.log('⚠️ Transaction with reference already exists, updating:', transactionReference);
-      // Update existing transaction instead of creating new one
-      existingTransaction.status = status;
-      existingTransaction.amount = amount;
-      existingTransaction.description = description;
-      existingTransaction.balanceBefore = balanceBefore;
-      existingTransaction.balanceAfter = balanceAfter;
-      existingTransaction.updatedAt = new Date();
-      await existingTransaction.save({ session });
-      return existingTransaction;
-    }
-    
-    // Create new transaction
-    const newTransaction = new Transaction({
-      transactionId: uuidv4(),
-      userId,
-      type,
-      amount,
-      status,
-      description,
-      balanceBefore,
-      balanceAfter,
-      reference: transactionReference,
-      isCommission,
-      authenticationMethod
-    });
-    
-    await newTransaction.save({ session });
-    console.log('✅ Transaction saved successfully:', transactionReference);
-    return newTransaction;
-  } catch (error) {
-    console.error('❌ Error creating transaction:', error);
-    throw error;
-  }
-};
 
 
 
