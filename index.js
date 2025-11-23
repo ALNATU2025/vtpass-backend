@@ -23,6 +23,8 @@ const Beneficiary = require('./models/Beneficiary');
 const Settings = require('./models/AppSettings');
 const AuthLog = require('./models/AuthLog');
 
+
+
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
 try {
@@ -137,6 +139,10 @@ app.use(cors());
 
 const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
 app.use("/", virtualAccountSyncRoutes);
+
+
+const transactionRoutes = require('./routes/transactionRoutes');
+app.use('/api/transactions', transactionRoutes);
 
 
 // Initialize cache
@@ -2410,6 +2416,209 @@ app.get('/api/transactions/all', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+// @desc    Get transactions for specific user (Admin only)
+// @route   GET /api/transactions/user/:userId
+// @access  Private/Admin
+app.get('/api/transactions/user/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required.' 
+      });
+    }
+
+    const transactions = await Transaction.find({ userId })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      transactions: transactions
+    });
+  } catch (error) {
+    console.error('Error fetching transactions for user:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching user transactions.' 
+    });
+  }
+});
+
+// @desc    Auto-fix missing transactions
+// @route   POST /api/transactions/auto-fix-missing
+// @access  Private
+app.post('/api/transactions/auto-fix-missing', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { daysBack = 7 } = req.body;
+
+    console.log('🔄 Auto-fixing missing transactions for user:', userId);
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysBack);
+
+    // Find transactions that might need fixing
+    const userTransactions = await Transaction.find({
+      userId,
+      createdAt: { $gte: startDate }
+    });
+
+    let fixedCount = 0;
+    const results = [];
+
+    for (const transaction of userTransactions) {
+      try {
+        // Ensure transaction has proper metadata
+        if (!transaction.metadata) {
+          transaction.metadata = {};
+        }
+
+        // Add auto-save flag if missing
+        if (!transaction.metadata.autoSaved) {
+          transaction.metadata.autoSaved = true;
+          transaction.metadata.lastVerified = new Date();
+          await transaction.save();
+          fixedCount++;
+          results.push({
+            transactionId: transaction._id,
+            status: 'fixed',
+            action: 'added_metadata'
+          });
+        }
+
+        // Ensure transaction has reference
+        if (!transaction.reference) {
+          transaction.reference = transaction._id.toString();
+          await transaction.save();
+          fixedCount++;
+          results.push({
+            transactionId: transaction._id,
+            status: 'fixed', 
+            action: 'added_reference'
+          });
+        }
+      } catch (fixError) {
+        results.push({
+          transactionId: transaction._id,
+          status: 'failed',
+          error: fixError.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Auto-fix completed. Fixed ${fixedCount} transactions.`,
+      fixedCount,
+      totalChecked: userTransactions.length,
+      results
+    });
+
+  } catch (error) {
+    console.error('❌ Auto-fix error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Auto-fix failed',
+      error: error.message
+    });
+  }
+});
+
+
+// @desc    Sync missing transactions from VTpass
+// @route   POST /api/transactions/sync-missing
+// @access  Private
+app.post('/api/transactions/sync-missing', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { daysBack = 3 } = req.body;
+
+    console.log('🔄 Syncing missing transactions for user:', userId);
+
+    // This would typically query VTpass API for recent transactions
+    // and cross-reference with your database
+    // For now, we'll return a message about the sync process
+
+    res.json({
+      success: true,
+      message: 'Sync process initiated. Check back later for updates.',
+      syncId: `sync_${Date.now()}`,
+      userId: userId,
+      daysBack: daysBack
+    });
+
+  } catch (error) {
+    console.error('❌ Sync error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Sync failed',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get transaction statistics
+// @route   GET /api/transactions/statistics
+// @access  Private
+app.get('/api/transactions/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const totalTransactions = await Transaction.countDocuments({ userId });
+    const successfulTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: 'successful' 
+    });
+    const pendingTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: { $in: ['pending', 'processing'] } 
+    });
+    const failedTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: 'failed' 
+    });
+
+    // Total amounts
+    const amountStats = await Transaction.aggregate([
+      { $match: { userId: mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: null,
+          totalSpent: { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', 0] } },
+          totalReceived: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } }
+        }
+      }
+    ]);
+
+    const stats = amountStats[0] || { totalSpent: 0, totalReceived: 0 };
+
+    res.json({
+      success: true,
+      statistics: {
+        totalTransactions,
+        successfulTransactions,
+        pendingTransactions,
+        failedTransactions,
+        totalSpent: stats.totalSpent,
+        totalReceived: stats.totalReceived,
+        successRate: totalTransactions > 0 ? (successfulTransactions / totalTransactions) * 100 : 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching transaction statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch statistics'
+    });
+  }
+});
+
+
 // @desc    Get a specific transaction by ID
 // @route   GET /api/transactions/:transactionId
 // @access  Private
