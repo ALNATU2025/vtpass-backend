@@ -756,22 +756,38 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 
 
 // Transaction Helper Function - ENHANCED VERSION
+// Enhanced Transaction Helper Function
 const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none', reference = null) => {
-  const newTransaction = new Transaction({
-    transactionId: uuidv4(), // Add this line - generate unique transaction ID
-    userId,
-    type,
-    amount,
-    status,
-    description,
-    balanceBefore,
-    balanceAfter,
-    reference: reference || uuidv4(), // Use provided reference or generate new one
-    isCommission,
-    authenticationMethod
-  });
-  await newTransaction.save({ session });
-  return newTransaction;
+  try {
+    // Generate a proper transaction ID if not provided
+    const transactionId = reference || uuidv4();
+    
+    const newTransaction = new Transaction({
+      transactionId: uuidv4(),
+      userId,
+      type,
+      amount,
+      status,
+      description,
+      balanceBefore,
+      balanceAfter,
+      reference: transactionId,
+      isCommission,
+      authenticationMethod,
+      // Add service details for better tracking
+      service: description.includes('mtn') ? 'mtn-data' : 
+               description.includes('airtel') ? 'airtel-data' : 
+               description.includes('glo') ? 'glo-data' : 'unknown',
+      timestamp: new Date()
+    });
+    
+    const savedTransaction = await newTransaction.save({ session });
+    console.log('✅ Transaction saved to database:', savedTransaction._id);
+    return savedTransaction;
+  } catch (error) {
+    console.error('❌ Error creating transaction:', error);
+    throw error;
+  }
 };
 
 
@@ -6834,6 +6850,163 @@ app.post('/api/payments/initialize-paystack', async (req, res) => {
       message: 'Payment initialization failed',
       error: error.message
     });
+  }
+});
+
+
+
+
+// @desc    Check and fix missing transactions from VTpass
+// @route   POST /api/transactions/fix-missing
+// @access  Private
+app.post('/api/transactions/fix-missing', protect, [
+  body('requestId').notEmpty().withMessage('Request ID is required'),
+  body('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { requestId, serviceID, phone, amount } = req.body;
+    const userId = req.user._id;
+
+    console.log('🔧 Fixing missing transaction:', { requestId, serviceID, userId });
+
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({
+      reference: requestId,
+      userId: userId
+    }).session(session);
+
+    if (existingTransaction) {
+      await session.abortTransaction();
+      return res.json({
+        success: true,
+        message: 'Transaction already exists',
+        transaction: existingTransaction
+      });
+    }
+
+    // Get user and verify balance
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Query VTpass for transaction status
+    const vtpassResult = await callVtpassApi('/pay', {
+      request_id: requestId,
+      serviceID: serviceID
+    });
+
+    console.log('📦 VTpass status check:', vtpassResult);
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const vtpassData = vtpassResult.data;
+      const transactionAmount = parseFloat(vtpassData.amount) || parseFloat(amount) || 0;
+
+      // Deduct from user balance
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= transactionAmount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+
+      // Create transaction record
+      const newTransaction = await createTransaction(
+        userId,
+        transactionAmount,
+        'debit',
+        'successful',
+        `${serviceID} purchase for ${phone}`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        'pin',
+        requestId
+      );
+
+      await session.commitTransaction();
+
+      console.log('✅ Missing transaction fixed:', newTransaction._id);
+
+      res.json({
+        success: true,
+        message: 'Transaction successfully recorded',
+        transaction: newTransaction,
+        newBalance: balanceAfter
+      });
+    } else {
+      await session.abortTransaction();
+      res.status(400).json({
+        success: false,
+        message: 'Transaction not found in VTpass or not successful',
+        vtpassResponse: vtpassResult.data
+      });
+    }
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error fixing missing transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix transaction',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+// @desc    Debug transaction status
+// @route   GET /api/debug/transaction-status
+// @access  Private
+app.get('/api/debug/transaction-status', protect, [
+  query('requestId').notEmpty().withMessage('Request ID is required')
+], async (req, res) => {
+  try {
+    const { requestId } = req.query;
+    const userId = req.user._id;
+
+    console.log('🔍 Debug transaction status for:', requestId);
+
+    // Check database
+    const dbTransaction = await Transaction.findOne({
+      reference: requestId,
+      userId: userId
+    });
+
+    // Check VTpass status
+    const vtpassResult = await callVtpassApi('/pay', {
+      request_id: requestId
+    });
+
+    res.json({
+      success: true,
+      database: {
+        exists: !!dbTransaction,
+        transaction: dbTransaction
+      },
+      vtpass: {
+        success: vtpassResult.success,
+        data: vtpassResult.data
+      },
+      user: {
+        id: userId,
+        walletBalance: req.user.walletBalance
+      }
+    });
+
+  } catch (error) {
+    console.error('Debug transaction error:', error);
+    res.status(500).json({ success: false, message: 'Debug failed' });
   }
 });
 
