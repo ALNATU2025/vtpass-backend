@@ -4,38 +4,95 @@ const express = require('express');
 const router = express.Router();
 const Transaction = require('../models/Transaction');
 
-// ✅ NEW ROUTE: GET /api/transactions
-// This route fetches ALL transactions.
+// ✅ GET /api/transactions - Get transactions for current user (requires authentication)
 router.get('/', async (req, res) => {
   try {
-    // Fetch all transactions, sorted by creation date (newest first)
-    // You might want to add authentication middleware here to ensure only admins can access this.
-    const transactions = await Transaction.find().sort({ createdAt: -1 });
+    // Extract user ID from authenticated request (you'll need to add auth middleware)
+    const userId = req.user?._id;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authentication required' 
+      });
+    }
 
-    res.status(200).json(transactions);
+    // Fetch transactions for the authenticated user
+    const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      transactions: transactions
+    });
   } catch (error) {
-    console.error('❌ Error fetching all transactions:', error);
-    res.status(500).json({ success: false, message: 'Server error fetching all transactions.' });
+    console.error('❌ Error fetching user transactions:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching transactions.' 
+    });
   }
 });
 
-// ✅ EXISTING ROUTE: GET /api/transactions/:userId
-// This route fetches transactions for a SPECIFIC user.
-router.get('/:userId', async (req, res) => {
+// ✅ GET /api/transactions/all - Get ALL transactions (Admin only)
+router.get('/all', async (req, res) => {
+  try {
+    // Add admin check here
+    const isAdmin = req.user?.isAdmin;
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const transactions = await Transaction.find().sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      transactions: transactions
+    });
+  } catch (error) {
+    console.error('❌ Error fetching all transactions:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching all transactions.' 
+    });
+  }
+});
+
+// ✅ GET /api/transactions/user/:userId - Get transactions for specific user (Admin only)
+router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
     if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID is required.' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required.' 
+      });
     }
 
-    // Fetch all transactions for the given user, sorted by creation date (newest first)
+    // Add admin check here
+    const isAdmin = req.user?.isAdmin;
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
     const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
 
-    res.status(200).json(transactions);
+    res.status(200).json({
+      success: true,
+      transactions: transactions
+    });
   } catch (error) {
-    console.error('❌ Error fetching transactions for user:', error); // Changed log message for clarity
-    res.status(500).json({ success: false, message: 'Server error fetching user transactions.' }); // Changed message for clarity
+    console.error('❌ Error fetching transactions for user:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching user transactions.' 
+    });
   }
 });
 
