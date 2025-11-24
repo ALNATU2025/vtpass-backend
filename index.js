@@ -7208,9 +7208,7 @@ app.get('/api/debug/transaction-status', protect, [
 });
 
 
-// ==================== EXPORT MIDDLEWARE ====================
-// ✅ ADD THIS LINE RIGHT HERE - at the very end before server starts
-module.exports.protect = protect;
+
 
 
 
