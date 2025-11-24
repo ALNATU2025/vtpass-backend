@@ -1,13 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Transaction = require('../models/Transaction');
-const protect = require('../index').protect;
+const { protect } = require('../middleware/authMiddleware'); // Use your existing file
 
-
-// 🔐 GET /api/transactions - user’s own transactions
+// 🔐 GET /api/transactions - user's own transactions
 router.get('/', protect, async (req, res) => {
   try {
-    const userId = req.user._id;  // <-- ALWAYS available now
+    const userId = req.user._id;
 
     const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
 
