@@ -140,7 +140,7 @@ app.use(cors());
 const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
 app.use("/", virtualAccountSyncRoutes);
 
-app.use(autoRefreshToken);
+
 const transactionRoutes = require('./routes/transactionRoutes');
 app.use('/api/transactions', transactionRoutes);
 
