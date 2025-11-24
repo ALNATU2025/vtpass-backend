@@ -331,64 +331,46 @@ const autoRefreshToken = async (req, res, next) => {
 };
 
 
-// Middleware to protect routes with JWT
-// ✅ UPDATED Protect middleware that works with auto-refresh
+// NEW: Smart protect middleware that allows refresh-then-retry
 const protect = async (req, res, next) => {
-  // Check if we already have a user from auto-refresh middleware
-  if (req.user && req.tokenRefreshed) {
-    console.log('✅ Using refreshed token user');
-    return next();
+  let token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'No token provided',
+      code: 'NO_TOKEN'
+    });
   }
-  
-  let token;
-  
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      token = req.headers.authorization.split(' ')[1];
-      
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id).select('-password');
-      
-      if (!req.user) {
-        return res.status(401).json({ 
-          success: false, 
-          message: 'Not authorized, user for token not found',
-          code: 'USER_NOT_FOUND'
-        });
-      }
-      
-      if (!req.user.isActive) {
-        return res.status(403).json({ 
-          success: false, 
-          message: 'Account has been deactivated. Please contact support.',
-          code: 'ACCOUNT_DEACTIVATED'
-        });
-      }
-      
-      console.log('✅ Token valid, user authenticated');
-      next();
-    } catch (error) {
-      console.error('JWT verification error:', error.message);
-      
-      if (error.name === 'TokenExpiredError') {
-        return res.status(401).json({ 
-          success: false, 
-          message: 'Token expired. Please refresh your token or login again.',
-          code: 'TOKEN_EXPIRED'
-        });
-      }
-      
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Not authorized, token failed',
-        code: 'INVALID_TOKEN'
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id).select('-password');
+    
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+
+    if (!req.user.isActive) {
+      return res.status(403).json({ success: false, message: 'Account deactivated' });
+    }
+
+    next(); // Token valid → proceed
+  } catch (error) {
+    if (error.name === 'TokenExpiredExpiredError') {
+      // DO NOT RETURN 401 → Let client refresh and retry
+      return res.status(200).json({
+        success: false,
+        message: 'Token expired, please refresh',
+        code: 'TOKEN_EXPIRED',
+        requiresRefresh: true
       });
     }
-  } else {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'Not authorized, no token',
-      code: 'NO_TOKEN'
+
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid token',
+      code: 'INVALID_TOKEN'
     });
   }
 };
