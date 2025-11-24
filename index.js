@@ -140,7 +140,7 @@ app.use(cors());
 const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
 app.use("/", virtualAccountSyncRoutes);
 
-
+app.use(autoRefreshToken);
 const transactionRoutes = require('./routes/transactionRoutes');
 app.use('/api/transactions', transactionRoutes);
 
@@ -231,10 +231,12 @@ const connectDB = async () => {
   }
 };
 connectDB();
-// JWT Token Generation
+
+// JWT Token Generation - INCREASE EXPIRATION
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '24h' }); // Changed from 1h to 24h
 };
+
 // Generate Refresh Token
 const generateRefreshToken = (id) => {
   return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '30d' }); // 30 days
@@ -251,8 +253,7 @@ if (!process.env.REFRESH_TOKEN_SECRET) {
   process.exit(1);
 }
 
-// Auto-refresh token middleware
-// ✅ ENHANCED Auto-refresh token middleware
+// ✅ IMPROVED Auto-refresh token middleware
 const autoRefreshToken = async (req, res, next) => {
   // Skip token refresh for public routes
   const publicRoutes = [
@@ -279,16 +280,24 @@ const autoRefreshToken = async (req, res, next) => {
   }
   
   try {
-    // Try to verify the current token
-    jwt.verify(token, process.env.JWT_SECRET);
-    return next();
-  } catch (error) {
-    if (error.name === 'TokenExpiredError' && refreshToken) {
-      console.log('🔄 Token expired, attempting refresh...');
+    // Try to verify the current token without checking expiration
+    const decoded = jwt.decode(token);
+    if (!decoded) {
+      return next();
+    }
+    
+    // Check if token will expire in the next 15 minutes
+    const tokenExp = decoded.exp * 1000;
+    const now = Date.now();
+    const expiresIn = tokenExp - now;
+    
+    // If token expires soon and we have a refresh token, refresh it
+    if (expiresIn < (15 * 60 * 1000) && refreshToken) {
+      console.log('🔄 Token expiring soon, refreshing...');
       
       try {
-        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-        const user = await User.findById(decoded.id);
+        const decodedRefresh = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+        const user = await User.findById(decodedRefresh.id);
         
         if (user && user.refreshToken === refreshToken) {
           const newToken = generateToken(user._id);
@@ -306,20 +315,17 @@ const autoRefreshToken = async (req, res, next) => {
           req.user = user;
           req.tokenRefreshed = true;
           
-          console.log('✅ Token refreshed successfully');
-          return next();
-        } else {
-          console.log('❌ Refresh token does not match stored token');
+          console.log('✅ Token refreshed proactively');
           return next();
         }
       } catch (refreshError) {
-        console.error('❌ Token refresh failed:', refreshError.message);
-        return next();
+        console.error('❌ Proactive refresh failed:', refreshError.message);
       }
     }
     
-    // For other token errors, continue to protect middleware
-    console.log('🔐 Token invalid, continuing to protect middleware');
+    return next();
+  } catch (error) {
+    console.error('Auto-refresh middleware error:', error);
     return next();
   }
 };
@@ -411,7 +417,7 @@ app.get('/api/users/token-status', protect, async (req, res) => {
       }
       
       // Calculate token expiration time
-      const tokenExp = decoded.exp * 1000; // Convert to milliseconds
+      const tokenExp = decoded.exp * 1000;
       const now = Date.now();
       const expiresIn = tokenExp - now;
       const willExpireSoon = expiresIn < (30 * 60 * 1000); // 30 minutes
