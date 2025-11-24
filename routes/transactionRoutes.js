@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const Transaction = require('../models/Transaction');
-const protect = require('../middleware/protect'); // <-- ADD THIS
+const protect = require('../index').protect;
+
 
 // 🔐 GET /api/transactions - user’s own transactions
 router.get('/', protect, async (req, res) => {
