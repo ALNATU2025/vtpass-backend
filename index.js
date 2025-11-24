@@ -331,50 +331,50 @@ const autoRefreshToken = async (req, res, next) => {
 };
 
 
-// NEW: Smart protect middleware that allows refresh-then-retry
+// FINAL PROTECT MIDDLEWARE — NEVER RETURNS 401 ON EXPIRED TOKEN
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({
+    return res.status(200).json({
       success: false,
-      message: 'No token provided',
+      message: 'No token, please login',
       code: 'NO_TOKEN'
     });
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id).select('-password');
+    const user = await User.findById(decoded.id).select('-password');
     
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: 'User not found' });
+    if (!user) {
+      return res.status(200).json({ success: false, message: 'User not found', code: 'USER_NOT_FOUND' });
+    }
+    if (!user.isActive) {
+      return res.status(200).json({ success: false, message: 'Account deactivated', code: 'INACTIVE' });
     }
 
-    if (!req.user.isActive) {
-      return res.status(403).json({ success: false, message: 'Account deactivated' });
-    }
+    req.user = user;
+    next();
 
-    next(); // Token valid → proceed
   } catch (error) {
-    if (error.name === 'TokenExpiredExpiredError') {
-      // DO NOT RETURN 401 → Let client refresh and retry
+    if (error.name === 'TokenExpiredError') {
+      // NEVER RETURN 401 — LET CLIENT REFRESH
       return res.status(200).json({
         success: false,
-        message: 'Token expired, please refresh',
+        message: 'Token expired',
         code: 'TOKEN_EXPIRED',
         requiresRefresh: true
       });
     }
 
-    return res.status(401).json({
+    return res.status(200).json({
       success: false,
       message: 'Invalid token',
       code: 'INVALID_TOKEN'
     });
   }
 };
-
 
 
 
