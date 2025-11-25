@@ -1039,6 +1039,36 @@ app.post('/api/users/login', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+app.post('/api/users/login', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('password').notEmpty().withMessage('Password is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  const { email, password } = req.body;
+  const ipAddress = req.ip;
+  const userAgent = req.get('User-Agent');
+  
+  try {
+    console.log(`🔐 LOGIN ATTEMPT DETAILS:`);
+    console.log(`   - Email received: "${email}"`);
+    console.log(`   - Email after processing: "${email.toLowerCase().trim()}"`);
+    console.log(`   - Password length: ${password ? password.length : 0}`);
+    
+    const processedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: processedEmail });
+    
+    console.log(`   - User found: ${!!user}`);
+    if (user) {
+      console.log(`   - User ID: ${user._id}`);
+      console.log(`   - Stored email in DB: "${user.email}"`);
+      console.log(`   - User active: ${user.isActive}`);
+    }
+    // ... rest of your code
+
 // @desc    Refresh access token - ENHANCED VERSION
 // @route   POST /api/users/refresh-token
 // @access  Public
@@ -1202,16 +1232,16 @@ app.post('/api/users/reset-password', [
       return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
     }
     
-    // Hash the new password
-    const salt = await bcrypt.genSalt(12);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    
-    // Update user password and clear reset token
-    user.password = hashedPassword;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
-    
-    await user.save();
+    const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    const user = await User.create({
+      fullName,
+      email: email.toLowerCase().trim(),
+      phone,
+      password,                 // ← plain password (pre-save hook will hash it)
+      refreshToken: refreshToken // ← save refreshToken here, no extra save()
+    });
     
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
