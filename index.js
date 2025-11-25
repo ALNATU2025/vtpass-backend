@@ -7233,41 +7233,11 @@ app.get('/api/debug/transaction-status', protect, [
     res.status(500).json({ success: false, message: 'Debug failed' });
   }
 });
-// Catch-all 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not found' });
-});
-
-// Start the server
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    mongoose.connection.close(() => process.exit(0));
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  server.close(() => {
-    mongoose.connection.close(() => process.exit(0));
-  });
-});
-
 // Global error handlers
 process.on('uncaughtException', (error) => {
-  console.error('UNCAUGHT EXCEPTION!', error);
-  process.exit(1);
+  console.error('Uncaught Exception:', error);
 });
 
-process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION!', reason);
-  process.exit(1);
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
-
-// Export app for testing
-module.exports = app;
