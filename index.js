@@ -7233,20 +7233,12 @@ app.get('/api/debug/transaction-status', protect, [
     res.status(500).json({ success: false, message: 'Debug failed' });
   }
 });
-
-
-
-
-
-
 // Catch-all 404 handler
 app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not foundd' });
+  res.status(404).json({ message: 'API endpoint not found' });
 });
 
-
-
-// Start the server with graceful shutdown handling
+// Start the server
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
@@ -7255,29 +7247,27 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully');
   server.close(() => {
-    console.log('Process terminated');
-    mongoose.connection.close();
-    process.exit(0);
+    mongoose.connection.close(() => process.exit(0));
   });
 });
 
 process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down gracefully');
   server.close(() => {
-    console.log('Process terminated');
-    mongoose.connection.close();
-    process.exit(0);
+    mongoose.connection.close(() => process.exit(0));
   });
 });
 
 // Global error handlers
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+  console.error('UNCAUGHT EXCEPTION!', error);
+  process.exit(1);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION!', reason);
+  process.exit(1);
 });
 
-// Export the app for testing purposes
+// Export app for testing
 module.exports = app;
