@@ -1232,16 +1232,12 @@ app.post('/api/users/reset-password', [
       return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
     }
     
-    const token = generateToken(user._id);
-    const refreshToken = generateRefreshToken(user._id);
-
-    const user = await User.create({
-      fullName,
-      email: email.toLowerCase().trim(),
-      phone,
-      password,                 // ← plain password (pre-save hook will hash it)
-      refreshToken: refreshToken // ← save refreshToken here, no extra save()
-    });
+    // JUST UPDATE THE PASSWORD — DO NOT CREATE A NEW USER!
+    user.password = newPassword;  // ← pre-save hook will hash it
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    
+    await user.save();
     
     res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
@@ -1249,7 +1245,7 @@ app.post('/api/users/reset-password', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
+    
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
@@ -2007,11 +2003,8 @@ app.post('/api/users/change-password', protect, [
       return res.status(400).json({ success: false, message: 'Current password is incorrect' });
     }
     
-    const salt = await bcrypt.genSalt(12);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    
-    user.password = hashedPassword;
-    await user.save();
+    user.password = newPassword;  // ← plain password
+    await user.save();            // ← pre-save hook will hash it
     
     res.json({ success: true, message: 'Password changed successfully' });
   } catch (error) {
