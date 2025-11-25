@@ -7270,9 +7270,6 @@ process.on('SIGINT', () => {
   });
 });
 
-// Final export
-module.exports = app;
-
 // Global error handlers
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
@@ -7281,3 +7278,6 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+// Export the app for testing purposes
+module.exports = app;
