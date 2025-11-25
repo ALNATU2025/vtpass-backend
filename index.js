@@ -7269,10 +7269,8 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
-}); // Add this closing bracket for the duplicate login route
 
-
-// Final export and error handling
+    // Final export and error handling
 module.exports = app;
 
 // Global error handler for uncaught exceptions
