@@ -958,7 +958,7 @@ app.post('/api/users/register', [
   }
 });
 
-// @desc    Authenticate a user
+// @desc    Authenticate a user - FIXED VERSION
 // @route   POST /api/users/login
 // @access  Public
 app.post('/api/users/login', [
@@ -969,37 +969,57 @@ app.post('/api/users/login', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   const { email, password } = req.body;
   const ipAddress = req.ip;
   const userAgent = req.get('User-Agent');
   
   try {
-    console.log(`Login attempt for email: ${email}`);
+    console.log(`🔐 LOGIN ATTEMPT: ${email}`);
     
-    const user = await User.findOne({ email });
+    // Find user by email (case-insensitive)
+    const user = await User.findOne({ 
+      email: email.toLowerCase().trim() 
+    });
     
     if (!user) {
-      console.log(`User not found for email: ${email}`);
+      console.log(`❌ USER NOT FOUND: ${email}`);
       await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Invalid email: ${email}`);
       return res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
     
-    console.log(`User found, comparing passwords for: ${email}`);
+    console.log(`✅ USER FOUND: ${user.email} | ID: ${user._id}`);
+    
+    // DEBUG: Log password comparison details
+    console.log('🔍 PASSWORD COMPARISON DEBUG:', {
+      inputPasswordLength: password.length,
+      storedHashLength: user.password?.length,
+      hasStoredPassword: !!user.password
+    });
+    
+    // Verify password
     const isPasswordMatch = await bcrypt.compare(password, user.password);
     
+    console.log(`🔑 PASSWORD MATCH RESULT: ${isPasswordMatch}`);
+    
     if (!isPasswordMatch) {
-      console.log(`Password mismatch for email: ${email}`);
+      console.log(`❌ PASSWORD MISMATCH for: ${email}`);
       await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Invalid password');
       return res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
     
+    // Check if account is active
     if (!user.isActive) {
-      console.log(`Account deactivated for email: ${email}`);
+      console.log(`🚫 ACCOUNT DEACTIVATED: ${email}`);
       await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
-      return res.status(403).json({ success: false, message: 'Your account has been deactivated. Please contact support.' });
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Your account has been deactivated. Please contact support.' 
+      });
     }
     
-    console.log(`Generating tokens for user: ${email}`);
+    console.log(`✅ PASSWORD VERIFIED for: ${email}`);
+    
     // Update last login time
     user.lastLoginAt = getLagosTime();
     
@@ -1011,7 +1031,7 @@ app.post('/api/users/login', [
     user.refreshToken = refreshToken;
     await user.save();
     
-    console.log(`Login successful for user: ${email}`);
+    console.log(`🎉 LOGIN SUCCESSFUL: ${email} | User ID: ${user._id}`);
     await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
     
     res.json({
@@ -1031,10 +1051,23 @@ app.post('/api/users/login', [
       token,
       refreshToken
     });
+    
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('💥 LOGIN ERROR:', error);
     console.error('Error stack:', error.stack);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    
+    // More specific error messages
+    let errorMessage = 'Internal Server Error';
+    if (error.name === 'MongoError') {
+      errorMessage = 'Database connection error';
+    } else if (error.name === 'TypeError') {
+      errorMessage = 'Data processing error';
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: errorMessage 
+    });
   }
 });
 // @desc    Refresh access token - ENHANCED VERSION
