@@ -976,9 +976,7 @@ app.post('/api/users/login', [
   try {
     console.log(`Login attempt for email: ${email}`);
     
-    const user = await User.findOne({ 
-  email: email.toLowerCase().trim() 
-});
+    const user = await User.findOne({ email });
     
     if (!user) {
       console.log(`User not found for email: ${email}`);
@@ -1039,36 +1037,6 @@ app.post('/api/users/login', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
-app.post('/api/users/login', [
-  body('email').isEmail().withMessage('Please provide a valid email'),
-  body('password').notEmpty().withMessage('Password is required')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-  const { email, password } = req.body;
-  const ipAddress = req.ip;
-  const userAgent = req.get('User-Agent');
-  
-  try {
-    console.log(`🔐 LOGIN ATTEMPT DETAILS:`);
-    console.log(`   - Email received: "${email}"`);
-    console.log(`   - Email after processing: "${email.toLowerCase().trim()}"`);
-    console.log(`   - Password length: ${password ? password.length : 0}`);
-    
-    const processedEmail = email.toLowerCase().trim();
-    const user = await User.findOne({ email: processedEmail });
-    
-    console.log(`   - User found: ${!!user}`);
-    if (user) {
-      console.log(`   - User ID: ${user._id}`);
-      console.log(`   - Stored email in DB: "${user.email}"`);
-      console.log(`   - User active: ${user.isActive}`);
-    }
-    // ... rest of your code
-
 // @desc    Refresh access token - ENHANCED VERSION
 // @route   POST /api/users/refresh-token
 // @access  Public
@@ -1174,9 +1142,7 @@ app.post('/api/users/forgot-password', [
   try {
     const { email } = req.body;
     
-    const user = await User.findOne({ 
-  email: email.toLowerCase().trim() 
-});
+    const user = await User.findOne({ email });
     
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -1232,8 +1198,12 @@ app.post('/api/users/reset-password', [
       return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
     }
     
-    // JUST UPDATE THE PASSWORD — DO NOT CREATE A NEW USER!
-    user.password = newPassword;  // ← pre-save hook will hash it
+    // Hash the new password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    // Update user password and clear reset token
+    user.password = hashedPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
     
@@ -1245,7 +1215,7 @@ app.post('/api/users/reset-password', [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-    
+
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
@@ -2003,8 +1973,11 @@ app.post('/api/users/change-password', protect, [
       return res.status(400).json({ success: false, message: 'Current password is incorrect' });
     }
     
-    user.password = newPassword;  // ← plain password
-    await user.save();            // ← pre-save hook will hash it
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    user.password = hashedPassword;
+    await user.save();
     
     res.json({ success: true, message: 'Password changed successfully' });
   } catch (error) {
@@ -7233,11 +7206,39 @@ app.get('/api/debug/transaction-status', protect, [
     res.status(500).json({ success: false, message: 'Debug failed' });
   }
 });
-// Global error handlers
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+
+
+
+
+
+
+// Catch-all 404 handler
+app.use((req, res) => {
+  res.status(404).json({ message: 'API endpoint not foundd' });
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+
+
+// Start the server with graceful shutdown handling
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
 });
