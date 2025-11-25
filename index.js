@@ -976,7 +976,9 @@ app.post('/api/users/login', [
   try {
     console.log(`Login attempt for email: ${email}`);
     
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ 
+  email: { $regex: `^${email}$`, $options: 'i' } 
+});
     
     if (!user) {
       console.log(`User not found for email: ${email}`);
@@ -1142,7 +1144,9 @@ app.post('/api/users/forgot-password', [
   try {
     const { email } = req.body;
     
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ 
+  email: { $regex: `^${email}$`, $options: 'i' } 
+});
     
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
