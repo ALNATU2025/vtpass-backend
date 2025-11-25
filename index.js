@@ -977,7 +977,7 @@ app.post('/api/users/login', [
     console.log(`Login attempt for email: ${email}`);
     
     const user = await User.findOne({ 
-  email: { $regex: `^${email}$`, $options: 'i' } 
+  email: email.toLowerCase().trim() 
 });
     
     if (!user) {
@@ -1145,7 +1145,7 @@ app.post('/api/users/forgot-password', [
     const { email } = req.body;
     
     const user = await User.findOne({ 
-  email: { $regex: `^${email}$`, $options: 'i' } 
+  email: email.toLowerCase().trim() 
 });
     
     if (!user) {
