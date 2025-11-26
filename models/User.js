@@ -25,6 +25,10 @@ const userSchema = mongoose.Schema(
     transactionPin: { 
       type: String 
     },
+     transactionPinSet: {  // ← ADD THIS FIELD
+      type: Boolean,
+      default: false
+    },
     password: {
       type: String,
       required: true,
