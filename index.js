@@ -344,14 +344,14 @@ const autoRefreshToken = async (req, res, next) => {
 };
 
 
-// FINAL PROTECT MIDDLEWARE — NEVER RETURNS 401 ON EXPIRED TOKEN
+// FINAL PROTECT MIDDLEWARE — FIXED VERSION
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
-    return res.status(200).json({
+    return res.status(401).json({
       success: false,
-      message: 'No token, please login',
+      message: 'No token provided. Please log in.',
       code: 'NO_TOKEN'
     });
   }
@@ -361,34 +361,50 @@ const protect = async (req, res, next) => {
     const user = await User.findById(decoded.id).select('-password');
     
     if (!user) {
-      return res.status(200).json({ success: false, message: 'User not found', code: 'USER_NOT_FOUND' });
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User not found', 
+        code: 'USER_NOT_FOUND' 
+      });
     }
+    
     if (!user.isActive) {
-      return res.status(200).json({ success: false, message: 'Account deactivated', code: 'INACTIVE' });
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Account deactivated', 
+        code: 'INACTIVE' 
+      });
     }
 
     req.user = user;
-    next();
+    next(); // ← This is the key: continue if valid!
 
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
-      // NEVER RETURN 401 — LET CLIENT REFRESH
-      return res.status(200).json({
+      return res.status(401).json({
         success: false,
-        message: 'Token expired',
+        message: 'Token expired. Please refresh token.',
         code: 'TOKEN_EXPIRED',
         requiresRefresh: true
       });
     }
 
-    return res.status(200).json({
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token',
+        code: 'INVALID_TOKEN'
+      });
+    }
+
+    console.error('Protect middleware error:', error);
+    return res.status(401).json({
       success: false,
-      message: 'Invalid token',
-      code: 'INVALID_TOKEN'
+      message: 'Authentication failed',
+      code: 'AUTH_FAILED'
     });
   }
 };
-
 
 
 // @desc    Check token status and refresh if needed
