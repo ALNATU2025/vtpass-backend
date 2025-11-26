@@ -1,4 +1,4 @@
-// models/Transaction.js
+// models/Transaction.js — FINAL PRODUCTION VERSION
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
@@ -6,86 +6,80 @@ const transactionSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true,
+        index: true
     },
     type: {
         type: String,
         enum: [
-            'Transfer-Sent', 
-            'Transfer-Received', 
-            'Airtime', 
-            'Data', 
-            'CableTV', 
-            'CashWithdraw', 
-            'FundWallet', 
-            'wallet_funding',
-            'virtual_account_topup',      // ← NEW: For automatic deposits
-            'virtual_account_deposit',    // ← Optional extra name
-            'credit',                     // ← For sync compatibility
-            'debit'
+            'Transfer-Sent', 'Transfer-Received',
+            'Airtime', 'Data', 'CableTV', 'CashWithdraw',
+            'FundWallet', 'wallet_funding',
+            'virtual_account_topup', 'virtual_account_deposit',
+            'credit', 'debit'
         ],
-        required: true,
+        required: true
     },
     amount: {
         type: Number,
         required: true,
+        min: 0
     },
     status: {
-    type: String,
-    enum: ['Successful', 'Pending', 'Failed', 'Completed'],  // ← 'Completed' added to enum
-    set: (v) => {
-      if (!v) return 'Pending';
-      const normalized = v.toString().trim().toLowerCase();
-      if (normalized === 'successful' || normalized === 'success') {
-        return 'Successful';
-      }
-      if (normalized === 'completed' || normalized === 'complete') {
-        return 'Completed';
-      }
-      // Capitalize first letter for any other value
-      return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+        type: String,
+        enum: ['Successful', 'Pending', 'Failed', 'Completed'],
+        default: 'Pending',
+        set: (v) => {
+            if (!v) return 'Pending';
+            const map = {
+                success: 'Successful',
+                successful: 'Successful',
+                complete: 'Completed',
+                completed: 'Completed'
+            };
+            const normalized = v.toString().trim().toLowerCase();
+            return map[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+        }
     },
-    default: 'Pending',
-},
     transactionId: {
         type: String,
         unique: true,
-        sparse: true,        // ← THIS ALLOWS null/undefined while keeping uniqueness
-        default: null        // ← No longer required
-        // You can auto-generate it in the controller if you want
+        sparse: true,
+        default: null
     },
-    reference: {             // ← ADD THIS: PayStack reference (very useful!)
+    reference: {
         type: String,
         unique: true,
-        sparse: true
+        sparse: true,
+        index: true
     },
-    description: {           // ← Optional but nice to have
+    description: {
         type: String,
         default: ''
     },
-    balanceBefore: {
-    type: Number,
-    default: 0
-    },
-    balanceAfter: {
-    type: Number,
-    default: 0
-    },
-    
+    balanceBefore: { type: Number, default: 0 },
+    balanceAfter: { type: Number, default: 0 },
     details: {
         type: mongoose.Schema.Types.Mixed,
         default: {}
     },
-}, { timestamps: true });
+    gateway: { type: String, default: 'paystack' },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { 
+    timestamps: true 
+});
 
-// Optional: Auto-generate transactionId if not provided
+// Auto-generate transactionId
 transactionSchema.pre('save', function(next) {
+    if (!this.transactionId && this.reference) {
+        this.transactionId = this.reference;
+    }
     if (!this.transactionId) {
         this.transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
     }
-    if (this.reference && !this.transactionId) {
-        this.transactionId = this.reference; // fallback
-    }
     next();
 });
+
+// Compound index for fast reference + user lookups
+transactionSchema.index({ reference: 1, userId: 1 });
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
