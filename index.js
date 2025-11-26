@@ -25,6 +25,19 @@ const AuthLog = require('./models/AuthLog');
 
 
 
+const { Resend } = require('resend');
+const resend = new Resend('re_hPWnKmKi_xvnKFtjPiKpbhqcAro4dzvn6');
+
+// OTP storage (in production, use Redis)
+const otpStore = new Map();
+
+// Generate OTP
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+
+
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
 try {
@@ -876,7 +889,7 @@ app.get('/health', (req, res) => {
 });
 
 
-// @desc    Register a new user
+// @desc    Register a new user with email verification
 // @route   POST /api/users/register
 // @access  Public
 app.post('/api/users/register', [
@@ -888,75 +901,164 @@ app.post('/api/users/register', [
       throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
     }
     return true;
-  })
+  }),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP is required for verification')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  const { fullName, email, phone, password } = req.body;
+  
+  const { fullName, email, phone, password, otp, referralCode } = req.body;
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
   
   try {
+    // Check if email is verified
+    const otpData = otpStore.get(email);
+    if (!otpData || !otpData.verified) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email not verified. Please verify your email first.' 
+      });
+    }
+
     const userExists = await User.findOne({ email });
     if (userExists) {
+      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'User already exists' });
     }
     
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
-    const user = await User.create({
+    
+    // Create user
+    const user = await User.create([{
       fullName,
       email,
       phone,
       password: hashedPassword,
-    });
-    
-    if (user) {
-      const token = generateToken(user._id);
-      const refreshToken = generateRefreshToken(user._id);
+      referralCode: referralCode || null,
+      emailVerified: true, // Mark as verified
+      isActive: true
+    }], { session });
+
+    const newUser = user[0];
+
+    if (newUser) {
+      const token = generateToken(newUser._id);
+      const refreshToken = generateRefreshToken(newUser._id);
       
       // Store refresh token
-      user.refreshToken = refreshToken;
-      await user.save();
-      
+      newUser.refreshToken = refreshToken;
+      await newUser.save({ session });
+
       // AUTO-CREATE WELCOME NOTIFICATION
       try {
-        await Notification.create({
-          recipientId: user._id,
+        await Notification.create([{
+          recipientId: newUser._id,
           title: "Welcome to VTPass! 🎉",
-          message: "Thank you for registering with VTPass. You can now enjoy seamless bill payments, airtime top-ups, data purchases, and more. Get started by funding your wallet!",
+          message: "Thank you for registering with VTPass. Your email has been verified and your account is now active!",
           isRead: false
-        });
+        }], { session });
       } catch (notificationError) {
         console.error('Error creating welcome notification:', notificationError);
-        // Don't fail registration if notification fails
       }
+
+      // CREATE VIRTUAL ACCOUNT
+      try {
+        console.log('🔄 Creating virtual account for new user:', newUser._id);
+        
+        // Call your virtual account creation service
+        const virtualAccountResult = await createVirtualAccountForUser(newUser._id, newUser.fullName, newUser.email, newUser.phone);
+        
+        if (virtualAccountResult.success) {
+          console.log('✅ Virtual account created successfully');
+          
+          // Update user with virtual account details
+          newUser.virtualAccount = {
+            assigned: true,
+            bankName: virtualAccountResult.data.bankName,
+            accountNumber: virtualAccountResult.data.accountNumber,
+            accountName: virtualAccountResult.data.accountName
+          };
+          await newUser.save({ session });
+        } else {
+          console.log('⚠️ Virtual account creation failed, but user registered');
+        }
+      } catch (vaError) {
+        console.error('❌ Virtual account creation error:', vaError);
+        // Don't fail registration if virtual account fails
+      }
+
+      await session.commitTransaction();
       
+      // Clear OTP after successful registration
+      otpStore.delete(email);
+
       res.status(201).json({
         success: true,
-        message: 'Registration successful!',
+        message: 'Registration successful! Email verified and account created.',
         user: {
-          _id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          phone: user.phone,
-          isAdmin: user.isAdmin,
-          walletBalance: user.walletBalance,
-          commissionBalance: user.commissionBalance,
-          transactionPinSet: !!user.transactionPin,
-          biometricEnabled: user.biometricEnabled,
+          _id: newUser._id,
+          fullName: newUser.fullName,
+          email: newUser.email,
+          phone: newUser.phone,
+          isAdmin: newUser.isAdmin,
+          walletBalance: newUser.walletBalance,
+          commissionBalance: newUser.commissionBalance,
+          transactionPinSet: !!newUser.transactionPin,
+          biometricEnabled: newUser.biometricEnabled,
+          emailVerified: newUser.emailVerified,
+          virtualAccount: newUser.virtualAccount
         },
         token,
         refreshToken
       });
     } else {
+      await session.abortTransaction();
       res.status(400).json({ success: false, message: 'Invalid user data' });
     }
   } catch (error) {
+    await session.abortTransaction();
     console.error('Registration error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  } finally {
+    session.endSession();
   }
 });
+
+// Virtual account creation helper function
+async function createVirtualAccountForUser(userId, fullName, email, phone) {
+  try {
+    // This would call your virtual account service
+    // For now, we'll simulate creation with mock data
+    const mockVirtualAccount = {
+      bankName: 'WEMA BANK',
+      accountNumber: '7' + Math.random().toString().substr(2, 9),
+      accountName: fullName.toUpperCase().replace(/\s+/g, ' '),
+      assigned: true
+    };
+
+    // Simulate API call delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    return {
+      success: true,
+      data: mockVirtualAccount
+    };
+  } catch (error) {
+    console.error('Virtual account creation error:', error);
+    return {
+      success: false,
+      message: 'Virtual account creation failed'
+    };
+  }
+}
+
+
 
 // @desc    Authenticate a user - FIXED VERSION
 // @route   POST /api/users/login
@@ -7237,6 +7339,180 @@ app.get('/api/debug/transaction-status', protect, [
   } catch (error) {
     console.error('Debug transaction error:', error);
     res.status(500).json({ success: false, message: 'Debug failed' });
+  }
+});
+
+
+// @desc    Send OTP for email verification
+// @route   POST /api/auth/send-verification-otp
+// @access  Public
+app.post('/api/auth/send-verification-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email } = req.body;
+    
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    
+    // Store OTP
+    otpStore.set(email, { otp, expiresAt, verified: false });
+    
+    console.log(`📧 Sending OTP to ${email}: ${otp}`);
+
+    // Send email via Resend
+    const { data, error } = await resend.emails.send({
+      from: 'VTPass <onboarding@resend.dev>',
+      to: [email],
+      subject: 'Verify Your Email - VTPass',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
+                .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                .header { text-align: center; margin-bottom: 30px; }
+                .otp-code { font-size: 32px; font-weight: bold; text-align: center; color: #007bff; margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; letter-spacing: 5px; }
+                .footer { margin-top: 30px; text-align: center; color: #666; font-size: 12px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>Verify Your Email Address</h2>
+                </div>
+                <p>Hello,</p>
+                <p>Thank you for registering with VTPass. Use the OTP code below to verify your email address:</p>
+                <div class="otp-code">${otp}</div>
+                <p>This code will expire in 10 minutes.</p>
+                <p>If you didn't request this verification, please ignore this email.</p>
+                <div class="footer">
+                    <p>&copy; 2024 VTPass. All rights reserved.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `,
+    });
+
+    if (error) {
+      console.error('❌ Resend error:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to send verification email' 
+      });
+    }
+
+    console.log('✅ OTP sent successfully via Resend');
+    
+    res.json({
+      success: true,
+      message: 'Verification OTP sent successfully',
+      email: email
+    });
+
+  } catch (error) {
+    console.error('❌ Send OTP error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send verification OTP' 
+    });
+  }
+});
+
+// @desc    Verify OTP
+// @route   POST /api/auth/verify-otp
+// @access  Public
+app.post('/api/auth/verify-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, otp } = req.body;
+    
+    console.log(`🔍 Verifying OTP for ${email}: ${otp}`);
+
+    // Check if OTP exists
+    const otpData = otpStore.get(email);
+    if (!otpData) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP not found or expired. Please request a new one.' 
+      });
+    }
+
+    // Check if OTP is expired
+    if (Date.now() > otpData.expiresAt) {
+      otpStore.delete(email);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP has expired. Please request a new one.' 
+      });
+    }
+
+    // Verify OTP
+    if (otpData.otp !== otp) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid OTP. Please try again.' 
+      });
+    }
+
+    // Mark as verified
+    otpData.verified = true;
+    otpStore.set(email, otpData);
+
+    console.log('✅ OTP verified successfully');
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully',
+      email: email
+    });
+
+  } catch (error) {
+    console.error('❌ Verify OTP error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to verify OTP' 
+    });
+  }
+});
+
+// @desc    Check if email is verified
+// @route   GET /api/auth/check-verification/:email
+// @access  Public
+app.get('/api/auth/check-verification/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const otpData = otpStore.get(email);
+    const isVerified = otpData && otpData.verified;
+
+    res.json({
+      success: true,
+      verified: isVerified,
+      email: email
+    });
+
+  } catch (error) {
+    console.error('❌ Check verification error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to check verification status' 
+    });
   }
 });
 
