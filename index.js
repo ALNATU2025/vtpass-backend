@@ -1371,7 +1371,11 @@ app.post('/api/users/reset-password', [
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
 app.post('/api/users/set-transaction-pin', protect, [
-  body('pin').isLength({ min: 4, max: 6 }).withMessage('PIN must be 4-6 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+  body('pin')
+    .isLength({ min: 6, max: 6 }) // ← CHANGE TO EXACTLY 6
+    .withMessage('PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -1382,7 +1386,7 @@ app.post('/api/users/set-transaction-pin', protect, [
     const { pin } = req.body;
     const userId = req.user._id;
     
-    console.log(`🔐 Setting PIN for user: ${userId}`);
+    console.log(`🔐 Setting 6-digit PIN for user: ${userId}`);
 
     const user = await User.findById(userId);
     if (!user) {
@@ -1392,7 +1396,8 @@ app.post('/api/users/set-transaction-pin', protect, [
     // Debug current state
     console.log('📊 Before setting PIN:', {
       hasExistingPin: !!user.transactionPin,
-      pinLength: user.transactionPin ? user.transactionPin.length : 0
+      pinLength: user.transactionPin ? user.transactionPin.length : 0,
+      transactionPinSet: user.transactionPinSet
     });
 
     // Check if PIN is already set
@@ -1409,22 +1414,24 @@ app.post('/api/users/set-transaction-pin', protect, [
     const salt = await bcrypt.genSalt(12);
     const hashedPin = await bcrypt.hash(pin, salt);
 
-    // Update user with hashed PIN
+    // Update user with hashed PIN AND transactionPinSet flag
     user.transactionPin = hashedPin;
+    user.transactionPinSet = true; // ← CRITICAL: Set the flag
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     
     await user.save();
 
-    console.log(`✅ PIN set successfully for user: ${userId}`);
+    console.log(`✅ 6-digit PIN set successfully for user: ${userId}`);
     console.log('📊 After setting PIN:', {
       hasPin: !!user.transactionPin,
-      pinLength: user.transactionPin.length
+      pinLength: user.transactionPin.length,
+      transactionPinSet: user.transactionPinSet
     });
 
     res.json({ 
       success: true, 
-      message: 'Transaction PIN set successfully',
+      message: '6-digit Transaction PIN set successfully',
       transactionPinSet: true
     });
     
@@ -1589,7 +1596,11 @@ app.post('/api/users/toggle-biometric', protect, [
 // @access  Private
 app.post('/api/users/verify-transaction-pin', protect, [
   body('userId').notEmpty().withMessage('User ID is required'),
-  body('transactionPin').isLength({ min: 6, max: 8 }).withMessage('PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+  body('transactionPin')
+    .isLength({ min: 6, max: 6 }) // ← CHANGE TO EXACTLY 6
+    .withMessage('PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
