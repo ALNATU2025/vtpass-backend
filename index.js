@@ -1591,16 +1591,10 @@ app.post('/api/users/toggle-biometric', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Verify transaction PIN (standalone endpoint)
-// @route   POST /api/users/verify-transaction-pin
-// @access  Private
+// Enhanced PIN verification that works for all users
 app.post('/api/users/verify-transaction-pin', protect, [
   body('userId').notEmpty().withMessage('User ID is required'),
-  body('transactionPin')
-    .isLength({ min: 6, max: 6 }) // ← CHANGE TO EXACTLY 6
-    .withMessage('PIN must be exactly 6 digits')
-    .matches(/^\d+$/)
-    .withMessage('PIN must contain only digits')
+  body('transactionPin').isLength({ min: 6, max: 6 }).withMessage('PIN must be exactly 6 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -1616,6 +1610,13 @@ app.post('/api/users/verify-transaction-pin', protect, [
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // AUTO-MIGRATION: If user has PIN but no flag, set it
+    if (user.transactionPin && !user.transactionPinSet) {
+      console.log(`🔄 Auto-migrating PIN flag for user: ${user.email}`);
+      user.transactionPinSet = true;
+      await user.save();
     }
     
     // Check if PIN is locked
@@ -1643,7 +1644,7 @@ app.post('/api/users/verify-transaction-pin', protect, [
       
       // Lock account if too many failed attempts
       if (user.failedPinAttempts >= 3) {
-        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
+        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000);
         await user.save();
         
         return res.status(429).json({ 
