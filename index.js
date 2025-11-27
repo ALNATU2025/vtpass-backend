@@ -26,7 +26,7 @@ const AuthLog = require('./models/AuthLog');
 
 
 const { Resend } = require('resend');
-const resend = new Resend('re_hPWnKmKi_xvnKFtjPiKpbhqcAro4dzvn6');
+const resend = new Resend('re_NjyFFroy_8rv4PY5kf3vFwsBgqcs9pDPx');
 
 // OTP storage (in production, use Redis)
 const otpStore = new Map();
