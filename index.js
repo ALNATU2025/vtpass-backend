@@ -7384,74 +7384,72 @@ app.post('/api/auth/send-verification-otp', [
 
   try {
     const { email } = req.body;
-    
-    // Generate OTP
-    const otp = generateOTP();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-    
-    // Store OTP
-    otpStore.set(email, { otp, expiresAt, verified: false });
-    
-    console.log(`📧 Sending OTP to ${email}: ${otp}`);
+    const normalizedEmail = email.toLowerCase().trim();
 
-    // Send email via Resend
-    const { data, error } = await resend.emails.send({
+    // Rate limiting
+    const otpRequests = new Map();
+    const now = Date.now();
+    const window = 60 * 1000;
+    const maxAttempts = 5;
+
+    if (!otpRequests.has(normalizedEmail)) {
+      otpRequests.set(normalizedEmail, []);
+    }
+
+    const requests = otpRequests.get(normalizedEmail);
+    const recent = requests.filter(t => now - t < window);
+    
+    if (recent.length >= maxAttempts) {
+      return res.status(429).json({ 
+        success: false, 
+        message: 'Too many requests. Please wait 1 minute.' 
+      });
+    }
+
+    requests.push(now);
+    otpRequests.set(normalizedEmail, requests.filter(t => now - t < window));
+
+    // Generate and store OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+
+    otpStore.set(normalizedEmail, { otp, expiresAt, verified: false });
+
+    console.log(`OTP sent to ${normalizedEmail}: ${otp}`);
+
+    // Send email
+    const { error } = await resend.emails.send({
       from: 'VTPass <onboarding@resend.dev>',
-      to: [email],
-      subject: 'Verify Your Email - VTPass',
+      to: [normalizedEmail],
+      subject: 'Your Verification Code',
       html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
-                .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-                .header { text-align: center; margin-bottom: 30px; }
-                .otp-code { font-size: 32px; font-weight: bold; text-align: center; color: #007bff; margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; letter-spacing: 5px; }
-                .footer { margin-top: 30px; text-align: center; color: #666; font-size: 12px; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h2>Verify Your Email Address</h2>
-                </div>
-                <p>Hello,</p>
-                <p>Thank you for registering with VTPass. Use the OTP code below to verify your email address:</p>
-                <div class="otp-code">${otp}</div>
-                <p>This code will expire in 10 minutes.</p>
-                <p>If you didn't request this verification, please ignore this email.</p>
-                <div class="footer">
-                    <p>&copy; 2024 VTPass. All rights reserved.</p>
-                </div>
-            </div>
-        </body>
-        </html>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1a1a1a; text-align: center;">Verify Your Email</h2>
+          <p style="color: #555; text-align: center;">Your verification code is:</p>
+          <div style="text-align: center; margin: 30px 0;">
+            <span style="font-size: 32px; font-weight: bold; color: #0066cc; letter-spacing: 8px; background: #f0f7ff; padding: 15px 20px; border-radius: 8px;">
+              ${otp}
+            </span>
+          </div>
+          <p style="color: #666; text-align: center;">This code expires in 10 minutes.</p>
+        </div>
       `,
     });
 
     if (error) {
-      console.error('❌ Resend error:', error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Failed to send verification email' 
-      });
+      console.error('Resend error:', error);
+      return res.status(500).json({ success: false, message: 'Failed to send email' });
     }
 
-    console.log('✅ OTP sent successfully via Resend');
-    
     res.json({
       success: true,
-      message: 'Verification OTP sent successfully',
-      email: email
+      message: 'Verification code sent successfully!',
+      email: normalizedEmail
     });
 
   } catch (error) {
-    console.error('❌ Send OTP error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to send verification OTP' 
-    });
+    console.error('Send OTP error:', error);
+    res.status(500).json({ success: false, message: 'Service temporarily unavailable' });
   }
 });
 
@@ -7549,11 +7547,13 @@ app.get('/api/auth/check-verification/:email', async (req, res) => {
 
 
 
-// Catch-all 404 handler
+// Catch-all 404 handler — KEEP THIS AS THE VERY LAST app.use() BEFORE app.listen()
 app.use((req, res) => {
-  res.status(404).json({ message: 'API endpoint not foundd' });
+  res.status(404).json({ 
+    success: false, 
+    message: 'API endpoint not found' 
+  });
 });
-
 
 
 // Start the server with graceful shutdown handling
