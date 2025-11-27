@@ -7419,7 +7419,7 @@ app.post('/api/auth/send-verification-otp', [
 
     // Send email
     const { error } = await resend.emails.send({
-      from: 'VTPass <onboarding@resend.dev>',
+      from: 'VTPass <noreply@vtpass-backend.onrender.com>',
       to: [normalizedEmail],
       subject: 'Your Verification Code',
       html: `
