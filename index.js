@@ -1188,78 +1188,92 @@ app.post('/api/users/login', [
     });
   }
 });
-// @desc    Refresh access token - ENHANCED VERSION
+// @desc    Refresh access token - FINAL BULLETPROOF VERSION
 // @route   POST /api/users/refresh-token
-// @access  Public
+// @access  Public (MUST be public!)
 app.post('/api/users/refresh-token', async (req, res) => {
   const { refreshToken } = req.body;
-  
-  if (!refreshToken) {
-    return res.status(401).json({ 
-      success: false, 
+
+  // 1. Must have refresh token
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    return res.status(401).json({
+      success: false,
       message: 'Refresh token is required',
-      code: 'REFRESH_TOKEN_REQUIRED'
+      code: 'NO_REFRESH_TOKEN'
     });
   }
-  
+
   try {
+    // 2. Verify refresh token
     const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    const user = await User.findById(decoded.id);
     
+    // 3. Find user
+    const user = await User.findById(decoded.id);
     if (!user) {
-      return res.status(401).json({ 
-        success: false, 
+      return res.status(401).json({
+        success: false,
         message: 'User not found',
         code: 'USER_NOT_FOUND'
       });
     }
-    
+
+    // 4. CRITICAL: Compare stored refresh token
     if (user.refreshToken !== refreshToken) {
-      return res.status(401).json({ 
-        success: false, 
+      console.log('Invalid refresh token attempt for user:', user.email);
+      return res.status(401).json({
+        success: false,
         message: 'Invalid refresh token',
         code: 'INVALID_REFRESH_TOKEN'
       });
     }
-    
-    // Generate new tokens
-    const token = generateToken(user._id);
+
+    // 5. Generate new tokens
+    const newAccessToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
-    
-    // Update refresh token in database
+
+    // 6. Update refresh token in DB (token rotation)
     user.refreshToken = newRefreshToken;
     await user.save();
-    
+
+    console.log('Token refreshed successfully for:', user.email);
+
+    // 7. Send new tokens
     res.json({
       success: true,
-      token,
+      message: 'Token refreshed successfully',
+      token: newAccessToken,
       refreshToken: newRefreshToken,
       user: {
         _id: user._id,
         email: user.email,
-        fullName: user.fullName
+        fullName: user.fullName,
+        isAdmin: user.isAdmin
       }
     });
+
   } catch (error) {
-    console.error('Refresh token error:', error);
-    
+    console.error('Refresh token error:', error.name, error.message);
+
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Refresh token expired',
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token expired. Please login again.',
         code: 'REFRESH_TOKEN_EXPIRED'
       });
-    } else if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ 
-        success: false, 
+    }
+
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
         message: 'Invalid refresh token',
         code: 'INVALID_REFRESH_TOKEN'
       });
     }
-    
-    res.status(401).json({ 
-      success: false, 
-      message: 'Invalid refresh token',
+
+    // Any other error
+    return res.status(401).json({
+      success: false,
+      message: 'Refresh token invalid',
       code: 'REFRESH_TOKEN_INVALID'
     });
   }
