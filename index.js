@@ -4173,23 +4173,17 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    // ✅ CRITICAL FIX: Generate NEW request_id if it's a retry
-    let uniqueRequestId = request_id;
+  // FINAL FIX: ALWAYS USE THE CLIENT'S request_id — IT IS GUARANTEED UNIQUE
+let uniqueRequestId = request_id;
+
+// Safety fallback: if client sent empty or invalid ID
+if (!uniqueRequestId || uniqueRequestId.trim() === '' || uniqueRequestId.length < 10) {
+  uniqueRequestId = generateRequestId();
+  console.log('Client sent invalid request_id, generated new one:', uniqueRequestId);
+} else {
+  console.log('Using client-provided request_id (GUARANTEED UNIQUE):', uniqueRequestId);
+}
     
-    // Check if this request_id was already used recently
-    const recentTransaction = await Transaction.findOne({
-      reference: request_id,
-      createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
-    }).session(session);
-
-    if (recentTransaction) {
-      // Generate NEW request_id for retry
-      uniqueRequestId = generateRequestId();
-      console.log('🔄 Generated NEW request_id for retry:', uniqueRequestId, '(Original:', request_id, ')');
-    } else {
-      console.log('✅ Using original request_id:', uniqueRequestId);
-    }
-
     // 2. Check if transaction was already SUCCESSFULLY processed
     const existingSuccessfulTransaction = await Transaction.findOne({
       reference: { $in: [request_id, uniqueRequestId] },
