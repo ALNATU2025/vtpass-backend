@@ -4149,11 +4149,11 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FIXED FOR DUPLICATE TRANSACTIONS
+// @desc    VTpass Proxy Endpoint - COMPLETELY FIXED FOR DUPLICATE TRANSACTIONS
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - FIXED FOR DUPLICATE TRANSACTIONS');
+  console.log('🔐 PROXY ENDPOINT HIT - ULTIMATE FIX FOR DUPLICATES');
   console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
 
   const session = await mongoose.startSession();
@@ -4173,32 +4173,44 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    // ✅ FIX: Use the original request_id from client, don't generate new one!
-    const uniqueRequestId = request_id; // Use the client's request_id
+    // ✅ CRITICAL FIX: Generate NEW request_id if it's a retry
+    let uniqueRequestId = request_id;
     
-    console.log('✅ Using original request_id:', uniqueRequestId);
+    // Check if this request_id was already used recently
+    const recentTransaction = await Transaction.findOne({
+      reference: request_id,
+      createdAt: { $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
+    }).session(session);
 
-    // 2. Check if this transaction was already processed
-    const existingTransaction = await Transaction.findOne({
-      reference: uniqueRequestId,
+    if (recentTransaction) {
+      // Generate NEW request_id for retry
+      uniqueRequestId = generateRequestId();
+      console.log('🔄 Generated NEW request_id for retry:', uniqueRequestId, '(Original:', request_id, ')');
+    } else {
+      console.log('✅ Using original request_id:', uniqueRequestId);
+    }
+
+    // 2. Check if transaction was already SUCCESSFULLY processed
+    const existingSuccessfulTransaction = await Transaction.findOne({
+      reference: { $in: [request_id, uniqueRequestId] },
       status: 'successful'
     }).session(session);
 
-    if (existingTransaction) {
+    if (existingSuccessfulTransaction) {
       await session.abortTransaction();
-      console.log('✅ Transaction already processed:', uniqueRequestId);
+      console.log('✅ Transaction already processed successfully:', existingSuccessfulTransaction.reference);
       return res.json({
         success: true,
         message: 'Transaction already processed successfully',
         alreadyProcessed: true,
-        transactionId: existingTransaction._id,
+        transactionId: existingSuccessfulTransaction._id,
         newBalance: user.walletBalance
       });
     }
 
-    // 3. Prepare VTpass payload with ORIGINAL request ID
+    // 3. Prepare VTpass payload
     const vtpassPayload = {
-      request_id: uniqueRequestId, // ✅ Use original request_id
+      request_id: uniqueRequestId, // Use potentially new request_id
       serviceID,
     };
 
@@ -4208,7 +4220,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     if (billersCode) vtpassPayload.billersCode = billersCode;
     if (type) vtpassPayload.type = type;
 
-    // Handle amount only for payment requests, not validation
+    // Handle amount only for payment requests
     if (amount && parseFloat(amount) > 0) {
       vtpassPayload.amount = parseFloat(amount).toString();
       
@@ -4222,12 +4234,15 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       }
     }
 
-    console.log('🚀 Calling VTpass with ORIGINAL request_id:', vtpassPayload);
+    console.log('🚀 Calling VTpass with request_id:', uniqueRequestId);
 
     // 4. Determine which endpoint to use
     let vtpassEndpoint = '/pay';
+    let isValidation = false;
+    
     if (serviceID.includes('electric') && billersCode && !variation_code) {
-      vtpassEndpoint = '/merchant-verify'; // For meter validation
+      vtpassEndpoint = '/merchant-verify';
+      isValidation = true;
     }
 
     const vtpassResult = await callVtpassApi(vtpassEndpoint, vtpassPayload);
@@ -4238,15 +4253,15 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       message: vtpassResult.data?.response_description
     });
 
-    // 5. Handle VTpass response - CRITICAL FIX HERE
+    // 5. Handle VTpass response
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
-      // SUCCESS - Deduct from balance only for payments, not validations
-      if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0) {
+      // SUCCESS - Process payment only for actual payments, not validations
+      if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0 && !isValidation) {
         const balanceBefore = user.walletBalance;
         user.walletBalance -= parseFloat(amount);
         await user.save({ session });
 
-        // ✅ FIX: Use the enhanced createTransaction function
+        // Create transaction record
         await createTransaction(
           user._id,
           parseFloat(amount),
@@ -4258,7 +4273,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           session,
           false,
           'pin',
-          uniqueRequestId // ✅ Pass the original reference
+          uniqueRequestId
         );
 
         console.log('✅ PAYMENT SUCCESS:', {
@@ -4272,54 +4287,42 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
       res.json({
         success: true,
-        message: vtpassEndpoint === '/pay' ? 'Transaction successful' : 'Validation successful',
+        message: isValidation ? 'Validation successful' : 'Transaction successful',
         transactionId: vtpassResult.data.content?.transactions?.transactionId,
         newBalance: user.walletBalance,
         vtpassResponse: vtpassResult.data,
         customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName,
-        requestId: uniqueRequestId // ✅ Return the original request ID
+        requestId: uniqueRequestId
       });
 
     } else {
-      // VTpass failed - DO NOT RETRY WITH SAME REQUEST ID
+      // VTpass failed
       await session.abortTransaction();
       console.log('❌ VTpass failed:', vtpassResult.data);
       
-      // Handle "LIKELY DUPLICATE TRANSACTION" specifically
-      if (vtpassResult.data?.response_description?.includes('LIKELY DUPLICATE TRANSACTION') || 
-          vtpassResult.data?.response_description?.includes('DUPLICATE TRANSACTION')) {
+      // Handle duplicate transaction errors
+      if (vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST') ||
+          vtpassResult.data?.response_description?.includes('DUPLICATE') ||
+          vtpassResult.data?.code === '014') {
         
-        // ✅ CRITICAL FIX: Check if we already have a successful transaction for this request
-        const existingSuccessTx = await Transaction.findOne({
-          reference: uniqueRequestId,
-          status: 'successful'
-        });
-        
-        if (existingSuccessTx) {
-          console.log('✅ Found existing successful transaction, returning it');
-          return res.json({
-            success: true,
-            message: 'Transaction was already processed successfully',
-            alreadyProcessed: true,
-            transactionId: existingSuccessTx._id,
-            newBalance: user.walletBalance,
-            vtpassResponse: vtpassResult.data
-          });
-        }
+        console.log('🔄 Duplicate detected, generating new request_id for retry');
         
         return res.status(400).json({
           success: false,
-          message: 'Duplicate transaction detected. Please wait 15 seconds before retrying with the same recipient.',
+          message: 'Duplicate transaction detected. Please retry with a new request ID.',
           code: 'DUPLICATE_TRANSACTION',
           retryable: true,
-          waitTime: 15 // seconds
+          requiresNewId: true,
+          originalRequestId: request_id,
+          suggestedNewId: generateRequestId()
         });
       }
       
       res.status(400).json({
         success: false,
         message: vtpassResult.data?.response_description || 'VTpass transaction failed',
-        vtpassResponse: vtpassResult.data
+        vtpassResponse: vtpassResult.data,
+        code: vtpassResult.data?.code
       });
     }
 
