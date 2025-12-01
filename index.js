@@ -4255,20 +4255,33 @@ if (!uniqueRequestId || uniqueRequestId.trim() === '' || uniqueRequestId.length 
         user.walletBalance -= parseFloat(amount);
         await user.save({ session });
 
-        // Create transaction record
-        await createTransaction(
-          user._id,
-          parseFloat(amount),
-          'debit',
-          'successful',
-          `${serviceID} purchase for ${phone}`,
-          balanceBefore,
-          user.walletBalance,
-          session,
-          false,
-          'pin',
-          uniqueRequestId
-        );
+       // === AUTO DETECT CORRECT TYPE SO IT SHOWS IN RIGHT TAB ===
+let transactionType = 'debit';
+
+if (serviceID.includes('data') || serviceID.includes('mtn-data') || serviceID.includes('airtel-data') || serviceID.includes('glo-data') || serviceID.includes('etisalat-data')) {
+  transactionType = 'data_purchase';
+} else if (['mtn', 'airtel', 'glo', 'etisalat'].includes(serviceID)) {
+  transactionType = 'airtime_purchase';
+} else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
+  transactionType = 'cable_purchase';
+} else if (serviceID.includes('electric')) {
+  transactionType = 'electricity_purchase';
+}
+
+// Create transaction record with CORRECT type
+await createTransaction(
+  user._id,
+  parseFloat(amount),
+  transactionType,                    // ← NOW SHOWS AS AIRTIME / DATA / CABLE / ELECTRICITY
+  'successful',
+  `${serviceID.toUpperCase()} purchase for ${phone || billersCode}`,
+  balanceBefore,
+  user.walletBalance,
+  session,
+  false,
+  'pin',
+  uniqueRequestId
+);
 
         console.log('✅ PAYMENT SUCCESS:', {
           transactionId: vtpassResult.data.content?.transactions?.transactionId,
