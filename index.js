@@ -815,41 +815,66 @@ const createTransaction = async (userId, amount, type, status, description, bala
 
 
 // Commission Helper Function - ADD THIS MISSING FUNCTION
+// FINAL FIXED — NEVER CRASHES, NEVER NaN
 const calculateAndAddCommission = async (userId, amount, session) => {
   try {
+    // 1. Get commission rate safely
     const settings = await Settings.findOne().session(session);
-    const commissionRate = settings ? settings.commissionRate : 0.02;
-    
-    const commissionAmount = amount * commissionRate;
-    
-    const user = await User.findById(userId).session(session);
-    if (user) {
-      user.commissionBalance += commissionAmount;
-      await user.save({ session });
-      
-      await createTransaction(
-        userId,
-        commissionAmount,
-        'credit',
-        'successful',
-        `Commission earned from transaction`,
-        user.commissionBalance - commissionAmount,
-        user.commissionBalance,
-        session,
-        true,
-        'none'
-      );
-      
-      return commissionAmount;
+    const commissionRate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03; // default 3%
+
+    // 2. Clean & validate amount
+    const cleanAmount = parseFloat(amount);
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      return 0; // Nothing to commission
     }
-    
-    return 0;
+
+    const commissionAmount = cleanAmount * commissionRate;
+
+    // 3. Fetch user
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      console.warn('Commission skipped: User not found', userId);
+      return 0;
+    }
+
+    // CRITICAL FIX: Ensure commissionBalance is always a valid number
+    if (
+      user.commissionBalance === null || 
+      user.commissionBalance === undefined || 
+      typeof user.commissionBalance !== 'number' || 
+      isNaN(user.commissionBalance)
+    ) {
+      user.commissionBalance = 0;
+    }
+
+    const balanceBefore = user.commissionBalance;
+    user.commissionBalance += commissionAmount;
+
+    // Save user with session
+    await user.save({ session });
+
+    // 5. Record commission transaction
+    await createTransaction(
+      userId,
+      commissionAmount,
+      'credit',
+      'successful',
+      'Commission earned from transaction',
+      balanceBefore,
+      user.commissionBalance,
+      session,
+      true,           // isCommission = true
+      'none'          // authenticationMethod
+    );
+
+    console.log(`Commission credited: ₦${commissionAmount.toFixed(2)} → User ${userId}`);
+    return commissionAmount;
+
   } catch (error) {
-    console.error('Error calculating commission:', error);
-    return 0;
+    console.error('Error in calculateAndAddCommission:', error.message || error);
+    return 0; // Never crash the main transaction
   }
 };
-
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
   try {
