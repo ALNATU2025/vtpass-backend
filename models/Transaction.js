@@ -11,12 +11,13 @@ const transactionSchema = new mongoose.Schema({
     type: {
         type: String,
         enum: [
-            'Transfer-Sent', 'Transfer-Received',
-            'Airtime', 'Data', 'CableTV', 'CashWithdraw',
-            'FundWallet', 'wallet_funding',
-            'virtual_account_topup', 'virtual_account_deposit',
-            'credit', 'debit'
-        ],
+      'Transfer-Sent', 'Transfer-Received',
+      'Airtime', 'Data', 'CableTV', 'Electricity',
+      'airtime_purchase', 'data_purchase', 'cable_purchase', 'electricity_purchase',
+      'CashWithdraw', 'FundWallet', 'wallet_funding',
+      'virtual_account_topup', 'virtual_account_deposit',
+      'credit', 'debit'
+    ],
         required: true
     },
     amount: {
