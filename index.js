@@ -4203,22 +4203,34 @@ if (!uniqueRequestId || uniqueRequestId.trim() === '' || uniqueRequestId.length 
     }
 
     // 3. Prepare VTpass payload
-    const vtpassPayload = {
-      request_id: uniqueRequestId, // Use potentially new request_id
-      serviceID,
+       // 3. CORRECT SERVICE ID BEFORE SENDING TO VTPASS
+    const serviceIDMap = {
+      'mtn-data-data': 'mtn-data',
+      'airtel-data-data': 'airtel-data',
+      'glo-data-data': 'glo-data',
+      'etisalat-data-data': 'etisalat-data',
+      'mtn-data': 'mtn-data',
+      'airtel-data': 'airtel-data',
+      'glo-data': 'glo-data',
+      'etisalat-data': 'etisalat-data'
     };
 
-    // Add optional fields only if they exist
+    const correctServiceID = serviceIDMap[serviceID] || serviceID;
+
+    // Now build payload with CORRECT serviceID
+    const vtpassPayload = {
+      request_id: uniqueRequestId,
+      serviceID: correctServiceID,  // ← NOW FIXED FOREVER
+    };
+
     if (phone) vtpassPayload.phone = phone;
     if (variation_code) vtpassPayload.variation_code = variation_code;
     if (billersCode) vtpassPayload.billersCode = billersCode;
     if (type) vtpassPayload.type = type;
 
-    // Handle amount only for payment requests
     if (amount && parseFloat(amount) > 0) {
       vtpassPayload.amount = parseFloat(amount).toString();
-      
-      // Check balance only for payment requests
+
       if (user.walletBalance < parseFloat(amount)) {
         await session.abortTransaction();
         return res.status(400).json({ 
