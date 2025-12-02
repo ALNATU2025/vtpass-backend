@@ -813,6 +813,31 @@ const createTransaction = async (userId, amount, type, status, description, bala
   }
 };
 
+// FIX ALL BROKEN commissionBalance fields (run once!)
+app.get('/api/admin/fix-commission-balance', async (req, res) => {
+  try {
+    const result = await User.updateMany(
+      { 
+        $or: [
+          { commissionBalance: null },
+          { commissionBalance: { $type: "string" } },
+          { commissionBalance: NaN },
+          { commissionBalance: { $not: { $type: "number" } } }
+        ]
+      },
+      { $set: { commissionBalance: 0 } }
+    );
+
+    res.json({
+      success: true,
+      fixedUsers: result.modifiedCount,
+      message: 'All invalid commissionBalance values fixed to 0'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // Commission Helper Function - ADD THIS MISSING FUNCTION
 // FINAL FIXED — NEVER CRASHES, NEVER NaN
