@@ -778,13 +778,24 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 
 
 
-// Transaction Helper Function - ENHANCED VERSION
-// Enhanced Transaction Helper Function
-const createTransaction = async (userId, amount, type, status, description, balanceBefore, balanceAfter, session, isCommission = false, authenticationMethod = 'none', reference = null) => {
+// FINAL VERSION — SUPPORTS PHONE, METER, SMARTCARD IN DETAILS
+const createTransaction = async (
+  userId,
+  amount,
+  type,
+  status,
+  description,
+  balanceBefore,
+  balanceAfter,
+  session,
+  isCommission = false,
+  authenticationMethod = 'none',
+  reference = null,
+  metadata = {} // ← THIS IS THE KEY: NOW ACCEPTS PHONE NUMBER
+) => {
   try {
-    // Generate a proper transaction ID if not provided
     const transactionId = reference || uuidv4();
-    
+
     const newTransaction = new Transaction({
       transactionId: uuidv4(),
       userId,
@@ -797,18 +808,20 @@ const createTransaction = async (userId, amount, type, status, description, bala
       reference: transactionId,
       isCommission,
       authenticationMethod,
-      // Add service details for better tracking
-      service: description.includes('mtn') ? 'mtn-data' : 
-               description.includes('airtel') ? 'airtel-data' : 
-               description.includes('glo') ? 'glo-data' : 'unknown',
+      metadata: {
+        ...metadata, // ← phone, meter, smartcard goes here
+        service: description.includes('mtn') ? 'mtn-data' :
+                 description.includes('airtel') ? 'airtel-data' :
+                 description.includes('glo') ? 'glo-data' : 'unknown',
+      },
       timestamp: new Date()
     });
-    
+
     const savedTransaction = await newTransaction.save({ session });
-    console.log('✅ Transaction saved to database:', savedTransaction._id);
+    console.log('Transaction saved with phone:', savedTransaction.metadata?.phone);
     return savedTransaction;
   } catch (error) {
-    console.error('❌ Error creating transaction:', error);
+    console.error('Error creating transaction:', error);
     throw error;
   }
 };
@@ -3605,18 +3618,20 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
     
-    const newTransaction = await createTransaction(
-      userId,
-      amount,
-      'debit',
-      transactionStatus,
-      `Airtime purchase for ${phone} on ${network}`,
-      balanceBefore,
-      newBalance,
-      session,
-      false,
-      req.authenticationMethod
-    );
+  const newTransaction = await createTransaction(
+  userId,
+  amount,
+  'debit',
+  transactionStatus,
+  `Airtime purchase for ${phone} on ${network}`,
+  balanceBefore,
+  newBalance,
+  session,
+  false,
+  req.authenticationMethod,
+  null,
+  { phone: phone } // ← THIS FIXES IT
+);
     
     await session.commitTransaction();
     
@@ -3725,20 +3740,20 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       // Save transaction – appears in "Data" tab
-      await createTransaction(
-        userId,
-        amount,
-        'data_purchase',
-        'successful',
-        `${network.toUpperCase()} Data Purchase`,
-        balanceBefore,
-        user.walletBalance,
-        session,
-        false,
-        'pin',
-        requestId
-      );
-
+  await createTransaction(
+  userId,
+  amount,
+  'data_purchase',
+  'successful',
+  `${network.toUpperCase()} Data Purchase for ${phone}`,
+  balanceBefore,
+  user.walletBalance,
+  session,
+  false,
+  req.authenticationMethod || 'pin',
+  requestId,
+  { phone: phone } // ← THIS FIXES IT
+);
       // Credit commission (if enabled)
       try {
         await calculateAndAddCommission(userId, amount, session);
