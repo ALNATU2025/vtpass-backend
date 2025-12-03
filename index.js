@@ -5978,104 +5978,109 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 // @desc    Top up wallet from virtual account / PayStack webhook - FIXED & ROBUST
 // @route   POST /api/wallet/top-up
 // @access  Public (called by virtual-account-backend)
+// ==================== FINAL PRODUCTION WALLET TOP-UP ENDPOINT ====================
+// Called by virtual-account-backend webhook → 100% safe from replay attacks
 app.post('/api/wallet/top-up', async (req, res) => {
-  console.log(' MAIN BACKEND: Wallet top-up request received', req.body);
+  console.log('MAIN BACKEND: Wallet top-up request received', req.body);
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const { userId, amount, reference, source = 'paystack_funding' } = req.body;
 
-  try {
-    const { userId, amount, reference, description, source } = req.body;
-
-    if (!userId || !reference) {
-      return res.status(400).json({ success: false, message: 'userId and reference required' });
-    }
-
-    // IMPORTANT: amount comes in KOBO from PayStack webhook
-    // Convert only once
-    const amountInKobo = Number(amount);
-    const amountInNaira = amountInKobo / 100;
-
-    if (isNaN(amountInNaira) || amountInNaira <= 0) {
-      return res.status(400).json({ success: false, message: 'Invalid amount' });
-    }
-
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    // ONLY block if a SUCCESSFUL transaction with this reference already exists
-   // BLOCK REPLAY ATTACKS FROM MANUAL VALIDATION
-  const existing = await Transaction.findOne({
-    reference,
-    status: { $in: ['Successful', 'success', 'completed'] }
-  });
-  
-  if (existing) {
-    console.log(`REPLAY ATTACK BLOCKED: Reference ${reference} already used (status: ${existing.status})`);
-    return res.json({
+  if (!userId || !reference || amount === undefined) {
+    return res.status(400).json({
       success: false,
-      alreadyProcessed: true,
-      message: "This transaction was already processed automatically",
-      amount: existing.amount
+      message: 'userId, amount, and reference are required'
     });
   }
-    // Delete any previous failed/pending attempts
-    await Transaction.deleteMany({ reference, status: { $ne: 'successful' } }).session(session);
 
-    const balanceBefore = user.walletBalance;
-    user.walletBalance += amountInNaira;
-    const balanceAfter = user.walletBalance;
-    await user.save({ session });
+  const amountInKobo = Number(amount);
+  const amountInNaira = amountInKobo / 100;
 
-    await Transaction.create([{
-      userId,
-      type: 'credit',
-      amount: amountInNaira,
-      status: 'successful',
-      reference,
-      description: description || `Wallet funding - ${reference}`,
-      balanceBefore,
-      balanceAfter,
-      gateway: source || 'virtual_account',
-      metadata: { source: source || 'virtual_account_webhook' }
-    }], { session });
+  if (isNaN(amountInNaira) || amountInNaira <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid amount'
+    });
+  }
 
-    await session.commitTransaction();
+  const session = await mongoose.startSession();
 
-    console.log(` MAIN BACKEND: SUCCESS ₦${amountInNaira} credited | Ref: ${reference} | New balance: ₦${balanceAfter}`);
+  try {
+    await session.withTransaction(async () => {
+      const user = await User.findById(userId).session(session);
+      if (!user) throw new Error('User not found');
 
-    // Send notification
-    try {
-      await Notification.create({
+      // FINAL DUPLICATE PROTECTION
+      const existing = await Transaction.findOne({
+        reference,
+        status: 'successful'
+      }).session(session);
+
+      if (existing) {
+        console.log(`REPLAY ATTACK BLOCKED: ${reference} already processed`);
+        throw new Error('ALREADY_PROCESSED');
+      }
+
+      // Delete any failed/pending duplicates
+      await Transaction.deleteMany({
+        reference,
+        status: { $ne: 'successful' }
+      }).session(session);
+
+      const balanceBefore = user.walletBalance;
+      user.walletBalance += amountInNaira;
+      await user.save({ session });
+
+      await Transaction.create([{
+        userId,
+        type: 'credit',
+        amount: amountInNaira,
+        status: 'successful',
+        reference,
+        description: `Wallet funding via ${source} - Ref: ${reference}`,
+        balanceBefore,
+        balanceAfter: user.walletBalance,
+        gateway: source,
+        metadata: { source: 'webhook', processedAt: new Date() }
+      }], { session });
+
+      console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
+
+      // Notification
+      await Notification.create([{
         recipientId: userId,
-        title: "Wallet Credited 💰",
-        message: `₦${amountInNaira.toFixed(2)} deposited via virtual account. New balance: ₦${balanceAfter.toFixed(2)}`,
+        title: "Wallet Credited",
+        message: `₦${amountInNaira.toFixed(2)} added. New balance: ₦${user.walletBalance.toFixed(2)}`,
         isRead: false
-      });
-    } catch (_) {}
+      }], { session });
+    });
 
-    res.json({
+    return res.json({
       success: true,
-      newBalance: balanceAfter,
+      newBalance: null, // Flutter reads from local storage
       amount: amountInNaira,
-      message: 'Wallet topped up successfully'
+      message: 'Wallet funded successfully'
     });
 
   } catch (error) {
     await session.abortTransaction();
-    console.error(' MAIN BACKEND TOP-UP ERROR:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Top-up failed: ' + error.message 
+
+    if (error.message === 'ALREADY_PROCESSED') {
+      return res.json({
+        success: true,
+        alreadyProcessed: true,
+        message: 'Transaction already processed',
+      });
+    }
+
+    console.error('MAIN TOP-UP ERROR:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Funding failed'
     });
   } finally {
     session.endSession();
   }
 });
-
 
 
 // @desc    Find user by email
