@@ -1,4 +1,4 @@
-// models/Transaction.js — FINAL & FOREVER WORKING VERSION
+// models/Transaction.js — ULTIMATE FINAL VERSION (Recommended)
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
@@ -23,19 +23,14 @@ const transactionSchema = new mongoose.Schema({
             'Commission Credit',
             'Commission Withdrawal',
             'debit',
-            'credit',
-            // ADD THESE TO SUPPORT PROXY ENDPOINT
-            'airtime_purchase',
-            'data_purchase',
-            'cable_purchase',
-            'electricity_purchase'
+            'credit'
         ],
         required: true
     },
     amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed', 'successful', 'pending', 'failed'],
+        enum: ['Successful', 'Pending', 'Failed'],
         default: 'Pending'
     },
     transactionId: { type: String, unique: true, sparse: true },
