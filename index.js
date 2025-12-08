@@ -852,67 +852,75 @@ app.get('/api/admin/fix-commission-balance', async (req, res) => {
 });
 
 
-// Commission Helper Function - ADD THIS MISSING FUNCTION
-// FINAL FIXED — NEVER CRASHES, NEVER NaN
-const calculateAndAddCommission = async (userId, amount, session) => {
+// FINAL PERFECT COMMISSION FUNCTION — SHOWS EXACT SERVICE NAME
+const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
-    // 1. Get commission rate safely
+    // Get commission rate (default 3%)
     const settings = await Settings.findOne().session(session);
-    const commissionRate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03; // default 3%
+    const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
 
-    // 2. Clean & validate amount
     const cleanAmount = parseFloat(amount);
-    if (isNaN(cleanAmount) || cleanAmount <= 0) {
-      return 0; // Nothing to commission
-    }
+    if (isNaN(cleanAmount) || cleanAmount <= 0) return 0;
 
-    const commissionAmount = cleanAmount * commissionRate;
+    const commissionAmount = cleanAmount * rate;
+    if (commissionAmount <= 0) return 0;
 
-    // 3. Fetch user
     const user = await User.findById(userId).session(session);
     if (!user) {
-      console.warn('Commission skipped: User not found', userId);
+      console.warn('Commission skipped — user not found:', userId);
       return 0;
     }
 
-    // CRITICAL FIX: Ensure commissionBalance is always a valid number
-    if (
-      user.commissionBalance === null || 
-      user.commissionBalance === undefined || 
-      typeof user.commissionBalance !== 'number' || 
-      isNaN(user.commissionBalance)
-    ) {
+    // Fix any broken commissionBalance
+    if (typeof user.commissionBalance !== 'number' || isNaN(user.commissionBalance)) {
       user.commissionBalance = 0;
     }
 
     const balanceBefore = user.commissionBalance;
     user.commissionBalance += commissionAmount;
-
-    // Save user with session
     await user.save({ session });
 
-    // 5. Record commission transaction
+    // BEAUTIFUL, CLEAR SERVICE NAMES — THIS IS WHAT USERS WILL SEE
+    let serviceName = "Commission Credit";
+    if (serviceType) {
+      const map = {
+        airtime: "Airtime Commission Credit",
+        data: "Data Bundle Commission Credit",
+        electricity: "Electricity Commission Credit",
+        tv: "Cable TV Commission Credit",
+        cable: "Cable TV Commission Credit",
+        education: "Education Commission Credit",
+        insurance: "Insurance Commission Credit"
+      };
+      serviceName = map[serviceType.toLowerCase()] || "Commission Credit";
+    }
+
+    // Record the commission transaction — CLEAN & PROFESSIONAL
     await createTransaction(
       userId,
       commissionAmount,
-      'credit',
-      'successful',
-      'Commission earned from transaction',
+      'Commission Credit',           // Clean type (no underscore)
+      'Successful',
+      serviceName,                   // e.g. "Airtime Commission Credit"
       balanceBefore,
       user.commissionBalance,
       session,
-      true,           // isCommission = true
-      'none'          // authenticationMethod
+      true,                          // isCommission = true → shows in commission tab
+      'none',
+      null,
+      { service: serviceName.split(' ')[0] }  // optional: store "Airtime", "Data", etc.
     );
 
-    console.log(`Commission credited: ₦${commissionAmount.toFixed(2)} → User ${userId}`);
+    console.log(`Commission +₦${commissionAmount.toFixed(2)} | ${serviceName} | User ${userId}`);
     return commissionAmount;
 
   } catch (error) {
-    console.error('Error in calculateAndAddCommission:', error.message || error);
-    return 0; // Never crash the main transaction
+    console.error('Commission error (non-critical):', error.message);
+    return 0; // Never break the main purchase
   }
 };
+
+
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
   try {
@@ -3498,7 +3506,8 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      await calculateAndAddCommission(userId, amount, session);
+      aawait calculateAndAddCommission(userId, amount, session, 'tv');
+
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
       try {
@@ -3600,7 +3609,8 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      await calculateAndAddCommission(userId, amount, session);
+     await calculateAndAddCommission(userId, amount, session, 'airtime');
+
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
       try {
@@ -3756,7 +3766,7 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
 );
       // Credit commission (if enabled)
       try {
-        await calculateAndAddCommission(userId, amount, session);
+       await calculateAndAddCommission(userId, amount, session, 'data');
       } catch (commErr) {
         console.warn('Commission failed (non-critical):', commErr.message);
       }
@@ -3967,7 +3977,8 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       );
 
       // Credit commission
-      await calculateAndAddCommission(userId, amount, session);
+     
+await calculateAndAddCommission(userId, amount, session, 'electricity');
 
       await session.commitTransaction();
 
@@ -5247,7 +5258,8 @@ app.post('/api/education/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       // Credit commission
-      await calculateAndAddCommission(userId, amount, session);
+     
+await calculateAndAddCommission(userId, amount, session, 'education');
 
       // AUTO-CREATE TRANSACTION NOTIFICATION
       try {
@@ -5620,7 +5632,8 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       // Credit commission
-      await calculateAndAddCommission(userId, amount, session);
+     
+await calculateAndAddCommission(userId, amount, session, 'insurance');
 
       // Create notification
       try {
