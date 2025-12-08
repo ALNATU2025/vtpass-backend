@@ -3506,7 +3506,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      aawait calculateAndAddCommission(userId, amount, session, 'tv');
+      await calculateAndAddCommission(userId, amount, session, 'tv');
 
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
