@@ -1,4 +1,4 @@
-// models/Transaction.js — FINAL CLEAN & PROFESSIONAL VERSION
+// models/Transaction.js — FINAL & FOREVER WORKING VERSION
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
@@ -23,14 +23,19 @@ const transactionSchema = new mongoose.Schema({
             'Commission Credit',
             'Commission Withdrawal',
             'debit',
-            'credit'
+            'credit',
+            // ADD THESE TO SUPPORT PROXY ENDPOINT
+            'airtime_purchase',
+            'data_purchase',
+            'cable_purchase',
+            'electricity_purchase'
         ],
         required: true
     },
     amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed'],
+        enum: ['Successful', 'Pending', 'Failed', 'successful', 'pending', 'failed'],
         default: 'Pending'
     },
     transactionId: { type: String, unique: true, sparse: true },
@@ -39,13 +44,10 @@ const transactionSchema = new mongoose.Schema({
     balanceBefore: { type: Number, default: 0 },
     balanceAfter: { type: Number, default: 0 },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
-
-    // These fields make commission work perfectly
     isCommission: { type: Boolean, default: false, index: true },
-    service: { type: String, default: '', index: true } // e.g. "Airtime", "Data", "Electricity"
+    service: { type: String, default: '', index: true }
 }, { timestamps: true });
 
-// Auto-generate transactionId
 transactionSchema.pre('save', function(next) {
     if (!this.transactionId) {
         this.transactionId = `TXN${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
