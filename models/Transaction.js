@@ -1,4 +1,4 @@
-// models/Transaction.js — FINAL PRODUCTION VERSION
+// models/Transaction.js — FINAL CLEAN & PROFESSIONAL VERSION
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
@@ -11,76 +11,49 @@ const transactionSchema = new mongoose.Schema({
     type: {
         type: String,
         enum: [
-      'Transfer-Sent', 'Transfer-Received',
-      'Airtime', 'Data', 'CableTV', 'Electricity',
-      'airtime_purchase', 'data_purchase', 'cable_purchase', 'electricity_purchase',
-      'CashWithdraw', 'FundWallet', 'wallet_funding',
-      'virtual_account_topup', 'virtual_account_deposit',
-      'credit', 'debit'
-    ],
+            'Airtime Purchase',
+            'Data Purchase',
+            'Cable TV Subscription',
+            'Electricity Payment',
+            'Education Payment',
+            'Insurance Purchase',
+            'Wallet Funding',
+            'Transfer Sent',
+            'Transfer Received',
+            'Commission Credit',
+            'Commission Withdrawal',
+            'debit',
+            'credit'
+        ],
         required: true
     },
-    amount: {
-        type: Number,
-        required: true,
-        min: 0
-    },
+    amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed', 'Completed'],
-        default: 'Pending',
-        set: (v) => {
-            if (!v) return 'Pending';
-            const map = {
-                success: 'Successful',
-                successful: 'Successful',
-                complete: 'Completed',
-                completed: 'Completed'
-            };
-            const normalized = v.toString().trim().toLowerCase();
-            return map[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
-        }
+        enum: ['Successful', 'Pending', 'Failed'],
+        default: 'Pending'
     },
-    transactionId: {
-        type: String,
-        unique: true,
-        sparse: true,
-        default: null
-    },
-    reference: {
-        type: String,
-        unique: true,
-        sparse: true,
-        index: true
-    },
-    description: {
-        type: String,
-        default: ''
-    },
+    transactionId: { type: String, unique: true, sparse: true },
+    reference: { type: String, unique: true, sparse: true, index: true },
+    description: { type: String, required: true },
     balanceBefore: { type: Number, default: 0 },
     balanceAfter: { type: Number, default: 0 },
-    details: {
-        type: mongoose.Schema.Types.Mixed,
-        default: {}
-    },
-    gateway: { type: String, default: 'paystack' },
-    metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { 
-    timestamps: true 
-});
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+    // These fields make commission work perfectly
+    isCommission: { type: Boolean, default: false, index: true },
+    service: { type: String, default: '', index: true } // e.g. "Airtime", "Data", "Electricity"
+}, { timestamps: true });
 
 // Auto-generate transactionId
 transactionSchema.pre('save', function(next) {
-    if (!this.transactionId && this.reference) {
-        this.transactionId = this.reference;
-    }
     if (!this.transactionId) {
-        this.transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`.toUpperCase();
+        this.transactionId = `TXN${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
     }
     next();
 });
 
-// Compound index for fast reference + user lookups
-transactionSchema.index({ reference: 1, userId: 1 });
+transactionSchema.index({ userId: 1, isCommission: 1 });
+transactionSchema.index({ userId: 1, createdAt: -1 });
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
