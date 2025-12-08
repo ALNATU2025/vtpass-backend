@@ -4298,215 +4298,170 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - COMPLETELY FIXED FOR DUPLICATE TRANSACTIONS
+// @desc    VTpass Proxy Endpoint - FINAL FIXED VERSION (Dec 2025)
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('🔐 PROXY ENDPOINT HIT - ULTIMATE FIX FOR DUPLICATES');
-  console.log('📦 Received body:', JSON.stringify(req.body, null, 2));
+  console.log('PROXY ENDPOINT HIT - FINAL FIXED');
+  console.log('Body:', JSON.stringify(req.body, null, 2));
 
   const session = await mongoose.startSession();
-  
+
   try {
     await session.startTransaction();
-    
-    const { request_id, serviceID, amount, phone, variation_code, billersCode, type, environment } = req.body;
 
-    // 1. Get user
-    const user = await User.findById(req.user._id).session(session);
+    const { request_id, serviceID, amount, phone, variation_code, billersCode, type } = req.body;
+    const userId = req.user._id;
+
+    // === 1. Use client request_id (guaranteed unique) ===
+    const uniqueRequestId = request_id && request_id.length >= 10 
+      ? request_id 
+      : generateVtpassRequestId();
+
+    console.log('Using request_id:', uniqueRequestId);
+
+    // === 2. Get user ===
+    const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-  // FINAL FIX: ALWAYS USE THE CLIENT'S request_id — IT IS GUARANTEED UNIQUE
-let uniqueRequestId = request_id;
-
-// Safety fallback: if client sent empty or invalid ID
-if (!uniqueRequestId || uniqueRequestId.trim() === '' || uniqueRequestId.length < 10) {
-  uniqueRequestId = generateRequestId();
-  console.log('Client sent invalid request_id, generated new one:', uniqueRequestId);
-} else {
-  console.log('Using client-provided request_id (GUARANTEED UNIQUE):', uniqueRequestId);
-}
-    
-    // 2. Check if transaction was already SUCCESSFULLY processed
-    const existingSuccessfulTransaction = await Transaction.findOne({
-      reference: { $in: [request_id, uniqueRequestId] },
-      status: 'successful'
+    // === 3. Prevent duplicate processing ===
+    const alreadyProcessed = await Transaction.findOne({
+      reference: uniqueRequestId,
+      status: { $in: ['Successful', 'successful'] }
     }).session(session);
 
-    if (existingSuccessfulTransaction) {
+    if (alreadyProcessed) {
       await session.abortTransaction();
-      console.log('✅ Transaction already processed successfully:', existingSuccessfulTransaction.reference);
       return res.json({
         success: true,
-        message: 'Transaction already processed successfully',
         alreadyProcessed: true,
-        transactionId: existingSuccessfulTransaction._id,
+        message: 'Transaction already completed',
         newBalance: user.walletBalance
       });
     }
 
-    // 3. Prepare VTpass payload
-       // 3. CORRECT SERVICE ID BEFORE SENDING TO VTPASS
-    const serviceIDMap = {
-      'mtn-data-data': 'mtn-data',
-      'airtel-data-data': 'airtel-data',
-      'glo-data-data': 'glo-data',
-      'etisalat-data-data': 'etisalat-data',
-      'mtn-data': 'mtn-data',
-      'airtel-data': 'airtel-data',
-      'glo-data': 'glo-data',
-      'etisalat-data': 'etisalat-data'
+    // === 4. Map serviceID → correct display type (for Flutter tabs) ===
+    const typeMap = {
+      mtn: 'Airtime Purchase',
+      airtel: 'Airtime Purchase',
+      glo: 'Airtime Purchase',
+      etisalat: 'Airtime Purchase',
+      '9mobile': 'Airtime Purchase',
+      'mtn-data': 'Data Purchase',
+      'airtel-data': 'Data Purchase',
+      'glo-data': 'Data Purchase',
+      'etisalat-data': 'Data Purchase',
+      dstv: 'Cable TV Subscription',
+      gotv: 'Cable TV Subscription',
+      startimes: 'Cable TV Subscription',
+      'ikeja-electric': 'Electricity Payment',
+      'eko-electric': 'Electricity Payment',
+      'abuja-electric': 'Electricity Payment',
+      // add more as needed
     };
 
-    const correctServiceID = serviceIDMap[serviceID] || serviceID;
+    const displayType = typeMap[serviceID] || 'debit';
 
-    // Now build payload with CORRECT serviceID
-    const vtpassPayload = {
+    // === 5. Build VTpass payload ===
+    const payload = {
       request_id: uniqueRequestId,
-      serviceID: correctServiceID,  // ← NOW FIXED FOREVER
+      serviceID: serviceID.includes('data') ? serviceID : serviceID,
+      phone,
+      billersCode,
+      variation_code,
+      type
     };
 
-    if (phone) vtpassPayload.phone = phone;
-    if (variation_code) vtpassPayload.variation_code = variation_code;
-    if (billersCode) vtpassPayload.billersCode = billersCode;
-    if (type) vtpassPayload.type = type;
+    if (amount) payload.amount = parseFloat(amount).toFixed(2);
 
-    if (amount && parseFloat(amount) > 0) {
-      vtpassPayload.amount = parseFloat(amount).toString();
+    // === 6. Call VTpass ===
+    const endpoint = serviceID.includes('electric') && billersCode && !variation_code 
+      ? '/merchant-verify' 
+      : '/pay';
 
-      if (user.walletBalance < parseFloat(amount)) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          success: false, 
-          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
-        });
-      }
-    }
+    const vtpassResult = await callVtpassApi(endpoint, payload);
 
-    console.log('🚀 Calling VTpass with request_id:', uniqueRequestId);
-
-    // 4. Determine which endpoint to use
-    let vtpassEndpoint = '/pay';
-    let isValidation = false;
-    
-    if (serviceID.includes('electric') && billersCode && !variation_code) {
-      vtpassEndpoint = '/merchant-verify';
-      isValidation = true;
-    }
-
-    const vtpassResult = await callVtpassApi(vtpassEndpoint, vtpassPayload);
-
-    console.log('📦 VTpass response:', {
-      success: vtpassResult.success,
-      code: vtpassResult.data?.code,
-      message: vtpassResult.data?.response_description
-    });
-
-    // 5. Handle VTpass response
+    // === 7. SUCCESS ===
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
-      // SUCCESS - Process payment only for actual payments, not validations
-      if (vtpassEndpoint === '/pay' && amount && parseFloat(amount) > 0 && !isValidation) {
+      let newBalance = user.walletBalance;
+
+      if (amount && parseFloat(amount) > 0 && endpoint === '/pay') {
         const balanceBefore = user.walletBalance;
+
+        if (user.walletBalance < parseFloat(amount)) {
+          await session.abortTransaction();
+          return res.status(400).json({ success: false, message: 'Insufficient balance' });
+        }
+
         user.walletBalance -= parseFloat(amount);
+        newBalance = user.walletBalance;
         await user.save({ session });
 
-       // === AUTO DETECT CORRECT TYPE SO IT SHOWS IN RIGHT TAB ===
-let transactionType = 'debit';
+        // === RECORD TRANSACTION WITH VALID ENUM VALUES ===
+        await createTransaction(
+          userId,
+          parseFloat(amount),
+          displayType,           // ← CORRECT: 'Airtime Purchase', 'Data Purchase', etc.
+          'Successful',          // ← CORRECT: Matches enum
+          `${serviceID.toUpperCase()} purchase`,
+          balanceBefore,
+          newBalance,
+          session,
+          false,
+          'pin',
+          uniqueRequestId,
+          { phone, billersCode, service: serviceID }
+        );
 
-if (serviceID.includes('data') || serviceID.includes('mtn-data') || serviceID.includes('airtel-data') || serviceID.includes('glo-data') || serviceID.includes('etisalat-data')) {
-  transactionType = 'data_purchase';
-} else if (['mtn', 'airtel', 'glo', 'etisalat'].includes(serviceID)) {
-  transactionType = 'airtime_purchase';
-} else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
-  transactionType = 'cable_purchase';
-} else if (serviceID.includes('electric')) {
-  transactionType = 'electricity_purchase';
-}
-
-// Create transaction record with CORRECT type
-await createTransaction(
-  user._id,
-  parseFloat(amount),
-  transactionType,                    // ← NOW SHOWS AS AIRTIME / DATA / CABLE / ELECTRICITY
-  'successful',
-  `${serviceID.toUpperCase()} purchase for ${phone || billersCode}`,
-  balanceBefore,
-  user.walletBalance,
-  session,
-  false,
-  'pin',
-  uniqueRequestId
-);
-
-        console.log('✅ PAYMENT SUCCESS:', {
-          transactionId: vtpassResult.data.content?.transactions?.transactionId,
-          newBalance: user.walletBalance,
-          requestId: uniqueRequestId
-        });
+        // === CREDIT COMMISSION ===
+        const commMap = { mtn: 'airtime', 'mtn-data': 'data', dstv: 'tv' };
+        const commService = commMap[serviceID] || serviceID.split('-')[0];
+        await calculateAndAddCommission(userId, amount, session, commService).catch(() => {});
       }
 
       await session.commitTransaction();
 
-      res.json({
+      return res.json({
         success: true,
-        message: isValidation ? 'Validation successful' : 'Transaction successful',
-        transactionId: vtpassResult.data.content?.transactions?.transactionId,
-        newBalance: user.walletBalance,
+        message: 'Transaction successful',
+        newBalance,
         vtpassResponse: vtpassResult.data,
-        customerName: vtpassResult.data.content?.Customer_Name || vtpassResult.data.content?.customerName,
-        requestId: uniqueRequestId
-      });
-
-    } else {
-      // VTpass failed
-      await session.abortTransaction();
-      console.log('❌ VTpass failed:', vtpassResult.data);
-      
-      // Handle duplicate transaction errors
-      if (vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST') ||
-          vtpassResult.data?.response_description?.includes('DUPLICATE') ||
-          vtpassResult.data?.code === '014') {
-        
-        console.log('🔄 Duplicate detected, generating new request_id for retry');
-        
-        return res.status(400).json({
-          success: false,
-          message: 'Duplicate transaction detected. Please retry with a new request ID.',
-          code: 'DUPLICATE_TRANSACTION',
-          retryable: true,
-          requiresNewId: true,
-          originalRequestId: request_id,
-          suggestedNewId: generateRequestId()
-        });
-      }
-      
-      res.status(400).json({
-        success: false,
-        message: vtpassResult.data?.response_description || 'VTpass transaction failed',
-        vtpassResponse: vtpassResult.data,
-        code: vtpassResult.data?.code
+        requestId: uniqueRequestId,
+        customerName: vtpassResult.data.content?.Customer_Name || ''
       });
     }
 
+    // === FAILED ===
+    await session.abortTransaction();
+
+    const msg = vtpassResult.data?.response_description || 'Transaction failed';
+
+    if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate transaction',
+        code: 'DUPLICATE',
+        retryable: true
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: msg,
+      vtpassResponse: vtpassResult.data
+    });
+
   } catch (error) {
     await session.abortTransaction();
-    console.error('❌ PROXY ERROR:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Service temporarily unavailable',
-      error: error.message 
-    });
+    console.error('PROXY ERROR:', error);
+    res.status(500).json({ success: false, message: 'Service unavailable' });
   } finally {
     session.endSession();
   }
 });
-
 
 
 
