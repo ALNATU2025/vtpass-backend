@@ -852,7 +852,7 @@ app.get('/api/admin/fix-commission-balance', async (req, res) => {
 });
 
 
-// FINAL PERFECT COMMISSION FUNCTION — SHOWS EXACT SERVICE NAME
+// FINAL FIXED COMMISSION FUNCTION - USES CORRECT ENUM VALUE
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     // Get commission rate (default 3%)
@@ -880,46 +880,58 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // BEAUTIFUL, CLEAR SERVICE NAMES — THIS IS WHAT USERS WILL SEE
-    let serviceName = "Commission Credit";
+    // CLEAR SERVICE NAMES MAPPING
+    let serviceName = "Commission";
+    let displayDescription = `Commission Credit (₦${commissionAmount.toFixed(2)})`;
+    
     if (serviceType) {
       const map = {
-        airtime: "Airtime Commission Credit",
-        data: "Data Bundle Commission Credit",
-        electricity: "Electricity Commission Credit",
-        tv: "Cable TV Commission Credit",
-        cable: "Cable TV Commission Credit",
-        education: "Education Commission Credit",
-        insurance: "Insurance Commission Credit"
+        airtime: "Airtime",
+        data: "Data",
+        electricity: "Electricity",
+        tv: "Cable TV",
+        cable: "Cable TV",
+        education: "Education",
+        insurance: "Insurance"
       };
-      serviceName = map[serviceType.toLowerCase()] || "Commission Credit";
+      
+      const service = map[serviceType.toLowerCase()] || "Service";
+      serviceName = service;
+      displayDescription = `${service} Commission Credit (₦${commissionAmount.toFixed(2)})`;
     }
 
-    // Record the commission transaction — CLEAN & PROFESSIONAL
+    // CRITICAL FIX: Use 'Commission Credit' (exact enum value)
     await createTransaction(
       userId,
       commissionAmount,
-      'commission',           // FIXED: lowercase 'commission' (not 'Commission Credit')
+      'Commission Credit',           // ← THIS MUST BE 'Commission Credit' (exact enum)
       'Successful',
-      serviceName,                   // e.g. "Airtime Commission Credit"
+      displayDescription,            // e.g. "Airtime Commission Credit (₦1.50)"
       balanceBefore,
       user.commissionBalance,
       session,
-      true,                          // isCommission = true → shows in commission tab
+      true,                          // isCommission = true
       'none',
       null,
-      { service: serviceName.split(' ')[0] }  // optional: store "Airtime", "Data", etc.
+      { 
+        service: serviceName,
+        phone: null,                // No phone for commission
+        commissionAmount: commissionAmount,
+        originalAmount: cleanAmount,
+        commissionRate: rate,
+        commissionType: 'credit'
+      }
     );
 
-    console.log(`Commission +₦${commissionAmount.toFixed(2)} | ${serviceName} | User ${userId}`);
+    console.log(`✅ COMMISSION SUCCESS: +₦${commissionAmount.toFixed(2)} | ${displayDescription} | User ${userId}`);
     return commissionAmount;
 
   } catch (error) {
-    console.error('Commission error (non-critical):', error.message);
+    console.error('❌ COMMISSION ERROR:', error.message);
+    console.error('Error details:', error);
     return 0; // Never break the main purchase
   }
 };
-
 
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
