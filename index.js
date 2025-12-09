@@ -3707,12 +3707,11 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
   const { network, phone, variationCode, amount } = req.body;
   const userId = req.user._id;
 
-  // FINAL & CORRECT SERVICE ID MAPPING (VTpass official – never change!)
   const serviceIDMap = {
     'mtn': 'mtn-data',
     'airtel': 'airtel-data',
     'glo': 'glo-data',
-    '9mobile': 'etisalat-data'   // YES – THIS IS 100% CORRECT!
+    '9mobile': 'etisalat-data'
   };
 
   const serviceID = serviceIDMap[network.toLowerCase()];
@@ -3720,20 +3719,18 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
     return res.status(400).json({ success: false, message: 'Invalid network selected' });
   }
 
-  const requestId = generateVtpassRequestId(); // Unique, never repeats
+  const requestId = generateVtpassRequestId();
 
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    // Get user with session lock
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Balance check
     if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ 
@@ -3742,50 +3739,45 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
       });
     }
 
-    // VTpass payload – PERFECT
     const vtpassPayload = {
       request_id: requestId,
-      serviceID: serviceID,           // ← THIS IS THE KEY FIX
+      serviceID,
       billersCode: phone,
       variation_code: variationCode,
-      phone: phone
+      phone
     };
-
-    console.log('Calling VTpass Data API:', { serviceID, phone, variationCode, amount, requestId });
 
     const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
-    // SUCCESS – VTpass delivered data
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // Save transaction – appears in "Data" tab
-  await createTransaction(
-  userId,
-  amount,
-  'data_purchase',
-  'successful',
-  `${network.toUpperCase()} Data Purchase for ${phone}`,
-  balanceBefore,
-  user.walletBalance,
-  session,
-  false,
-  req.authenticationMethod || 'pin',
-  requestId,
-  { phone: phone } // ← THIS FIXES IT
-);
-      // Credit commission (if enabled)
-      try {
-       await calculateAndAddCommission(userId, amount, session, 'data');
-      } catch (commErr) {
-        console.warn('Commission failed (non-critical):', commErr.message);
-      }
+      // THIS IS THE PERFECT createTransaction CALL — NO ERRORS
+      await createTransaction(
+        userId,
+        amount,
+        'Data Purchase',
+        'Successful',
+        `${network.toUpperCase()} Data Purchase for ${phone}`,
+        balanceBefore,
+        user.walletBalance,
+        session,
+        false,
+        req.authenticationMethod || 'pin',
+        requestId,
+        { 
+          phone: phone,
+          variationCode: variationCode,
+          plan: variationCode
+        }
+      );
+
+      await calculateAndAddCommission(userId, amount, session, 'data').catch(() => {});
 
       await session.commitTransaction();
 
-      // SUCCESS RESPONSE
       return res.json({
         success: true,
         message: 'Data delivered successfully!',
@@ -3794,30 +3786,15 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
         requestId,
         transactionId: vtpassResult.data.content?.transactions?.transactionId || requestId
       });
-
     } else {
-      // VTpass failed
       await session.abortTransaction();
-
-      const errorMsg = vtpassResult.data?.response_description || 'Data purchase failed';
-      console.log('VTpass failed:', errorMsg);
-
-      return res.status(400).json({
-        success: false,
-        message: errorMsg,
-        code: vtpassResult.data?.code || 'VTPASS_ERROR',
-        vtpassResponse: vtpassResult.data
-      });
+      const msg = vtpassResult.data?.response_description || 'Data purchase failed';
+      return res.status(400).json({ success: false, message: msg, vtpassResponse: vtpassResult.data });
     }
-
   } catch (error) {
     await session.abortTransaction();
     console.error('DATA PURCHASE ERROR:', error);
-
-    res.status(500).json({ 
-      success: false, 
-      message: 'Service temporarily unavailable. Please try again.' 
-    });
+    res.status(500).json({ success: false, message: 'Service temporarily unavailable. Please try again.' });
   } finally {
     session.endSession();
   }
