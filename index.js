@@ -899,7 +899,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     await createTransaction(
       userId,
       commissionAmount,
-      'Commission Credit',           // Clean type (no underscore)
+      'commission',           // FIXED: lowercase 'commission' (not 'Commission Credit')
       'Successful',
       serviceName,                   // e.g. "Airtime Commission Credit"
       balanceBefore,
