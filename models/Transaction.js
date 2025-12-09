@@ -1,4 +1,3 @@
-// models/Transaction.js — ULTIMATE FINAL VERSION (DEC 2025 - FIXED & PERFECT)
 const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema({
@@ -11,7 +10,6 @@ const transactionSchema = new mongoose.Schema({
     type: {
         type: String,
         enum: [
-            // === MAIN USER TRANSACTIONS (Visible in tabs) ===
             'Airtime Purchase',
             'Data Purchase',
             'Cable TV Subscription',
@@ -21,69 +19,27 @@ const transactionSchema = new mongoose.Schema({
             'Wallet Funding',
             'Transfer Sent',
             'Transfer Received',
-
-            // === COMMISSION SYSTEM ===
-            'Commission Credit',        // ← This is the ONLY correct value!
+            'Commission Credit',
             'Commission Withdrawal',
-
-            // === LEGACY / FALLBACK (Keep for backward compatibility) ===
             'debit',
             'credit'
         ],
         required: true
     },
-    amount: {
-        type: Number,
-        required: true,
-        min: [0, 'Amount cannot be negative']
-    },
+    amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
         enum: ['Successful', 'Pending', 'Failed'],
         default: 'Pending'
     },
-    transactionId: {
-        type: String,
-        unique: true,
-        sparse: true,
-        index: true
-    },
-    reference: {
-        type: String,
-        unique: true,
-        sparse: true,
-        index: true
-    },
-    description: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    balanceBefore: {
-        type: Number,
-        default: 0,
-        min: 0
-    },
-    balanceAfter: {
-        type: Number,
-        default: 0,
-        min: 0
-    },
-    metadata: {
-        type: mongoose.Schema.Types.Mixed,
-        default: () => ({})
-    },
-    isCommission: {
-        type: Boolean,
-        default: false,
-        index: true
-    },
-    service: {
-        type: String,
-        default: '',
-        index: true,
-        trim: true
-    },
+    transactionId: { type: String, unique: true, sparse: true },
+    reference: { type: String, unique: true, sparse: true, index: true },
+    description: { type: String, required: true },
+    balanceBefore: { type: Number, default: 0 },
+    balanceAfter: { type: Number, default: 0 },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    isCommission: { type: Boolean, default: false, index: true },
+    service: { type: String, default: '', index: true },
     authenticationMethod: {
         type: String,
         enum: ['pin', 'biometric', 'none', 'paystack', 'manual'],
@@ -94,32 +50,58 @@ const transactionSchema = new mongoose.Schema({
     versionKey: false
 });
 
-// === AUTO-GENERATE transactionId ONLY IF NOT PROVIDED ===
+// Auto generate transactionId
 transactionSchema.pre('save', function(next) {
     if (!this.transactionId) {
-        // Format: TXN20251209123456_ABCD
-        const timestamp = Date.now();
-        const random = Math.random().toString(36).substr(2, 4).toUpperCase();
-        this.transactionId = `TXN${timestamp}${random}`;
+        this.transactionId = `TXN${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
     }
     next();
 });
 
-// === INDEXES FOR PERFORMANCE ===
-transactionSchema.index({ userId: 1, createdAt: -1 });           // Main transaction list
-transactionSchema.index({ userId: 1, isCommission: 1 });         // Commission tab
-transactionSchema.index({ reference: 1 });                       // VTPass/PayStack lookup
-transactionSchema.index({ status: 1, createdAt: -1 });           // Pending verifications
-transactionSchema.index({ service: 1 });                         // Filter by service
-transactionSchema.index({ type: 1 });                            // Filter by type
-
-// === VIRTUAL: Easy access to phone number from metadata ===
+// Virtual: Phone number from metadata
 transactionSchema.virtual('phoneNumber').get(function() {
     return this.metadata?.phone || this.metadata?.billersCode || null;
 });
 
-// === ENSURE JSON OUTPUT INCLUDES VIRTUALS ===
-transactionSchema.set('toJSON', { virtuals: true });
+// NIGERIA TIMEZONE (UTC+1) — FINAL FIX
+transactionSchema.virtual('nigeriaTime').get(function() {
+    if (!this.createdAt) return null;
+    return new Date(this.createdAt.getTime() + 60 * 60 * 1000); // +1 hour
+});
+
+transactionSchema.virtual('formattedNigeriaTime').get(function() {
+    return this.nigeriaTime 
+      ? this.nigeriaTime.toLocaleString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        })
+      : '';
+});
+
+// FIX: Convert createdAt to Nigeria time in ALL API responses
+transactionSchema.set('toJSON', {
+    virtuals: true,
+    transform: (doc, ret) => {
+        if (ret.createdAt) {
+            ret.createdAt = new Date(ret.createdAt.getTime() + 60 * 60 * 1000);
+        }
+        if (ret.updatedAt) {
+            ret.updatedAt = new Date(ret.updatedAt.getTime() + 60 * 60 * 1000);
+        }
+        return ret;
+    }
+});
+
 transactionSchema.set('toObject', { virtuals: true });
+
+// Indexes
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ userId: 1, isCommission: 1 });
+transactionSchema.index({ reference: 1 });
+transactionSchema.index({ status: 1, createdAt: -1 });
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
