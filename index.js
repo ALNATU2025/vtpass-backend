@@ -3882,130 +3882,89 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity – FINAL 100% WORKING (DEC 2025)
+// @desc    Purchase Electricity –
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
-  body('serviceID').notEmpty().withMessage('Service ID is required'),
-  body('meterNumber').notEmpty().withMessage('Meter number is required'),
-  body('variation_code').notEmpty().withMessage('Amount/Plan is required'),
-  body('amount').isFloat({ min: 500 }).withMessage('Minimum electricity purchase is ₦500'),
-  body('phone').isMobilePhone().withMessage('Valid phone number is required'),
-  body('type').isIn(['prepaid', 'postpaid']).withMessage('Type must be prepaid or postpaid')
+  body('serviceID').notEmpty().withMessage('Provider required'),
+  body('meterNumber').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
+  body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
+  body('amount').isFloat({ min: 500 }).withMessage('Minimum ₦500'),
+  body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
 ], async (req, res) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
 
-  const { serviceID, meterNumber, variation_code, amount, phone, type } = req.body;
+  const { serviceID, meterNumber, variation_code, amount, phone } = req.body;
   const userId = req.user._id;
-  const requestId = generateVtpassRequestId(); // Unique & accepted by VTpass
+  const requestId = generateVtpassRequestId();
 
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const user = await User.findById(userId).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
+    if (!user) throw new Error('User not found');
 
-    // Balance check
     if (user.walletBalance < amount) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient balance. Need ₦${amount}, you have ₦${user.walletBalance.toFixed(2)}`
-      });
+      throw new Error(`Insufficient balance. Need ₦${amount}, have ₦${user.walletBalance.toFixed(2)}`);
     }
 
-    // Prepare VTpass payload
     const vtpassPayload = {
       request_id: requestId,
       serviceID,
       billersCode: meterNumber,
       variation_code,
       amount: amount.toString(),
-      phone,
-      type // prepaid or postpaid
+      phone
     };
-
-    console.log('Calling VTpass Electricity API:', vtpassPayload);
 
     const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
-    // SUCCESS
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
-      const balanceAfter = user.walletBalance;
       await user.save({ session });
 
-      // Record transaction with FULL metadata (so frontend shows balance before/after)
       await createTransaction(
         userId,
         amount,
-        'electricity_purchase',           // ← Shows in correct tab
-        'successful',
-        `${serviceID.toUpperCase()} Electricity – Meter: ${meterNumber}`,
+        'Electricity Purchase',
+        'Successful',
+        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} – ${meterNumber}`,
         balanceBefore,
-        balanceAfter,
+        user.walletBalance,
         session,
         false,
         req.authenticationMethod || 'pin',
         requestId,
-        {
-          meter: meterNumber,
-          phone,
-          type,
-          token: vtpassResult.data?.content?.Token || vtpassResult.data?.purchased_code || '',
-          units: vtpassResult.data?.content?.Units || ''
-        }
+        { meterNumber, provider: serviceID, type: variation_code, phone, token: vtpassResult.data?.content?.Token || null }
       );
 
-      // Credit commission
-     
-await calculateAndAddCommission(userId, amount, session, 'electricity');
+      await calculateAndAddCommission(userId, amount, session, 'electricity');
 
       await session.commitTransaction();
 
-      // Notification
-      await Notification.create({
-        recipientId: userId,
-        title: "Electricity Purchase Successful",
-        message: `₦${amount} electricity token sent to ${phone}. New balance: ₦${balanceAfter.toFixed(2)}`,
-        isRead: false
-      });
-
+      // THIS IS THE KEY — SAME AS AIRTIME
       return res.json({
         success: true,
-        message: 'Electricity token delivered!',
-        newBalance: balanceAfter,
-        token: vtpassResult.data?.content?.Token || vtpassResult.data?.purchased_code || 'Check SMS/Email',
-        units: vtpassResult.data?.content?.Units || 'N/A',
-        requestId,
-        vtpassResponse: vtpassResult.data
+        message: 'Electricity purchased successfully!',
+        newBalance: user.walletBalance,        // ← THIS FIXES EVERYTHING
+        token: vtpassResult.data?.content?.Token || vtpassResult.data?.purchased_code || 'Check SMS',
+        vtpassResponse: vtpassResult.data,
+        requestId
       });
-
     } else {
-      // FAILED — rollback
       await session.abortTransaction();
-      const errMsg = vtpassResult.data?.response_description || 'Electricity purchase failed';
-      return res.status(400).json({
-        success: false,
-        message: errMsg,
-        code: vtpassResult.data?.code || 'VTPASS_ERROR'
-      });
+      const msg = vtpassResult.data?.response_description || 'Purchase failed';
+      return res.status(400).json({ success: false, message: msg });
     }
-
   } catch (error) {
     await session.abortTransaction();
-    console.error('ELECTRICITY PURCHASE ERROR:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Service temporarily unavailable. Please try again.'
+    console.error('ELECTRICITY ERROR:', error.message);
+    return res.status(400).json({ 
+      success: false, 
+      message: error.message.includes('Insufficient') ? error.message : 'Purchase failed' 
     });
   } finally {
     session.endSession();
