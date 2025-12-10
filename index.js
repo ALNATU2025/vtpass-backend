@@ -850,7 +850,7 @@ const createTransaction = async (
 
 
 
-// FINAL FIXED COMMISSION FUNCTION - ALL COMMISSIONS AS 'Commission Credit'
+// ENSURE THIS IS IN YOUR BACKEND - CORRECTED COMMISSION FUNCTION
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     // Get commission rate (default 3%)
@@ -878,49 +878,46 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // Create proper description with service name
-    let serviceName = "Service";
-    let displayDescription = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
+    // CRITICAL: PROPER SERVICE NAME MAPPING
+    const serviceMap = {
+      'airtime': 'Airtime',
+      'data': 'Data',
+      'tv': 'Cable TV',           // ← KEY CHANGE: Map 'tv' to 'Cable TV'
+      'cable': 'Cable TV',        // ← Also handle 'cable'
+      'electricity': 'Electricity',
+      'education': 'Education',
+      'insurance': 'Insurance'
+    };
     
-    if (serviceType) {
-      const serviceMap = {
-        airtime: "Airtime",
-        data: "Data",
-        electricity: "Electricity",
-        tv: "Cable TV",
-        cable: "Cable TV",
-        cabletv: "Cable TV",
-        education: "Education",
-        insurance: "Insurance"
-      };
-      
-      serviceName = serviceMap[serviceType.toLowerCase()] || "Service";
-      displayDescription = `${serviceName} Commission Credit (₦${commissionAmount.toFixed(2)})`;
-    }
+    const serviceName = serviceMap[serviceType.toLowerCase()] || 'Service';
+    const displayDescription = `${serviceName} Commission Credit (₦${commissionAmount.toFixed(2)})`;
 
     console.log(`🎯 Creating commission transaction: ${displayDescription}`);
+    console.log(`   Service Type: ${serviceType}`);
+    console.log(`   Service Name: ${serviceName}`);
 
-    // Create commission transaction with type 'Commission Credit'
+    // Create commission transaction with proper metadata
     await createTransaction(
       userId,
       commissionAmount,
-      'Commission Credit',           // ← TYPE MUST BE 'Commission Credit'
+      'Commission Credit',
       'Successful',
-      displayDescription,            // e.g. "Cable TV Commission Credit (₦21.00)"
+      displayDescription,
       balanceBefore,
       user.commissionBalance,
       session,
-      true,                          // isCommission = true
+      true, // isCommission = true
       'none',
       null,
       { 
-        service: serviceName,        // Store service name for frontend to detect
-        serviceID: serviceType,      // Store original service type
+        // METADATA - CRITICAL FOR FRONTEND DETECTION
+        service: serviceName,        // e.g., "Cable TV"
+        serviceID: serviceType,      // e.g., "tv", "airtime", "data"
         commissionAmount: commissionAmount,
         originalAmount: cleanAmount,
-        commissionRate: rate
-      },
-      null // additionalData (optional)
+        commissionRate: rate,
+        commissionType: 'credit'
+      }
     );
 
     console.log(`✅ COMMISSION SUCCESS: +₦${commissionAmount.toFixed(2)} | ${displayDescription} | User ${userId}`);
@@ -929,7 +926,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
   } catch (error) {
     console.error('❌ COMMISSION ERROR:', error.message);
     console.error('Error details:', error);
-    return 0; // Never break the main purchase
+    return 0;
   }
 };
 
