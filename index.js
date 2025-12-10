@@ -778,9 +778,6 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 
 
 
-
-// FINAL VERSION — SUPPORTS PHONE, METER, SMARTCARD, VARIATION_CODE IN DETAILS
-// FIXED: transactionId matches reference for VTPass/webhook tracking
 const createTransaction = async (
   userId,
   amount,
@@ -797,27 +794,27 @@ const createTransaction = async (
   additionalData = {}
 ) => {
   try {
-    // Generate transaction ID (use reference if provided, otherwise generate new)
-    const transactionId = reference || `TXN${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+    // Generate or use provided reference
+    const txReference = reference || `TXN${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
     
-    // Ensure reference exists (use transactionId if reference not provided)
-    const transactionReference = reference || transactionId;
-
-    // Combine metadata with additional service-specific data - STRUCTURED FOR NESTED SCHEMA
+    // Merge metadata - additionalData overrides metadata
     const fullMetadata = {
-      phone: metadata.phone || additionalData.phone || '',
-      smartcardNumber: metadata.smartcardNumber || additionalData.smartcardNumber || '',
-      billersCode: metadata.billersCode || additionalData.billersCode || '',
-      variation_code: metadata.variation_code || additionalData.variation_code || '',
-      packageName: metadata.packageName || additionalData.packageName || '',
-      serviceID: metadata.serviceID || additionalData.serviceID || '',
-      selectedPackage: metadata.selectedPackage || additionalData.selectedPackage || '',
-      meterNumber: metadata.meterNumber || additionalData.meterNumber || '',
-      vtpassResponse: metadata.vtpassResponse || additionalData.vtpassResponse || {}
+      // Start with metadata
+      ...metadata,
+      // Override with additionalData where it has values
+      phone: additionalData.phone || metadata.phone || '',
+      smartcardNumber: additionalData.smartcardNumber || metadata.smartcardNumber || '',
+      billersCode: additionalData.billersCode || metadata.billersCode || '',
+      variation_code: additionalData.variation_code || metadata.variation_code || '',
+      packageName: additionalData.packageName || metadata.packageName || '',
+      serviceID: additionalData.serviceID || metadata.serviceID || '',
+      selectedPackage: additionalData.selectedPackage || metadata.selectedPackage || '',
+      meterNumber: additionalData.meterNumber || metadata.meterNumber || '',
+      vtpassResponse: additionalData.vtpassResponse || metadata.vtpassResponse || {}
     };
 
     const newTransaction = new Transaction({
-      transactionId: transactionId, // ← FIXED: Use the generated transactionId
+      transactionId: txReference, // Use same as reference for consistency
       userId,
       type,
       amount,
@@ -825,7 +822,7 @@ const createTransaction = async (
       description,
       balanceBefore,
       balanceAfter,
-      reference: transactionReference, // ← FIXED: Use transactionReference
+      reference: txReference, // Single source of truth
       isCommission,
       authenticationMethod,
       metadata: fullMetadata,
@@ -834,16 +831,14 @@ const createTransaction = async (
 
     const savedTransaction = await newTransaction.save({ session });
     
-    // Enhanced logging for debugging
-    console.log('📊 TRANSACTION SAVED DETAILS:');
-    console.log('✅ Transaction ID:', savedTransaction.transactionId);
-    console.log('✅ Reference:', savedTransaction.reference);
-    console.log('✅ Type:', savedTransaction.type);
-    console.log('✅ Smartcard/BillersCode:', savedTransaction.metadata?.billersCode || savedTransaction.metadata?.smartcardNumber || 'N/A');
-    console.log('✅ Phone:', savedTransaction.metadata?.phone || 'N/A');
-    console.log('✅ Variation Code:', savedTransaction.metadata?.variation_code || 'N/A');
-    console.log('✅ Package:', savedTransaction.metadata?.packageName || 'N/A');
-    console.log('✅ Service ID:', savedTransaction.metadata?.serviceID || 'N/A');
+    // Cable TV specific logging
+    if (type === 'Cable TV Subscription') {
+      console.log('📺 CABLE TV TRANSACTION SAVED:');
+      console.log('🔢 Smartcard:', savedTransaction.metadata.billersCode);
+      console.log('📞 Phone:', savedTransaction.metadata.phone);
+      console.log('📦 Package:', savedTransaction.metadata.packageName);
+      console.log('🆔 Reference:', savedTransaction.reference);
+    }
     
     return savedTransaction;
   } catch (error) {
