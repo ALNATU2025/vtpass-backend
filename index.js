@@ -850,7 +850,7 @@ const createTransaction = async (
 
 
 
-// ENSURE THIS IS IN YOUR BACKEND - CORRECTED COMMISSION FUNCTION
+// UPDATED COMMISSION FUNCTION - FIXED FOR CABLE TV
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     // Get commission rate (default 3%)
@@ -878,19 +878,46 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // CRITICAL: PROPER SERVICE NAME MAPPING
+    // CRITICAL FIX: PROPER SERVICE NAME MAPPING WITH CORRECT DESCRIPTIONS
     const serviceMap = {
-      'airtime': 'Airtime',
-      'data': 'Data',
-      'tv': 'Cable TV',           // ← KEY CHANGE: Map 'tv' to 'Cable TV'
-      'cable': 'Cable TV',        // ← Also handle 'cable'
-      'electricity': 'Electricity',
-      'education': 'Education',
-      'insurance': 'Insurance'
+      'airtime': {
+        name: 'Airtime',
+        description: `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'data': {
+        name: 'Data',
+        description: `Data Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'tv': {
+        name: 'Cable TV',
+        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})` // ← FIXED
+      },
+      'cable': {
+        name: 'Cable TV',
+        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})` // ← FIXED
+      },
+      'electricity': {
+        name: 'Electricity',
+        description: `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'education': {
+        name: 'Education',
+        description: `Education Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'insurance': {
+        name: 'Insurance',
+        description: `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`
+      }
     };
     
-    const serviceName = serviceMap[serviceType.toLowerCase()] || 'Service';
-    const displayDescription = `${serviceName} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+    // Get service info or default
+    const serviceInfo = serviceMap[serviceType.toLowerCase()] || {
+      name: 'Service',
+      description: `Service Commission Credit (₦${commissionAmount.toFixed(2)})`
+    };
+
+    const serviceName = serviceInfo.name;
+    const displayDescription = serviceInfo.description;
 
     console.log(`🎯 Creating commission transaction: ${displayDescription}`);
     console.log(`   Service Type: ${serviceType}`);
@@ -902,7 +929,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       commissionAmount,
       'Commission Credit',
       'Successful',
-      displayDescription,
+      displayDescription, // ← THIS MUST BE THE CORRECT DESCRIPTION
       balanceBefore,
       user.commissionBalance,
       session,
