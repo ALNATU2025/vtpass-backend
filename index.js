@@ -847,33 +847,11 @@ const createTransaction = async (
   }
 };
 
-// FIX ALL BROKEN commissionBalance fields (run once!)
-app.get('/api/admin/fix-commission-balance', async (req, res) => {
-  try {
-    const result = await User.updateMany(
-      { 
-        $or: [
-          { commissionBalance: null },
-          { commissionBalance: { $type: "string" } },
-          { commissionBalance: NaN },
-          { commissionBalance: { $not: { $type: "number" } } }
-        ]
-      },
-      { $set: { commissionBalance: 0 } }
-    );
 
-    res.json({
-      success: true,
-      fixedUsers: result.modifiedCount,
-      message: 'All invalid commissionBalance values fixed to 0'
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 
 // FINAL FIXED COMMISSION FUNCTION - USES CORRECT ENUM VALUE
+// FINAL FIXED COMMISSION FUNCTION - WITH PROPER METADATA FOR FRONTEND
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     // Get commission rate (default 3%)
@@ -901,9 +879,10 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // CLEAR SERVICE NAMES MAPPING
-    let serviceName = "Commission";
-    let displayDescription = `Commission Credit (₦${commissionAmount.toFixed(2)})`;
+    // FIXED: PROPER SERVICE NAME MAPPING
+    let serviceName = "Service";
+    let serviceDescription = "Service";
+    let displayDescription = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
     
     if (serviceType) {
       const map = {
@@ -916,10 +895,14 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
         insurance: "Insurance"
       };
       
-      const service = map[serviceType.toLowerCase()] || "Service";
-      serviceName = service;
-      displayDescription = `${service} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      serviceName = map[serviceType.toLowerCase()] || "Service";
+      serviceDescription = serviceName;
+      displayDescription = `${serviceName} Commission Credit (₦${commissionAmount.toFixed(2)})`;
     }
+
+    console.log(`🎯 Creating commission transaction: ${displayDescription}`);
+    console.log(`   Service Type: ${serviceType}`);
+    console.log(`   Service Name: ${serviceName}`);
 
     // CRITICAL FIX: Use 'Commission Credit' (exact enum value)
     await createTransaction(
@@ -927,7 +910,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       commissionAmount,
       'Commission Credit',           // ← THIS MUST BE 'Commission Credit' (exact enum)
       'Successful',
-      displayDescription,            // e.g. "Airtime Commission Credit (₦1.50)"
+      displayDescription,            // e.g. "Cable TV Commission Credit (₦21.00)"
       balanceBefore,
       user.commissionBalance,
       session,
@@ -935,12 +918,17 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       'none',
       null,
       { 
-        service: serviceName,
-        phone: null,                // No phone for commission
+        service: serviceName,        // Store service name
+        phone: null,                 // No phone for commission
         commissionAmount: commissionAmount,
         originalAmount: cleanAmount,
         commissionRate: rate,
         commissionType: 'credit'
+      },
+      { // CRITICAL: ADD THIS additionalData section
+        serviceID: serviceType,      // 'tv', 'airtime', 'data', etc.
+        serviceName: serviceName,
+        description: displayDescription
       }
     );
 
