@@ -850,8 +850,7 @@ const createTransaction = async (
 
 
 
-// FINAL FIXED COMMISSION FUNCTION - USES CORRECT ENUM VALUE
-// FINAL FIXED COMMISSION FUNCTION - WITH PROPER METADATA FOR FRONTEND
+// FINAL FIXED COMMISSION FUNCTION - ALL COMMISSIONS AS 'Commission Credit'
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     // Get commission rate (default 3%)
@@ -879,36 +878,33 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // FIXED: PROPER SERVICE NAME MAPPING
+    // Create proper description with service name
     let serviceName = "Service";
-    let serviceDescription = "Service";
     let displayDescription = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
     
     if (serviceType) {
-      const map = {
+      const serviceMap = {
         airtime: "Airtime",
         data: "Data",
         electricity: "Electricity",
         tv: "Cable TV",
         cable: "Cable TV",
+        cabletv: "Cable TV",
         education: "Education",
         insurance: "Insurance"
       };
       
-      serviceName = map[serviceType.toLowerCase()] || "Service";
-      serviceDescription = serviceName;
+      serviceName = serviceMap[serviceType.toLowerCase()] || "Service";
       displayDescription = `${serviceName} Commission Credit (₦${commissionAmount.toFixed(2)})`;
     }
 
     console.log(`🎯 Creating commission transaction: ${displayDescription}`);
-    console.log(`   Service Type: ${serviceType}`);
-    console.log(`   Service Name: ${serviceName}`);
 
-    // CRITICAL FIX: Use 'Commission Credit' (exact enum value)
+    // Create commission transaction with type 'Commission Credit'
     await createTransaction(
       userId,
       commissionAmount,
-      'Commission Credit',           // ← THIS MUST BE 'Commission Credit' (exact enum)
+      'Commission Credit',           // ← TYPE MUST BE 'Commission Credit'
       'Successful',
       displayDescription,            // e.g. "Cable TV Commission Credit (₦21.00)"
       balanceBefore,
@@ -918,18 +914,13 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       'none',
       null,
       { 
-        service: serviceName,        // Store service name
-        phone: null,                 // No phone for commission
+        service: serviceName,        // Store service name for frontend to detect
+        serviceID: serviceType,      // Store original service type
         commissionAmount: commissionAmount,
         originalAmount: cleanAmount,
-        commissionRate: rate,
-        commissionType: 'credit'
+        commissionRate: rate
       },
-      { // CRITICAL: ADD THIS additionalData section
-        serviceID: serviceType,      // 'tv', 'airtime', 'data', etc.
-        serviceName: serviceName,
-        description: displayDescription
-      }
+      null // additionalData (optional)
     );
 
     console.log(`✅ COMMISSION SUCCESS: +₦${commissionAmount.toFixed(2)} | ${displayDescription} | User ${userId}`);
