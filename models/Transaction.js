@@ -1,3 +1,18 @@
+const mongoose = require('mongoose');
+
+// Nested schema for metadata to ensure type safety
+const metadataSchema = new mongoose.Schema({
+    phone: { type: String, default: '' },
+    smartcardNumber: { type: String, default: '' },
+    billersCode: { type: String, default: '' },
+    variation_code: { type: String, default: '' },
+    packageName: { type: String, default: '' },
+    serviceID: { type: String, default: '' },
+    selectedPackage: { type: String, default: '' },
+    meterNumber: { type: String, default: '' },
+    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { _id: false });
+
 const transactionSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -35,18 +50,7 @@ const transactionSchema = new mongoose.Schema({
     description: { type: String, required: true },
     balanceBefore: { type: Number, default: 0 },
     balanceAfter: { type: Number, default: 0 },
-    metadata: { 
-        type: mongoose.Schema.Types.Mixed, 
-        default: {},
-        // ADD THESE SPECIFIC FIELDS TO METADATA
-        phone: { type: String, default: '' },
-        smartcardNumber: { type: String, default: '' },
-        billersCode: { type: String, default: '' },
-        variation_code: { type: String, default: '' }, // ADD THIS
-        packageName: { type: String, default: '' }, // ADD THIS
-        serviceID: { type: String, default: '' },
-        selectedPackage: { type: String, default: '' } // ADD THIS
-    },
+    metadata: metadataSchema, // Use the nested schema for type safety
     isCommission: { type: Boolean, default: false, index: true },
     service: { type: String, default: '', index: true },
     authenticationMethod: {
@@ -58,3 +62,59 @@ const transactionSchema = new mongoose.Schema({
     timestamps: true,
     versionKey: false
 });
+
+// Auto generate transactionId
+transactionSchema.pre('save', function(next) {
+    if (!this.transactionId) {
+        this.transactionId = `TXN${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+    }
+    next();
+});
+
+// Virtual: Phone number from metadata
+transactionSchema.virtual('phoneNumber').get(function() {
+    return this.metadata?.phone || this.metadata?.billersCode || null;
+});
+
+// NIGERIA TIMEZONE (UTC+1) — FINAL FIX
+transactionSchema.virtual('nigeriaTime').get(function() {
+    if (!this.createdAt) return null;
+    return new Date(this.createdAt.getTime() + 60 * 60 * 1000); // +1 hour
+});
+
+transactionSchema.virtual('formattedNigeriaTime').get(function() {
+    return this.nigeriaTime 
+      ? this.nigeriaTime.toLocaleString('en-NG', {
+          year: 'numeric',
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        })
+      : '';
+});
+
+// FIX: Convert createdAt to Nigeria time in ALL API responses
+transactionSchema.set('toJSON', {
+    virtuals: true,
+    transform: (doc, ret) => {
+        if (ret.createdAt) {
+            ret.createdAt = new Date(ret.createdAt.getTime() + 60 * 60 * 1000);
+        }
+        if (ret.updatedAt) {
+            ret.updatedAt = new Date(ret.updatedAt.getTime() + 60 * 60 * 1000);
+        }
+        return ret;
+    }
+});
+
+transactionSchema.set('toObject', { virtuals: true });
+
+// Indexes
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ userId: 1, isCommission: 1 });
+transactionSchema.index({ reference: 1 });
+transactionSchema.index({ status: 1, createdAt: -1 });
+
+module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
