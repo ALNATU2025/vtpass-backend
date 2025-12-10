@@ -778,7 +778,9 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 
 
 
+
 // FINAL VERSION — SUPPORTS PHONE, METER, SMARTCARD, VARIATION_CODE IN DETAILS
+// FIXED: transactionId matches reference for VTPass/webhook tracking
 const createTransaction = async (
   userId,
   amount,
@@ -795,7 +797,11 @@ const createTransaction = async (
   additionalData = {}
 ) => {
   try {
-    const transactionId = reference || uuidv4();
+    // Generate transaction ID (use reference if provided, otherwise generate new)
+    const transactionId = reference || `TXN${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+    
+    // Ensure reference exists (use transactionId if reference not provided)
+    const transactionReference = reference || transactionId;
 
     // Combine metadata with additional service-specific data - STRUCTURED FOR NESTED SCHEMA
     const fullMetadata = {
@@ -811,7 +817,7 @@ const createTransaction = async (
     };
 
     const newTransaction = new Transaction({
-      transactionId: uuidv4(),
+      transactionId: transactionId, // ← FIXED: Use the generated transactionId
       userId,
       type,
       amount,
@@ -819,18 +825,26 @@ const createTransaction = async (
       description,
       balanceBefore,
       balanceAfter,
-      reference: transactionId,
+      reference: transactionReference, // ← FIXED: Use transactionReference
       isCommission,
       authenticationMethod,
-      metadata: fullMetadata, // ← PROPERLY STRUCTURED FOR NESTED SCHEMA
+      metadata: fullMetadata,
       timestamp: new Date()
     });
 
     const savedTransaction = await newTransaction.save({ session });
-    console.log('✅ Transaction saved with phone:', savedTransaction.metadata?.phone);
-    console.log('✅ Transaction saved with variation_code:', savedTransaction.metadata?.variation_code);
-    console.log('✅ Transaction saved with packageName:', savedTransaction.metadata?.packageName);
-    console.log('✅ Transaction saved with serviceID:', savedTransaction.metadata?.serviceID);
+    
+    // Enhanced logging for debugging
+    console.log('📊 TRANSACTION SAVED DETAILS:');
+    console.log('✅ Transaction ID:', savedTransaction.transactionId);
+    console.log('✅ Reference:', savedTransaction.reference);
+    console.log('✅ Type:', savedTransaction.type);
+    console.log('✅ Smartcard/BillersCode:', savedTransaction.metadata?.billersCode || savedTransaction.metadata?.smartcardNumber || 'N/A');
+    console.log('✅ Phone:', savedTransaction.metadata?.phone || 'N/A');
+    console.log('✅ Variation Code:', savedTransaction.metadata?.variation_code || 'N/A');
+    console.log('✅ Package:', savedTransaction.metadata?.packageName || 'N/A');
+    console.log('✅ Service ID:', savedTransaction.metadata?.serviceID || 'N/A');
+    
     return savedTransaction;
   } catch (error) {
     console.error('❌ Error creating transaction:', error);
@@ -3473,6 +3487,7 @@ app.post('/api/vtpass/validate-smartcard', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
