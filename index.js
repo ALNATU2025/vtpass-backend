@@ -850,22 +850,30 @@ const createTransaction = async (
 
 
 
-// UPDATED COMMISSION FUNCTION - FIXED FOR CABLE TV
+// UPDATED COMMISSION FUNCTION - FIXED FOR ALL SERVICES
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
+    console.log(`💰 CALCULATING COMMISSION: ServiceType=${serviceType}, Amount=${amount}`);
+    
     // Get commission rate (default 3%)
     const settings = await Settings.findOne().session(session);
     const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
 
     const cleanAmount = parseFloat(amount);
-    if (isNaN(cleanAmount) || cleanAmount <= 0) return 0;
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      console.log('⚠️ Commission skipped — invalid amount');
+      return 0;
+    }
 
     const commissionAmount = cleanAmount * rate;
-    if (commissionAmount <= 0) return 0;
+    if (commissionAmount <= 0) {
+      console.log('⚠️ Commission skipped — zero commission');
+      return 0;
+    }
 
     const user = await User.findById(userId).session(session);
     if (!user) {
-      console.warn('Commission skipped — user not found:', userId);
+      console.warn('⚠️ Commission skipped — user not found:', userId);
       return 0;
     }
 
@@ -878,43 +886,82 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // CRITICAL FIX: PROPER SERVICE NAME MAPPING WITH CORRECT DESCRIPTIONS
+    // 🔥 UPDATED SERVICE MAPPING - FIXED FOR ELECTRICITY
     const serviceMap = {
       'airtime': {
         name: 'Airtime',
+        displayName: 'Airtime Purchase',
         description: `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'data': {
         name: 'Data',
+        displayName: 'Data Purchase',
         description: `Data Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'tv': {
         name: 'Cable TV',
-        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})` // ← FIXED
+        displayName: 'Cable TV Subscription',
+        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'cable': {
         name: 'Cable TV',
-        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})` // ← FIXED
+        displayName: 'Cable TV Subscription',
+        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'cabletv': {
+        name: 'Cable TV',
+        displayName: 'Cable TV Subscription',
+        description: `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'electricity': {
         name: 'Electricity',
+        displayName: 'Electricity Payment',
+        description: `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`
+      },
+      'Electricity Payment': {
+        name: 'Electricity',
+        displayName: 'Electricity Payment',
         description: `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'education': {
         name: 'Education',
+        displayName: 'Education Payment',
         description: `Education Commission Credit (₦${commissionAmount.toFixed(2)})`
       },
       'insurance': {
         name: 'Insurance',
+        displayName: 'Insurance Purchase',
         description: `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`
       }
     };
     
+    // Normalize service type
+    const normalizedType = serviceType.toLowerCase().trim();
+    console.log(`📊 Normalized service type: ${normalizedType} (from: ${serviceType})`);
+    
     // Get service info or default
-    const serviceInfo = serviceMap[serviceType.toLowerCase()] || {
-      name: 'Service',
-      description: `Service Commission Credit (₦${commissionAmount.toFixed(2)})`
-    };
+    let serviceInfo = serviceMap[normalizedType];
+    
+    if (!serviceInfo) {
+      // Try to find by partial match
+      for (const key in serviceMap) {
+        if (normalizedType.includes(key) || key.includes(normalizedType)) {
+          serviceInfo = serviceMap[key];
+          console.log(`🔄 Found partial match: ${key}`);
+          break;
+        }
+      }
+    }
+    
+    // Default fallback
+    if (!serviceInfo) {
+      console.log(`⚠️ Service type "${serviceType}" not found in mapping, using default`);
+      serviceInfo = {
+        name: 'Service',
+        displayName: serviceType,
+        description: `${serviceType} Commission Credit (₦${commissionAmount.toFixed(2)})`
+      };
+    }
 
     const serviceName = serviceInfo.name;
     const displayDescription = serviceInfo.description;
@@ -922,6 +969,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     console.log(`🎯 Creating commission transaction: ${displayDescription}`);
     console.log(`   Service Type: ${serviceType}`);
     console.log(`   Service Name: ${serviceName}`);
+    console.log(`   Commission Amount: ₦${commissionAmount.toFixed(2)}`);
 
     // Create commission transaction with proper metadata
     await createTransaction(
@@ -929,7 +977,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       commissionAmount,
       'Commission Credit',
       'Successful',
-      displayDescription, // ← THIS MUST BE THE CORRECT DESCRIPTION
+      displayDescription,
       balanceBefore,
       user.commissionBalance,
       session,
@@ -938,12 +986,14 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       null,
       { 
         // METADATA - CRITICAL FOR FRONTEND DETECTION
-        service: serviceName,        // e.g., "Cable TV"
-        serviceID: serviceType,      // e.g., "tv", "airtime", "data"
+        service: serviceName,
+        serviceID: normalizedType,
+        originalServiceType: serviceType,
         commissionAmount: commissionAmount,
         originalAmount: cleanAmount,
         commissionRate: rate,
-        commissionType: 'credit'
+        commissionType: 'credit',
+        commissionSource: serviceInfo.displayName // 🔥 ADDED for frontend
       }
     );
 
@@ -956,6 +1006,8 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     return 0;
   }
 };
+
+
 
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
@@ -3979,14 +4031,14 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity – FIXED VERSION
+// @desc    Purchase Electricity – COMPLETELY FIXED VERSION
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
   body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
-  body('amount').isFloat({ min: 500 }).withMessage('Minimum ₦500'),
+  body('amount').isFloat({ min: 1000 }).withMessage('Minimum ₦1000'), // 🔥 CHANGED TO ₦1000
   body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -4004,7 +4056,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     if (!user) throw new Error('User not found');
 
     if (user.walletBalance < amount) {
-      throw new Error(`Insufficient balance. Need ₦${amount}, have ₦${user.walletBalance.toFixed(2)}`);
+      throw new Error(`Insufficient balance. Need ₦${amount.toFixed(2)}, have ₦${user.walletBalance.toFixed(2)}`);
     }
 
     const vtpassPayload = {
@@ -4012,7 +4064,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       serviceID,
       billersCode,
       variation_code,
-      amount: amount.toString(),
+      amount: amount.toFixed(2),
       phone
     };
 
@@ -4032,13 +4084,20 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // 🔥 FIXED: Changed from 'debit' to 'Electricity Payment'
+      // 🔥 FIXED: Extract all data from VTpass response
+      const content = vtpassResult.data.content || {};
+      const token = content.purchased_code || content.Token || content.token || 'Check SMS';
+      const customerName = content.customerName || content.Customer_Name || 'N/A';
+      const customerAddress = content.customerAddress || content.Address || 'N/A';
+      const exchangeReference = content.exchangeReference || content.reference || requestId;
+
+      // 🔥 FIXED: Using correct transaction type
       await createTransaction(
         userId,
         amount,
-        'Electricity Payment',  // 🔥 CORRECTED TRANSACTION TYPE
+        'Electricity Payment',  // ✅ CORRECT TRANSACTION TYPE
         'Successful',
-        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} – ${billersCode}`,
+        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
         balanceBefore,
         user.walletBalance,
         session,
@@ -4050,17 +4109,15 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
           provider: serviceID, 
           type: variation_code, 
           phone, 
-          token: vtpassResult.data?.content?.purchased_code || 
-                 vtpassResult.data?.content?.Token || 
-                 vtpassResult.data?.purchased_code || 
-                 'Check SMS',
-          customerName: vtpassResult.data?.content?.customerName || 'N/A',
-          customerAddress: vtpassResult.data?.content?.customerAddress || 'N/A',
-          exchangeReference: vtpassResult.data?.content?.exchangeReference || 'N/A'
+          token: token,
+          customerName: customerName,
+          customerAddress: customerAddress,
+          exchangeReference: exchangeReference,
+          vtpassResponse: vtpassResult.data // Include full response
         }
       );
 
-      // 🔥 FIXED: Changed 'electricity' to 'Electricity Payment'
+      // 🔥 FIXED: Passing correct service type for commission
       await calculateAndAddCommission(userId, amount, session, 'Electricity Payment');
 
       await session.commitTransaction();
@@ -4072,23 +4129,37 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
 
+      // Generate a transaction ID
+      const transactionId = `ELEC${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+
+      console.log('✅ ELECTRICITY PURCHASE SUCCESS:', {
+        transactionId,
+        reference: requestId,
+        amount,
+        token,
+        newBalance: user.walletBalance
+      });
+
       return res.json({
         success: true,
         message: 'Electricity purchased successfully!',
         newBalance: user.walletBalance,
-        transactionId: `ELEC${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`,
+        transactionId: transactionId,
         reference: requestId,
-        token: vtpassResult.data?.content?.purchased_code || 
-               vtpassResult.data?.content?.Token || 
-               vtpassResult.data?.purchased_code || 
-               'Check SMS',
+        token: token,
         vtpassResponse: {
           ...vtpassResult.data,
-          providerName: providerName,
+          response_description: vtpassResult.data.response_description || 'TRANSACTION SUCCESSFUL',
+          requestId: requestId,
+          amount: amount.toFixed(2),
+          transaction_date: new Date().toISOString(),
+          purchased_code: token,
+          customerName: customerName,
+          customerAddress: customerAddress,
           meterNumber: billersCode,
-          amount: amount,
-          transactionDate: new Date().toISOString(),
-          description: `${providerName} ELECTRICITY ${variation_code.toUpperCase()}`
+          exchangeReference: exchangeReference,
+          gateway: 'DalaBaPay App',
+          description: `${providerName.toUpperCase()} ELECTRICITY ${variation_code.toUpperCase()}`
         }
       });
     } else {
@@ -4097,7 +4168,9 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       // 🔥 IMPROVED: Better error message for minimum amount
       let errorMsg = vtpassResult.data?.response_description || 'Purchase failed';
       if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
-        errorMsg = `Amount too low. ${errorMsg}. Minimum is usually ₦1000 for electricity.`;
+        errorMsg = `Amount below minimum allowed. Please increase the amount (minimum ₦1000 for electricity).`;
+      } else if (errorMsg.includes('013')) {
+        errorMsg = `Insufficient amount. Please enter at least ₦1000.`;
       }
       
       return res.status(400).json({ 
@@ -4113,7 +4186,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     // 🔥 IMPROVED: Better error handling
     let errorMessage = error.message;
     if (errorMessage.includes('BELOW MINIMUM AMOUNT')) {
-      errorMessage = `Amount too low. Minimum is usually ₦1000 for electricity payments.`;
+      errorMessage = `Amount too low. Minimum is ₦1000 for electricity payments.`;
     }
     
     return res.status(400).json({ 
@@ -4124,6 +4197,8 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
+
+
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
 // @access  Private
