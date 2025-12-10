@@ -3979,12 +3979,12 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity –
+// @desc    Purchase Electricity – FIXED VERSION
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
-  body('meterNumber').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
+  body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
   body('amount').isFloat({ min: 500 }).withMessage('Minimum ₦500'),
   body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
@@ -3992,7 +3992,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
 
-  const { serviceID, meterNumber, variation_code, amount, phone } = req.body;
+  const { serviceID, billersCode, variation_code, amount, phone } = req.body;
   const userId = req.user._id;
   const requestId = generateVtpassRequestId();
 
@@ -4010,58 +4010,115 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     const vtpassPayload = {
       request_id: requestId,
       serviceID,
-      billersCode: meterNumber,
+      billersCode,
       variation_code,
       amount: amount.toString(),
       phone
     };
 
+    console.log('🔌 ELECTRICITY PURCHASE REQUEST:', vtpassPayload);
+    
     const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    console.log('📦 VTpass Electricity Purchase Response:', {
+      success: vtpassResult.success,
+      code: vtpassResult.data?.code,
+      message: vtpassResult.data?.response_description,
+      content: vtpassResult.data?.content
+    });
 
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
       await user.save({ session });
 
+      // 🔥 FIXED: Changed from 'debit' to 'Electricity Payment'
       await createTransaction(
         userId,
         amount,
-        'Electricity Purchase',
+        'Electricity Payment',  // 🔥 CORRECTED TRANSACTION TYPE
         'Successful',
-        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} – ${meterNumber}`,
+        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} – ${billersCode}`,
         balanceBefore,
         user.walletBalance,
         session,
         false,
         req.authenticationMethod || 'pin',
         requestId,
-        { meterNumber, provider: serviceID, type: variation_code, phone, token: vtpassResult.data?.content?.Token || null }
+        { 
+          meterNumber: billersCode, 
+          provider: serviceID, 
+          type: variation_code, 
+          phone, 
+          token: vtpassResult.data?.content?.purchased_code || 
+                 vtpassResult.data?.content?.Token || 
+                 vtpassResult.data?.purchased_code || 
+                 'Check SMS',
+          customerName: vtpassResult.data?.content?.customerName || 'N/A',
+          customerAddress: vtpassResult.data?.content?.customerAddress || 'N/A',
+          exchangeReference: vtpassResult.data?.content?.exchangeReference || 'N/A'
+        }
       );
 
-      await calculateAndAddCommission(userId, amount, session, 'electricity');
+      // 🔥 FIXED: Changed 'electricity' to 'Electricity Payment'
+      await calculateAndAddCommission(userId, amount, session, 'Electricity Payment');
 
       await session.commitTransaction();
 
-      // THIS IS THE KEY — SAME AS AIRTIME
+      // Format provider name nicely
+      const providerName = serviceID
+        .replace('-electric', '')
+        .split('-')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+
       return res.json({
         success: true,
         message: 'Electricity purchased successfully!',
-        newBalance: user.walletBalance,        // ← THIS FIXES EVERYTHING
-        token: vtpassResult.data?.content?.Token || vtpassResult.data?.purchased_code || 'Check SMS',
-        vtpassResponse: vtpassResult.data,
-        requestId
+        newBalance: user.walletBalance,
+        transactionId: `ELEC${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`,
+        reference: requestId,
+        token: vtpassResult.data?.content?.purchased_code || 
+               vtpassResult.data?.content?.Token || 
+               vtpassResult.data?.purchased_code || 
+               'Check SMS',
+        vtpassResponse: {
+          ...vtpassResult.data,
+          providerName: providerName,
+          meterNumber: billersCode,
+          amount: amount,
+          transactionDate: new Date().toISOString(),
+          description: `${providerName} ELECTRICITY ${variation_code.toUpperCase()}`
+        }
       });
     } else {
       await session.abortTransaction();
-      const msg = vtpassResult.data?.response_description || 'Purchase failed';
-      return res.status(400).json({ success: false, message: msg });
+      
+      // 🔥 IMPROVED: Better error message for minimum amount
+      let errorMsg = vtpassResult.data?.response_description || 'Purchase failed';
+      if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
+        errorMsg = `Amount too low. ${errorMsg}. Minimum is usually ₦1000 for electricity.`;
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        message: errorMsg,
+        vtpassResponse: vtpassResult.data 
+      });
     }
   } catch (error) {
     await session.abortTransaction();
-    console.error('ELECTRICITY ERROR:', error.message);
+    console.error('💥 ELECTRICITY PURCHASE ERROR:', error.message);
+    
+    // 🔥 IMPROVED: Better error handling
+    let errorMessage = error.message;
+    if (errorMessage.includes('BELOW MINIMUM AMOUNT')) {
+      errorMessage = `Amount too low. Minimum is usually ₦1000 for electricity payments.`;
+    }
+    
     return res.status(400).json({ 
       success: false, 
-      message: error.message.includes('Insufficient') ? error.message : 'Purchase failed' 
+      message: errorMessage.includes('Insufficient') ? errorMessage : errorMessage 
     });
   } finally {
     session.endSession();
