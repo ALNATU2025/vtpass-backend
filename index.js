@@ -3927,15 +3927,24 @@ app.post('/api/vtpass/validate-electricity', protect, [
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
       const content = vtpassResult.data.content;
       
-      res.json({
+      // 🔥 FIXED: Properly extract and format all data from VTpass response
+      const responseData = {
         success: true,
         message: 'Meter validated successfully',
-        customerName: content.Customer_Name || 'N/A',
-        address: content.Address || 'N/A',
-        meterNumber: content.Meter_Number || billersCode,
+        customerName: content.Customer_Name ? content.Customer_Name.trim() : 'N/A',
+        address: content.Address ? content.Address.trim() : 'N/A',
+        meterNumber: content.Meter_Number || content.MeterNumber || billersCode,
+        meterType: content.Meter_Type || type || 'N/A',
+        customerAccountType: content.Customer_Account_Type || 'N/A',
+        service: content.Service || serviceID,
         businessUnit: content.Business_Unit || 'N/A',
-        details: content
-      });
+        details: content,
+        vtpassResponse: vtpassResult.data // Include full VTpass response
+      };
+      
+      console.log('✅ FORMATTED RESPONSE:', responseData);
+      
+      res.json(responseData);
     } else {
       // Enhanced error handling
       let errorMessage = 'Meter validation failed';
