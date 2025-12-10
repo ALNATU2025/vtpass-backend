@@ -778,7 +778,7 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
 
 
 
-// FINAL VERSION — SUPPORTS PHONE, METER, SMARTCARD IN DETAILS
+// FINAL VERSION — SUPPORTS PHONE, METER, SMARTCARD, VARIATION_CODE IN DETAILS
 const createTransaction = async (
   userId,
   amount,
@@ -791,10 +791,25 @@ const createTransaction = async (
   isCommission = false,
   authenticationMethod = 'none',
   reference = null,
-  metadata = {} // ← THIS IS THE KEY: NOW ACCEPTS PHONE NUMBER
+  metadata = {}, // ← THIS IS THE KEY: NOW ACCEPTS ALL METADATA INCLUDING VARIATION_CODE
+  additionalData = {} // ← ADD THIS FOR SERVICE-SPECIFIC DATA
 ) => {
   try {
     const transactionId = reference || uuidv4();
+
+    // Combine metadata with additional service-specific data
+    const fullMetadata = {
+      ...metadata,
+      ...additionalData, // This should include variation_code, packageName, etc.
+      service: description.includes('mtn') ? 'mtn-data' :
+               description.includes('airtel') ? 'airtel-data' :
+               description.includes('glo') ? 'glo-data' :
+               description.includes('dstv') ? 'dstv-tv' :
+               description.includes('gotv') ? 'gotv-tv' :
+               description.includes('startimes') ? 'startimes-tv' :
+               description.includes('electricity') ? 'electricity' :
+               'unknown',
+    };
 
     const newTransaction = new Transaction({
       transactionId: uuidv4(),
@@ -808,17 +823,14 @@ const createTransaction = async (
       reference: transactionId,
       isCommission,
       authenticationMethod,
-      metadata: {
-        ...metadata, // ← phone, meter, smartcard goes here
-        service: description.includes('mtn') ? 'mtn-data' :
-                 description.includes('airtel') ? 'airtel-data' :
-                 description.includes('glo') ? 'glo-data' : 'unknown',
-      },
+      metadata: fullMetadata, // ← USE THE COMBINED METADATA
       timestamp: new Date()
     });
 
     const savedTransaction = await newTransaction.save({ session });
     console.log('Transaction saved with phone:', savedTransaction.metadata?.phone);
+    console.log('Transaction saved with variation_code:', savedTransaction.metadata?.variation_code);
+    console.log('Transaction saved with packageName:', savedTransaction.metadata?.packageName);
     return savedTransaction;
   } catch (error) {
     console.error('Error creating transaction:', error);
@@ -3537,17 +3549,33 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       return res.status(vtpassResult.status || 400).json(vtpassResult);
     }
     
+    // Map variation code to package name
+    const packageName = getPackageNameFromVariationCode(variationCode, serviceID);
+    
+    // CREATE TRANSACTION WITH VARIATION_CODE IN METADATA
     const newTransaction = await createTransaction(
       userId,
       amount,
-      'debit',
+      'Cable TV Subscription', // Changed from 'debit' to 'Cable TV Subscription'
       transactionStatus,
-      `${serviceID} TV Subscription for ${billersCode}`,
+      `${serviceID.toUpperCase()} subscription for ${billersCode}`, // Better description
       balanceBefore,
       newBalance,
       session,
       false,
-      req.authenticationMethod
+      req.authenticationMethod,
+      reference,
+      {}, // Empty metadata object
+      { // ADD THIS: Service-specific data in additionalData
+        phone: phone,
+        smartcardNumber: billersCode,
+        billersCode: billersCode,
+        variation_code: variationCode, // ← THIS IS CRITICAL
+        packageName: packageName, // ← THIS IS CRITICAL
+        selectedPackage: variationCode, // ← THIS IS CRITICAL
+        serviceID: serviceID,
+        vtpassResponse: vtpassResult.data // Save the full VTPass response
+      }
     );
     
     await session.commitTransaction();
@@ -3558,6 +3586,8 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       transactionId: newTransaction._id,
       newBalance: newBalance,
       status: newTransaction.status,
+      variation_code: variationCode, // Return it in response
+      packageName: packageName // Return it in response
     });
   } catch (error) {
     await session.abortTransaction();
@@ -3567,6 +3597,51 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
+
+// Helper function to map variation code to package name
+function getPackageNameFromVariationCode(variationCode, serviceID) {
+  const packageMappings = {
+    'dstv': {
+      'dstv-padi': 'DStv Padi',
+      'dstv-yanga': 'DStv Yanga', 
+      'dstv-confam': 'DStv Confam',
+      'dstv-compact': 'DStv Compact',
+      'dstv-compact-plus': 'DStv Compact Plus',
+      'dstv-premium': 'DStv Premium'
+    },
+    'gotv': {
+      'gotv-smallie': 'GOtv Smallie',
+      'gotv-jinja': 'GOtv Jinja',
+      'gotv-max': 'GOtv Max'
+    },
+    'startimes': {
+      'nova': 'StarTimes Nova',
+      'nova-dish-weekly': 'StarTimes Nova Dish Weekly',
+      'basic': 'StarTimes Basic',
+      'classic': 'StarTimes Classic'
+    }
+  };
+  
+  // First try exact match
+  if (packageMappings[serviceID] && packageMappings[serviceID][variationCode]) {
+    return packageMappings[serviceID][variationCode];
+  }
+  
+  // Try partial match
+  for (const [key, value] of Object.entries(packageMappings[serviceID] || {})) {
+    if (variationCode.includes(key) || key.includes(variationCode)) {
+      return value;
+    }
+  }
+  
+  // Fallback: format the variation code nicely
+  return variationCode
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
@@ -4856,7 +4931,7 @@ app.post('/api/cable/validate-smartcard', protect, [
 
 
 
-// Add this to your index.js backend file
+
 
 // @desc    Get education service variations with VTpass fallback
 // @route   GET /api/education/variations
