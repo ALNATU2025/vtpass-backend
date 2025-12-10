@@ -791,24 +791,23 @@ const createTransaction = async (
   isCommission = false,
   authenticationMethod = 'none',
   reference = null,
-  metadata = {}, // ← THIS IS THE KEY: NOW ACCEPTS ALL METADATA INCLUDING VARIATION_CODE
-  additionalData = {} // ← ADD THIS FOR SERVICE-SPECIFIC DATA
+  metadata = {},
+  additionalData = {}
 ) => {
   try {
     const transactionId = reference || uuidv4();
 
-    // Combine metadata with additional service-specific data
+    // Combine metadata with additional service-specific data - STRUCTURED FOR NESTED SCHEMA
     const fullMetadata = {
-      ...metadata,
-      ...additionalData, // This should include variation_code, packageName, etc.
-      service: description.includes('mtn') ? 'mtn-data' :
-               description.includes('airtel') ? 'airtel-data' :
-               description.includes('glo') ? 'glo-data' :
-               description.includes('dstv') ? 'dstv-tv' :
-               description.includes('gotv') ? 'gotv-tv' :
-               description.includes('startimes') ? 'startimes-tv' :
-               description.includes('electricity') ? 'electricity' :
-               'unknown',
+      phone: metadata.phone || additionalData.phone || '',
+      smartcardNumber: metadata.smartcardNumber || additionalData.smartcardNumber || '',
+      billersCode: metadata.billersCode || additionalData.billersCode || '',
+      variation_code: metadata.variation_code || additionalData.variation_code || '',
+      packageName: metadata.packageName || additionalData.packageName || '',
+      serviceID: metadata.serviceID || additionalData.serviceID || '',
+      selectedPackage: metadata.selectedPackage || additionalData.selectedPackage || '',
+      meterNumber: metadata.meterNumber || additionalData.meterNumber || '',
+      vtpassResponse: metadata.vtpassResponse || additionalData.vtpassResponse || {}
     };
 
     const newTransaction = new Transaction({
@@ -823,17 +822,18 @@ const createTransaction = async (
       reference: transactionId,
       isCommission,
       authenticationMethod,
-      metadata: fullMetadata, // ← USE THE COMBINED METADATA
+      metadata: fullMetadata, // ← PROPERLY STRUCTURED FOR NESTED SCHEMA
       timestamp: new Date()
     });
 
     const savedTransaction = await newTransaction.save({ session });
-    console.log('Transaction saved with phone:', savedTransaction.metadata?.phone);
-    console.log('Transaction saved with variation_code:', savedTransaction.metadata?.variation_code);
-    console.log('Transaction saved with packageName:', savedTransaction.metadata?.packageName);
+    console.log('✅ Transaction saved with phone:', savedTransaction.metadata?.phone);
+    console.log('✅ Transaction saved with variation_code:', savedTransaction.metadata?.variation_code);
+    console.log('✅ Transaction saved with packageName:', savedTransaction.metadata?.packageName);
+    console.log('✅ Transaction saved with serviceID:', savedTransaction.metadata?.serviceID);
     return savedTransaction;
   } catch (error) {
-    console.error('Error creating transaction:', error);
+    console.error('❌ Error creating transaction:', error);
     throw error;
   }
 };
@@ -3487,8 +3487,8 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  console.log('Received TV purchase request.');
-  console.log('Request Body:', req.body);
+  console.log('📺 Received TV purchase request.');
+  console.log('📦 Request Body:', req.body);
   
   const { serviceID, billersCode, variationCode, amount, phone } = req.body;
   const userId = req.user._id;
@@ -3518,7 +3518,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
       request_id: reference,
     });
     
-    console.log('VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
+    console.log('📡 VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
     
     const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
@@ -3556,25 +3556,25 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
     const newTransaction = await createTransaction(
       userId,
       amount,
-      'Cable TV Subscription', // Changed from 'debit' to 'Cable TV Subscription'
+      'Cable TV Subscription',
       transactionStatus,
-      `${serviceID.toUpperCase()} subscription for ${billersCode}`, // Better description
+      `${serviceID.toUpperCase()} subscription for ${billersCode}`,
       balanceBefore,
       newBalance,
       session,
       false,
       req.authenticationMethod,
       reference,
-      {}, // Empty metadata object
-      { // ADD THIS: Service-specific data in additionalData
+      {}, // Empty metadata object (we'll use additionalData)
+      { // Service-specific data in additionalData
         phone: phone,
         smartcardNumber: billersCode,
         billersCode: billersCode,
-        variation_code: variationCode, // ← THIS IS CRITICAL
-        packageName: packageName, // ← THIS IS CRITICAL
-        selectedPackage: variationCode, // ← THIS IS CRITICAL
+        variation_code: variationCode,
+        packageName: packageName,
+        selectedPackage: variationCode,
         serviceID: serviceID,
-        vtpassResponse: vtpassResult.data // Save the full VTPass response
+        vtpassResponse: vtpassResult.data
       }
     );
     
@@ -3582,16 +3582,16 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
     
     res.json({
       success: true,
-      message: `Payment request received. Status: ${newTransaction.status}.`,
+      message: `TV subscription successful!`,
       transactionId: newTransaction._id,
       newBalance: newBalance,
       status: newTransaction.status,
-      variation_code: variationCode, // Return it in response
-      packageName: packageName // Return it in response
+      variation_code: variationCode,
+      packageName: packageName
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Error in TV payment:', error);
+    console.error('❌ Error in TV payment:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
