@@ -875,7 +875,6 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    // FINAL MAPPING — GUARANTEED TO MATCH YOUR FLUTTER LOGIC
     const lowerType = (serviceType || '').toString().toLowerCase().trim();
 
     let serviceName = 'Service';
@@ -883,7 +882,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
 
     if (lowerType.includes('electric')) {
       serviceName = 'Electricity';
-      displayDescription = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      displayDescription = `Electricity Commission Credit (₦${commissionAmount.toFixed(2()})`;
     }
     else if (lowerType.includes('airtime')) {
       serviceName = 'Airtime';
@@ -913,7 +912,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       commissionAmount,
       'Commission Credit',
       'Successful',
-      displayDescription,  // This is what Flutter reads
+      displayDescription,
       balanceBefore,
       user.commissionBalance,
       session,
@@ -923,7 +922,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       {
         service: serviceName,
         originalServiceType: serviceType,
-        commissionSource: serviceName  // This feeds your _getCommissionSource perfectly
+        commissionSource: serviceName
       }
     );
 
@@ -935,7 +934,6 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     return 0;
   }
 };
-
 
 
 // Helper function to log authentication attempts
