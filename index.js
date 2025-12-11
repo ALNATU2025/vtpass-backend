@@ -4031,7 +4031,8 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       );
 
       // 🔥 FIXED: Passing correct service type for commission
-      await calculateAndAddCommission(userId, amount, session, 'Electricity Payment');
+    // 🔥 FIXED: Passing correct service type for commission
+await calculateAndAddCommission(userId, amount, session, 'electricity');
 
       await session.commitTransaction();
 
