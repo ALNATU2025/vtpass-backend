@@ -10,8 +10,18 @@ const metadataSchema = new mongoose.Schema({
     serviceID: { type: String, default: '' },
     selectedPackage: { type: String, default: '' },
     meterNumber: { type: String, default: '' },
+
+    // 🚀 NEW FIELDS (important!)
+    provider: { type: String, default: '' },
+    type: { type: String, default: '' },
+    token: { type: String, default: '' },
+    customerName: { type: String, default: '' },
+    customerAddress: { type: String, default: '' },
+    exchangeReference: { type: String, default: '' },
+
     vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { _id: false });
+
 
 const transactionSchema = new mongoose.Schema({
     userId: {
