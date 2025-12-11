@@ -850,7 +850,7 @@ const createTransaction = async (
 
 
 
-// FINAL FOREVER SOLUTION — WORKS FOR ELECTRICITY & CABLE TV + ALL OTHERS
+// FINAL — MATCHES YOUR FLUTTER CODE 100% — CAPITAL "C" IN COMMISSION CREDIT
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
     console.log(`COMMISSION: serviceType="${serviceType}" | Amount=₦${amount}`);
@@ -878,25 +878,22 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     let description = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
     let source = 'Service';
 
-    // ELECTRICITY — matches "Electricity Payment", "ibadan-electric", etc.
-    if (lowerType.includes('electric') || lowerType.includes('ibadan') || lowerType.includes('eko') || lowerType.includes('abuja') || lowerType.includes('kano') || lowerType.includes('ikeja')) {
-      description = `Electricity commission credit (₦${commissionAmount.toFixed(2)})`;
+    // EXACT MATCH FOR YOUR FLUTTER CODE
+    if (lowerType.includes('electric')) {
+      description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Electricity';
     }
-    // CABLE TV — matches "tv", "cable", "dstv", "gotv", "startimes"
-    else if (lowerType.includes('cable') || lowerType.includes('tv') || lowerType.includes('dstv') || lowerType.includes('gotv') || lowerType.includes('startimes')) {
-      description = `Cable TV commission credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Cable TV';
-    }
-    // AIRTIME
     else if (lowerType.includes('airtime')) {
-      description = `Airtime commission credit (₦${commissionAmount.toFixed(2)})`;
+      description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Airtime';
     }
-    // DATA
     else if (lowerType.includes('data')) {
-      description = `Data commission credit (₦${commissionAmount.toFixed(2)})`;
+      description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Data';
+    }
+    else if (lowerType.includes('cable') || lowerType.includes('tv')) {
+      description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Cable TV';
     }
 
     await createTransaction(
@@ -914,7 +911,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       { commissionSource: source }
     );
 
-    console.log(`COMMISSION SUCCESS: ${description} → Source: ${source}`);
+    console.log(`COMMISSION ADDED: ${description} → Source: ${source}`);
     return commissionAmount;
 
   } catch (error) {
@@ -922,6 +919,8 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     return 0;
   }
 };
+
+
 
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
