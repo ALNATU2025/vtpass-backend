@@ -1,24 +1,24 @@
 const mongoose = require('mongoose');
 
 const metadataSchema = new mongoose.Schema({
-    phone: { type: String, default: '' },
-    smartcardNumber: { type: String, default: '' },
-    billersCode: { type: String, default: '' },
-    variation_code: { type: String, default: '' },
-    packageName: { type: String, default: '' },
-    serviceID: { type: String, default: '' },
-    selectedPackage: { type: String, default: '' },
-    meterNumber: { type: String, default: '' },
-    provider: { type: String, default: '' },
-    type: { type: String, default: '' },
-    token: { type: String, default: '' },
-    customerName: { type: String, default: '' },
-    customerAddress: { type: String, default: '' },
-    exchangeReference: { type: String, default: '' },
-    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: {} },
+    phone: { type: String, default: null },
+    smartcardNumber: { type: String, default: null },
+    billersCode: { type: String, default: null },
+    variation_code: { type: String, default: null },
+    packageName: { type: String, default: null },
+    serviceID: { type: String, default: null },
+    selectedPackage: { type: String, default: null },
+    meterNumber: { type: String, default: null },
+    provider: { type: String, default: null },
+    type: { type: String, default: null },
+    token: { type: String, default: null },  // CHANGED from '' to null
+    customerName: { type: String, default: null },  // CHANGED from '' to null
+    customerAddress: { type: String, default: null },  // CHANGED from '' to null
+    exchangeReference: { type: String, default: null },
+    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: null },
     
     // Paystack specific data
-    paystackData: { type: mongoose.Schema.Types.Mixed, default: {} },
+    paystackData: { type: mongoose.Schema.Types.Mixed, default: null },
     
     // CORRECT: Array type for verificationHistory
     verificationHistory: [{
