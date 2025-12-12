@@ -1,26 +1,22 @@
 const mongoose = require('mongoose');
 
 const metadataSchema = new mongoose.Schema({
-    phone: { type: String, default: null },
-    smartcardNumber: { type: String, default: null },
-    billersCode: { type: String, default: null },
-    variation_code: { type: String, default: null },
-    packageName: { type: String, default: null },
-    serviceID: { type: String, default: null },
-    selectedPackage: { type: String, default: null },
-    meterNumber: { type: String, default: null },
-    provider: { type: String, default: null },
-    type: { type: String, default: null },
-    token: { type: String, default: null },  // CHANGED from '' to null
-    customerName: { type: String, default: null },  // CHANGED from '' to null
-    customerAddress: { type: String, default: null },  // CHANGED from '' to null
-    exchangeReference: { type: String, default: null },
-    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: null },
-    
-    // Paystack specific data
-    paystackData: { type: mongoose.Schema.Types.Mixed, default: null },
-    
-    // CORRECT: Array type for verificationHistory
+    phone: { type: String },
+    smartcardNumber: { type: String }, // No default value
+    billersCode: { type: String },
+    variation_code: { type: String },
+    packageName: { type: String },
+    serviceID: { type: String },
+    selectedPackage: { type: String },
+    meterNumber: { type: String },
+    provider: { type: String },
+    type: { type: String },
+    token: { type: String }, // No default value - can be null
+    customerName: { type: String }, // No default value - can be null
+    customerAddress: { type: String }, // No default value - can be null
+    exchangeReference: { type: String },
+    vtpassResponse: { type: mongoose.Schema.Types.Mixed },
+    paystackData: { type: mongoose.Schema.Types.Mixed },
     verificationHistory: [{
         method: { type: String, enum: ['polling', 'webhook', 'callback', 'manual'] },
         timestamp: { type: Date, default: Date.now },
