@@ -4009,68 +4009,68 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       // 🔥 FIXED: Extract all data from VTpass response PROPERLY
-      const vtpassData = vtpassResult.data || {};
-      const content = vtpassData.content || {};
-      
-      // EXTRACT TOKEN (check all possible locations)
-      let token = '';
-      if (vtpassData.purchased_code && vtpassData.purchased_code.trim() !== '') {
-        token = vtpassData.purchased_code.trim();
-      } else if (content.purchased_code && content.purchased_code.trim() !== '') {
-        token = content.purchased_code.trim();
-      } else if (content.Token && content.Token.trim() !== '') {
-        token = content.Token.trim();
-      } else if (content.token && content.token.trim() !== '') {
-        token = content.token.trim();
-      }
-      
-      // EXTRACT CUSTOMER NAME (check all possible locations)
-      let customerName = '';
-      if (vtpassData.customerName && vtpassData.customerName.trim() !== '') {
-        customerName = vtpassData.customerName.trim();
-      } else if (content.customerName && content.customerName.trim() !== '') {
-        customerName = content.customerName.trim();
-      } else if (content.Customer_Name && content.Customer_Name.trim() !== '') {
-        customerName = content.Customer_Name.trim();
-      }
-      
-      // EXTRACT CUSTOMER ADDRESS (check all possible locations)
-      let customerAddress = '';
-      if (vtpassData.customerAddress && vtpassData.customerAddress.trim() !== '') {
-        customerAddress = vtpassData.customerAddress.trim();
-      } else if (content.customerAddress && content.customerAddress.trim() !== '') {
-        customerAddress = content.customerAddress.trim();
-      } else if (content.Address && content.Address.trim() !== '') {
-        customerAddress = content.Address.trim();
-      }
-      
-      // EXTRACT EXCHANGE REFERENCE
-      const exchangeReference = vtpassData.exchangeReference || 
-                               content.exchangeReference || 
-                               content.reference || 
-                               requestId;
+     // 🔥 FIXED: Extract all data from VTpass response PROPERLY
+const vtpassData = vtpassResult.data || {};
+const content = vtpassData.content || {};
 
-      console.log('📦 EXTRACTED ELECTRICITY DATA:');
-      console.log('   Token:', token || 'Check SMS');
-      console.log('   Customer Name:', customerName || 'N/A');
-      console.log('   Customer Address:', customerAddress || 'N/A');
-      console.log('   Exchange Reference:', exchangeReference);
+// EXTRACT TOKEN (check all possible locations) - RETURN ACTUAL DATA OR NULL
+let token = null;
+if (vtpassData.purchased_code && vtpassData.purchased_code.trim() !== '') {
+    token = vtpassData.purchased_code.trim();
+} else if (content.purchased_code && content.purchased_code.trim() !== '') {
+    token = content.purchased_code.trim();
+} else if (content.Token && content.Token.trim() !== '') {
+    token = content.Token.trim();
+} else if (content.token && content.token.trim() !== '') {
+    token = content.token.trim();
+}
 
-      // Prepare metadata - DON'T SAVE EMPTY STRINGS
-      const metadata = {
-        meterNumber: billersCode,
-        provider: serviceID,
-        type: variation_code,
-        phone: phone,
-        exchangeReference: exchangeReference,
-        // Only include if they have values
-        ...(token && { token: token }),
-        ...(customerName && { customerName: customerName }),
-        ...(customerAddress && { customerAddress: customerAddress }),
-        // Save the FULL vtpass response for debugging
-        vtpassResponse: vtpassData
-      };
+// EXTRACT CUSTOMER NAME (check all possible locations) - RETURN ACTUAL DATA OR NULL
+let customerName = null;
+if (vtpassData.customerName && vtpassData.customerName.trim() !== '') {
+    customerName = vtpassData.customerName.trim();
+} else if (content.customerName && content.customerName.trim() !== '') {
+    customerName = content.customerName.trim();
+} else if (content.Customer_Name && content.Customer_Name.trim() !== '') {
+    customerName = content.Customer_Name.trim();
+}
 
+// EXTRACT CUSTOMER ADDRESS (check all possible locations) - RETURN ACTUAL DATA OR NULL
+let customerAddress = null;
+if (vtpassData.customerAddress && vtpassData.customerAddress.trim() !== '') {
+    customerAddress = vtpassData.customerAddress.trim();
+} else if (content.customerAddress && content.customerAddress.trim() !== '') {
+    customerAddress = content.customerAddress.trim();
+} else if (content.Address && content.Address.trim() !== '') {
+    customerAddress = content.Address.trim();
+}
+
+// EXTRACT EXCHANGE REFERENCE
+const exchangeReference = vtpassData.exchangeReference || 
+                         content.exchangeReference || 
+                         content.reference || 
+                         requestId;
+
+console.log('📦 EXTRACTED ELECTRICITY DATA:');
+console.log('   Token:', token || 'NULL');
+console.log('   Customer Name:', customerName || 'NULL');
+console.log('   Customer Address:', customerAddress || 'NULL');
+console.log('   Exchange Reference:', exchangeReference);
+
+// Prepare metadata - ONLY SAVE IF WE HAVE ACTUAL VALUES
+const metadata = {
+    meterNumber: billersCode,
+    provider: serviceID,
+    type: variation_code,
+    phone: phone,
+    exchangeReference: exchangeReference,
+    // Only include if we have actual values (not null)
+    ...(token && { token: token }),
+    ...(customerName && { customerName: customerName }),
+    ...(customerAddress && { customerAddress: customerAddress }),
+    // Save the FULL vtpass response for debugging
+    vtpassResponse: vtpassData
+};
       // Create transaction with all data
       await createTransaction(
         userId,
