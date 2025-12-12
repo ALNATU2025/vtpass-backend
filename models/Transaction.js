@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 
-// Nested schema for metadata to ensure type safety
 const metadataSchema = new mongoose.Schema({
     phone: { type: String, default: '' },
     smartcardNumber: { type: String, default: '' },
@@ -10,18 +9,25 @@ const metadataSchema = new mongoose.Schema({
     serviceID: { type: String, default: '' },
     selectedPackage: { type: String, default: '' },
     meterNumber: { type: String, default: '' },
-
-    // 🚀 NEW FIELDS (important!)
     provider: { type: String, default: '' },
     type: { type: String, default: '' },
     token: { type: String, default: '' },
     customerName: { type: String, default: '' },
     customerAddress: { type: String, default: '' },
     exchangeReference: { type: String, default: '' },
-
-    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: {} }
+    vtpassResponse: { type: mongoose.Schema.Types.Mixed, default: {} },
+    
+    // Paystack specific data
+    paystackData: { type: mongoose.Schema.Types.Mixed, default: {} },
+    
+    // CORRECT: Array type for verificationHistory
+    verificationHistory: [{
+        method: { type: String, enum: ['polling', 'webhook', 'callback', 'manual'] },
+        timestamp: { type: Date, default: Date.now },
+        status: { type: String },
+        response: { type: mongoose.Schema.Types.Mixed }
+    }]
 }, { _id: false });
-
 
 const transactionSchema = new mongoose.Schema({
     userId: {
@@ -30,29 +36,32 @@ const transactionSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-    type: {
-        type: String,
-        enum: [
-            'Airtime Purchase',
-            'Data Purchase',
-            'Cable TV Subscription',
-            'Electricity Payment',
-            'Education Payment',
-            'Insurance Purchase',
-            'Wallet Funding',
-            'Transfer Sent',
-            'Transfer Received',
-            'Commission Credit',
-            'Commission Withdrawal',
-            'debit',
-            'credit'
-        ],
-        required: true
-    },
+   type: {
+    type: String,
+    enum: [
+        'Airtime Purchase',
+        'Data Purchase',
+        'Cable TV Subscription',
+        'Electricity Payment',
+        'Education Payment',
+        'Insurance Purchase',
+        'Wallet Funding',
+        'Transfer Sent',
+        'Transfer Received',
+        'Commission Credit',
+        'Commission Withdrawal',
+        'debit',
+        'credit',
+        'wallet_funding',
+        'virtual_account_topup'   // ✅ Added correctly
+    ],
+    required: true
+},
+
     amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed'],
+        enum: ['Successful', 'Pending', 'Failed', 'Processing'],
         default: 'Pending'
     },
     transactionId: { type: String, unique: true, sparse: true },
@@ -60,14 +69,25 @@ const transactionSchema = new mongoose.Schema({
     description: { type: String, required: true },
     balanceBefore: { type: Number, default: 0 },
     balanceAfter: { type: Number, default: 0 },
-    metadata: metadataSchema, // Use the nested schema for type safety
+    metadata: metadataSchema,
     isCommission: { type: Boolean, default: false, index: true },
     service: { type: String, default: '', index: true },
     authenticationMethod: {
         type: String,
         enum: ['pin', 'biometric', 'none', 'paystack', 'manual'],
         default: 'none'
-    }
+    },
+    
+    // NEW FIELDS FOR FAILED TRANSACTION FIX
+    gateway: { type: String, default: 'paystack' },
+    gatewayResponse: { type: mongoose.Schema.Types.Mixed },
+    gatewayReference: { type: String, index: true },
+    retryCount: { type: Number, default: 0, max: 3 },
+    lastVerifiedAt: Date,
+    verificationAttempts: { type: Number, default: 0 },
+    failureReason: String,
+    canRetry: { type: Boolean, default: false },
+    nextRetryAt: Date
 }, {
     timestamps: true,
     versionKey: false
@@ -89,7 +109,7 @@ transactionSchema.virtual('phoneNumber').get(function() {
 // NIGERIA TIMEZONE (UTC+1) — FINAL FIX
 transactionSchema.virtual('nigeriaTime').get(function() {
     if (!this.createdAt) return null;
-    return new Date(this.createdAt.getTime() + 60 * 60 * 1000); // +1 hour
+    return new Date(this.createdAt.getTime() + 60 * 60 * 1000);
 });
 
 transactionSchema.virtual('formattedNigeriaTime').get(function() {
@@ -126,5 +146,6 @@ transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ userId: 1, isCommission: 1 });
 transactionSchema.index({ reference: 1 });
 transactionSchema.index({ status: 1, createdAt: -1 });
+transactionSchema.index({ gatewayReference: 1 }); // NEW INDEX
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
