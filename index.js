@@ -875,7 +875,7 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
 
     const lowerType = (serviceType || '').toString().toLowerCase().trim();
 
-    let description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+    let description = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
     let source = 'Service';
 
     // EXACT MATCH FOR YOUR FLUTTER CODE
