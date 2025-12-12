@@ -3955,7 +3955,7 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity – FIXED VERSION (DOES NOT SAVE PLACEHOLDER TEXTS)
+// @desc    Purchase Electricity – COMPLETELY FIXED VERSION
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
@@ -4008,140 +4008,112 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // 🔥🔥🔥 CRITICAL FIX: Extract data properly - DO NOT SAVE PLACEHOLDER TEXTS
+      // 🔥🔥🔥 CRITICAL FIX: Extract data properly
       const vtpassData = vtpassResult.data || {};
       const content = vtpassData.content || {};
       
-      // Helper function to check if a value is valid (not empty, not placeholder)
-      const isValidValue = (value) => {
-        if (!value) return false;
+      // Helper function to get valid value or null
+      const getValidValue = (value) => {
+        if (!value) return null;
         const strValue = value.toString().trim();
-        const invalidValues = ['', 'null', 'N/A', 'n/a', 'NA', 'na', 'Check SMS', 'check sms', 'CHECK SMS'];
-        return strValue.length > 0 && !invalidValues.includes(strValue);
+        if (strValue.length === 0) return null;
+        const invalidValues = ['null', 'N/A', 'n/a', 'NA', 'na', 'Check SMS', 'check sms', 'CHECK SMS'];
+        if (invalidValues.includes(strValue)) return null;
+        return strValue;
       };
 
-      // EXTRACT TOKEN - ONLY SAVE IF VALID
-      let token = null;
-      const tokenSources = [
-        vtpassData.purchased_code,
-        content.purchased_code,
-        content.Token,
+      // Extract values - returns null if invalid
+      const token = getValidValue(
+        vtpassData.purchased_code || 
+        content.purchased_code || 
+        content.Token || 
         content.token
-      ];
-      
-      for (const source of tokenSources) {
-        if (isValidValue(source)) {
-          token = source.toString().trim();
-          break;
-        }
-      }
+      );
 
-      // EXTRACT CUSTOMER NAME - ONLY SAVE IF VALID
-      let customerName = null;
-      const nameSources = [
-        vtpassData.customerName,
-        content.customerName,
+      const customerName = getValidValue(
+        vtpassData.customerName || 
+        content.customerName || 
         content.Customer_Name
-      ];
-      
-      for (const source of nameSources) {
-        if (isValidValue(source)) {
-          customerName = source.toString().trim();
-          break;
-        }
-      }
+      );
 
-      // EXTRACT CUSTOMER ADDRESS - ONLY SAVE IF VALID
-      let customerAddress = null;
-      const addressSources = [
-        vtpassData.customerAddress,
-        content.customerAddress,
+      const customerAddress = getValidValue(
+        vtpassData.customerAddress || 
+        content.customerAddress || 
         content.Address
-      ];
-      
-      for (const source of addressSources) {
-        if (isValidValue(source)) {
-          customerAddress = source.toString().trim();
-          break;
-        }
-      }
+      );
 
-      // EXTRACT EXCHANGE REFERENCE
-      const exchangeReference = vtpassData.exchangeReference || 
-                               content.exchangeReference || 
-                               content.reference || 
-                               requestId;
+      const exchangeReference = getValidValue(
+        vtpassData.exchangeReference || 
+        content.exchangeReference || 
+        content.reference || 
+        requestId
+      );
 
-      console.log('📦 EXTRACTED ELECTRICITY DATA (SAVING TO DB):');
-      console.log('   Token:', token || 'NULL (will not be saved)');
-      console.log('   Customer Name:', customerName || 'NULL (will not be saved)');
-      console.log('   Customer Address:', customerAddress || 'NULL (will not be saved)');
-      console.log('   Exchange Reference:', exchangeReference);
+      console.log('📦 EXTRACTED ELECTRICITY DATA:');
+      console.log('   Token:', token || 'NULL (VTpass did not provide)');
+      console.log('   Customer Name:', customerName || 'NULL (VTpass did not provide)');
+      console.log('   Customer Address:', customerAddress || 'NULL (VTpass did not provide)');
+      console.log('   Exchange Reference:', exchangeReference || 'NULL');
 
-      // 🔥🔥🔥 CRITICAL: Prepare metadata - ONLY include fields with ACTUAL values
+      // 🔥🔥🔥 CRITICAL: Build CLEAN metadata - NO EMPTY STRINGS, ONLY VALID VALUES
       const metadata = {
+        // Always include these (they should always have values)
         meterNumber: billersCode,
         provider: serviceID,
         type: variation_code,
         phone: phone,
-        exchangeReference: exchangeReference,
-        // ONLY include if we have actual values (not null/undefined)
+        // Only include if not null
         ...(token && { token: token }),
         ...(customerName && { customerName: customerName }),
         ...(customerAddress && { customerAddress: customerAddress }),
-        // Save vtpass response for debugging
+        ...(exchangeReference && { exchangeReference: exchangeReference }),
+        // Save vtpass response
         vtpassResponse: vtpassData
       };
 
-      console.log('📦 FINAL METADATA TO SAVE:', metadata);
+      console.log('📦 FINAL METADATA (NO EMPTY STRINGS):', metadata);
 
-      // Create transaction
-      await createTransaction(
+      // 🔥 CRITICAL: Use a dedicated createElectricityTransaction function
+      // Or update your existing createTransaction function
+      const transaction = new Transaction({
         userId,
         amount,
-        'Electricity Payment',
-        'Successful',
-        `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
+        type: 'Electricity Payment', // 🔥 MUST BE 'Electricity Payment' not 'debit'
+        status: 'Successful',
+        transactionId: `ELEC${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
+        reference: requestId,
+        description: `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
         balanceBefore,
-        user.walletBalance,
-        session,
-        false,
-        req.authenticationMethod || 'pin',
-        requestId,
-        metadata
-      );
+        balanceAfter: user.walletBalance,
+        metadata, // 🔥 This is the CLEAN metadata
+        isCommission: false,
+        service: 'electricity',
+        authenticationMethod: req.authenticationMethod || 'pin',
+        gateway: 'DalaBaPay App'
+      });
+
+      await transaction.save({ session });
 
       // Calculate commission
       await calculateAndAddCommission(userId, amount, session, 'electricity');
 
       await session.commitTransaction();
 
-      // Format provider name
-      const providerName = serviceID
-        .replace('-electric', '')
-        .split('-')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-
-      const transactionId = `ELEC${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-
-      console.log('✅ ELECTRICITY PURCHASE SUCCESS - DATA SAVED TO DB:', {
-        transactionId,
+      console.log('✅ ELECTRICITY PURCHASE COMPLETE:', {
+        transactionId: transaction.transactionId,
         reference: requestId,
-        tokenSaved: !!token,
-        customerNameSaved: !!customerName,
-        customerAddressSaved: !!customerAddress,
-        newBalance: user.walletBalance
+        hasToken: !!token,
+        hasCustomerName: !!customerName,
+        hasCustomerAddress: !!customerAddress
       });
 
-      // Response to frontend (can include placeholder for UI)
       return res.json({
         success: true,
         message: 'Electricity purchased successfully!',
         newBalance: user.walletBalance,
-        transactionId: transactionId,
+        transactionId: transaction.transactionId,
         reference: requestId,
-        // For frontend display only
+        // For frontend display
         displayToken: token || 'Check SMS',
         displayCustomerName: customerName || 'N/A',
         displayCustomerAddress: customerAddress || 'N/A',
