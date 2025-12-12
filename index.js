@@ -4026,9 +4026,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       message: vtpassResult.data?.response_description
     });
 
-    // 🔥 CRITICAL: Log the FULL VTpass response to debug
-    console.log('📦 FULL VTPASS RESPONSE DATA:', JSON.stringify(vtpassResult.data, null, 2));
-
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
@@ -4080,15 +4077,16 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
       // 🔥 CRITICAL: Build metadata WITH ALL DATA
       const metadata = {
-        meterNumber: billersCode,
+        phone: phone,
+        billersCode: billersCode,
+        meterNumber: billersCode, // Same as billersCode for electricity
         provider: serviceID,
         type: variation_code,
-        phone: phone,
-        exchangeReference: exchangeReference,
         // 🔥 SAVE ALL THE DATA WE EXTRACTED
         token: formattedToken,
         customerName: cleanedCustomerName,
         customerAddress: customerAddress,
+        exchangeReference: exchangeReference,
         // Save the FULL vtpass response
         vtpassResponse: vtpassData
       };
@@ -4101,7 +4099,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         amount,
         type: 'Electricity Payment',
         status: 'Successful',
-        transactionId: `ELEC${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
+        transactionId: requestId, // Use the same requestId
         reference: requestId,
         description: `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
         balanceBefore,
@@ -4115,7 +4113,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
       await transaction.save({ session });
 
-      // Calculate commission
+      // Calculate commission - FIXED: Pass serviceID instead of 'electricity'
       await calculateAndAddCommission(userId, amount, session, serviceID);
 
       await session.commitTransaction();
