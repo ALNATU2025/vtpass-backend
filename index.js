@@ -3813,7 +3813,7 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
         amount,
         'Data Purchase',
         'Successful',
-        `${network.toUpperCase()} Data Purchase for ${phone}`,
+       `${network.toUpperCase()} Data Purchase for ${phone} (${variationCode})`
         balanceBefore,
         user.walletBalance,
         session,
