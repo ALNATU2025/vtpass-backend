@@ -3962,7 +3962,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
   body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
-  body('amount').isFloat({ min: 1000 }).withMessage('Minimum ₦1000'), // 🔥 CHANGED TO ₦1000
+  body('amount').isFloat({ min: 1000 }).withMessage('Minimum ₦1000'),
   body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -4008,18 +4008,74 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // 🔥 FIXED: Extract all data from VTpass response
-      const content = vtpassResult.data.content || {};
-      const token = content.purchased_code || content.Token || content.token || 'Check SMS';
-      const customerName = content.customerName || content.Customer_Name || 'N/A';
-      const customerAddress = content.customerAddress || content.Address || 'N/A';
-      const exchangeReference = content.exchangeReference || content.reference || requestId;
+      // 🔥 FIXED: Extract all data from VTpass response PROPERLY
+      const vtpassData = vtpassResult.data || {};
+      const content = vtpassData.content || {};
+      
+      // EXTRACT TOKEN (check all possible locations)
+      let token = '';
+      if (vtpassData.purchased_code && vtpassData.purchased_code.trim() !== '') {
+        token = vtpassData.purchased_code.trim();
+      } else if (content.purchased_code && content.purchased_code.trim() !== '') {
+        token = content.purchased_code.trim();
+      } else if (content.Token && content.Token.trim() !== '') {
+        token = content.Token.trim();
+      } else if (content.token && content.token.trim() !== '') {
+        token = content.token.trim();
+      }
+      
+      // EXTRACT CUSTOMER NAME (check all possible locations)
+      let customerName = '';
+      if (vtpassData.customerName && vtpassData.customerName.trim() !== '') {
+        customerName = vtpassData.customerName.trim();
+      } else if (content.customerName && content.customerName.trim() !== '') {
+        customerName = content.customerName.trim();
+      } else if (content.Customer_Name && content.Customer_Name.trim() !== '') {
+        customerName = content.Customer_Name.trim();
+      }
+      
+      // EXTRACT CUSTOMER ADDRESS (check all possible locations)
+      let customerAddress = '';
+      if (vtpassData.customerAddress && vtpassData.customerAddress.trim() !== '') {
+        customerAddress = vtpassData.customerAddress.trim();
+      } else if (content.customerAddress && content.customerAddress.trim() !== '') {
+        customerAddress = content.customerAddress.trim();
+      } else if (content.Address && content.Address.trim() !== '') {
+        customerAddress = content.Address.trim();
+      }
+      
+      // EXTRACT EXCHANGE REFERENCE
+      const exchangeReference = vtpassData.exchangeReference || 
+                               content.exchangeReference || 
+                               content.reference || 
+                               requestId;
 
-      // 🔥 FIXED: Using correct transaction type
+      console.log('📦 EXTRACTED ELECTRICITY DATA:');
+      console.log('   Token:', token || 'Check SMS');
+      console.log('   Customer Name:', customerName || 'N/A');
+      console.log('   Customer Address:', customerAddress || 'N/A');
+      console.log('   Exchange Reference:', exchangeReference);
+
+      // Prepare metadata - DON'T SAVE EMPTY STRINGS
+      const metadata = {
+        meterNumber: billersCode,
+        provider: serviceID,
+        type: variation_code,
+        phone: phone,
+        exchangeReference: exchangeReference,
+        // Only include if they have values
+        ...(token && { token: token }),
+        ...(customerName && { customerName: customerName }),
+        ...(customerAddress && { customerAddress: customerAddress }),
+        // Save the FULL vtpass response for debugging
+        vtpassResponse: vtpassData
+      };
+
+      // Create transaction with all data
       await createTransaction(
         userId,
         amount,
-        'Electricity Payment',  // ✅ CORRECT TRANSACTION TYPE
+        'Electricity Payment',
         'Successful',
         `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
         balanceBefore,
@@ -4028,22 +4084,11 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         false,
         req.authenticationMethod || 'pin',
         requestId,
-        { 
-          meterNumber: billersCode, 
-          provider: serviceID, 
-          type: variation_code, 
-          phone, 
-          token: token,
-          customerName: customerName,
-          customerAddress: customerAddress,
-          exchangeReference: exchangeReference,
-          vtpassResponse: vtpassResult.data // Include full response
-        }
+        metadata
       );
 
-      // 🔥 FIXED: Passing correct service type for commission
-    // 🔥 FIXED: Passing correct service type for commission
-await calculateAndAddCommission(userId, amount, session, 'electricity');
+      // Calculate commission
+      await calculateAndAddCommission(userId, amount, session, 'electricity');
 
       await session.commitTransaction();
 
@@ -4061,7 +4106,9 @@ await calculateAndAddCommission(userId, amount, session, 'electricity');
         transactionId,
         reference: requestId,
         amount,
-        token,
+        token: token || 'Check SMS',
+        customerName: customerName || 'N/A',
+        customerAddress: customerAddress || 'N/A',
         newBalance: user.walletBalance
       });
 
@@ -4071,16 +4118,18 @@ await calculateAndAddCommission(userId, amount, session, 'electricity');
         newBalance: user.walletBalance,
         transactionId: transactionId,
         reference: requestId,
-        token: token,
+        token: token || 'Check SMS',
+        customerName: customerName || 'N/A',
+        customerAddress: customerAddress || 'N/A',
         vtpassResponse: {
-          ...vtpassResult.data,
-          response_description: vtpassResult.data.response_description || 'TRANSACTION SUCCESSFUL',
+          ...vtpassData,
+          response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL',
           requestId: requestId,
           amount: amount.toFixed(2),
           transaction_date: new Date().toISOString(),
-          purchased_code: token,
-          customerName: customerName,
-          customerAddress: customerAddress,
+          purchased_code: token || '',
+          customerName: customerName || '',
+          customerAddress: customerAddress || '',
           meterNumber: billersCode,
           exchangeReference: exchangeReference,
           gateway: 'DalaBaPay App',
@@ -4090,7 +4139,6 @@ await calculateAndAddCommission(userId, amount, session, 'electricity');
     } else {
       await session.abortTransaction();
       
-      // 🔥 IMPROVED: Better error message for minimum amount
       let errorMsg = vtpassResult.data?.response_description || 'Purchase failed';
       if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
         errorMsg = `Amount below minimum allowed. Please increase the amount (minimum ₦1000 for electricity).`;
@@ -4108,7 +4156,6 @@ await calculateAndAddCommission(userId, amount, session, 'electricity');
     await session.abortTransaction();
     console.error('💥 ELECTRICITY PURCHASE ERROR:', error.message);
     
-    // 🔥 IMPROVED: Better error handling
     let errorMessage = error.message;
     if (errorMessage.includes('BELOW MINIMUM AMOUNT')) {
       errorMessage = `Amount too low. Minimum is ₦1000 for electricity payments.`;
