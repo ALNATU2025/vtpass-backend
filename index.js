@@ -3750,15 +3750,16 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
   body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
   body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
   body('variationCode').notEmpty().withMessage('Data plan is required'),
+  body('planName').notEmpty().withMessage('Data plan name is required'), // ADD THIS LINE
   body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least ₦50')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-
-  const { network, phone, variationCode, amount } = req.body;
-  const userId = req.user._id;
+  
+const { network, phone, variationCode, planName, amount } = req.body; // ADD planName here
+const userId = req.user._id;
 
   const serviceIDMap = {
     'mtn': 'mtn-data',
@@ -3808,25 +3809,29 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       // THIS IS THE PERFECT createTransaction CALL — NO ERRORS
-      await createTransaction(
-        userId,
-        amount,
-        'Data Purchase',
-        'Successful',
-       `${network.toUpperCase()} Data Purchase for ${phone} (${variationCode})`,
-        balanceBefore,
-        user.walletBalance,
-        session,
-        false,
-        req.authenticationMethod || 'pin',
-        requestId,
-        { 
-          phone: phone,
-          variationCode: variationCode,
-          plan: variationCode
-        }
-      );
+     // Get readable plan name from frontend (planName parameter)
+const planName = req.body.planName || variationCode; // Get readable name from frontend
 
+// THIS IS THE PERFECT createTransaction CALL — NO ERRORS
+await createTransaction(
+  userId,
+  amount,
+  'Data Purchase',
+  'Successful',
+  `${network.toUpperCase()} Data Purchase for ${phone}`,
+  balanceBefore,
+  user.walletBalance,
+  session,
+  false,
+  req.authenticationMethod || 'pin',
+  requestId,
+  { 
+    phone: phone,
+    variation_code: variationCode,
+    variation_name: planName, // ← FIX: Save readable plan name here
+    plan: planName // ← Also save in plan field for compatibility
+  }
+);
       await calculateAndAddCommission(userId, amount, session, 'data').catch(() => {});
 
       await session.commitTransaction();
