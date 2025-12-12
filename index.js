@@ -3750,7 +3750,7 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
   body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
   body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
   body('variationCode').notEmpty().withMessage('Data plan is required'),
-  body('planName').notEmpty().withMessage('Data plan name is required'), // ADD THIS LINE
+  body('planName').notEmpty().withMessage('Data plan name is required'),
   body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least ₦50')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -3758,8 +3758,9 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   
-const { network, phone, variationCode, planName, amount } = req.body; // ADD planName here
-const userId = req.user._id;
+  // EXTRACT ALL PARAMETERS INCLUDING planName
+  const { network, phone, variationCode, planName, amount } = req.body;
+  const userId = req.user._id;
 
   const serviceIDMap = {
     'mtn': 'mtn-data',
@@ -3808,30 +3809,27 @@ const userId = req.user._id;
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // THIS IS THE PERFECT createTransaction CALL — NO ERRORS
-     // Get readable plan name from frontend (planName parameter)
-const planName = req.body.planName || variationCode; // Get readable name from frontend
+      // SAVE TRANSACTION WITH READABLE PLAN NAME
+      await createTransaction(
+        userId,
+        amount,
+        'Data Purchase',
+        'Successful',
+        `${network.toUpperCase()} Data Purchase for ${phone}`,
+        balanceBefore,
+        user.walletBalance,
+        session,
+        false,
+        req.authenticationMethod || 'pin',
+        requestId,
+        { 
+          phone: phone,
+          variation_code: variationCode,
+          variation_name: planName, // ← SAVE READABLE PLAN FROM FRONTEND
+          plan: planName
+        }
+      );
 
-// THIS IS THE PERFECT createTransaction CALL — NO ERRORS
-await createTransaction(
-  userId,
-  amount,
-  'Data Purchase',
-  'Successful',
-  `${network.toUpperCase()} Data Purchase for ${phone}`,
-  balanceBefore,
-  user.walletBalance,
-  session,
-  false,
-  req.authenticationMethod || 'pin',
-  requestId,
-  { 
-    phone: phone,
-    variation_code: variationCode,
-    variation_name: planName, // ← FIX: Save readable plan name here
-    plan: planName // ← Also save in plan field for compatibility
-  }
-);
       await calculateAndAddCommission(userId, amount, session, 'data').catch(() => {});
 
       await session.commitTransaction();
@@ -3842,7 +3840,8 @@ await createTransaction(
         newBalance: user.walletBalance,
         vtpassResponse: vtpassResult.data,
         requestId,
-        transactionId: vtpassResult.data.content?.transactions?.transactionId || requestId
+        transactionId: vtpassResult.data.content?.transactions?.transactionId || requestId,
+        planName: planName // ← RETURN FOR CONFIRMATION
       });
     } else {
       await session.abortTransaction();
@@ -3857,6 +3856,13 @@ await createTransaction(
     session.endSession();
   }
 });
+
+
+
+
+
+
+
 // @desc    Verify electricity meter number - FIXED VERSION
 // @route   POST /api/vtpass/validate-electricity
 // @access  Private
