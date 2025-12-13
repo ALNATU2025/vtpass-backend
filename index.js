@@ -7508,7 +7508,7 @@ app.post('/api/users/generate-referral-code', protect, [
 });
 
 
-// @desc    Get user referral statistics
+// @desc    Get comprehensive referral statistics
 // @route   GET /api/users/referral-stats/:userId
 // @access  Private
 app.get('/api/users/referral-stats/:userId', protect, async (req, res) => {
@@ -7525,34 +7525,59 @@ app.get('/api/users/referral-stats/:userId', protect, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Get direct referrals
+    // Get all users referred by this user
     const directReferrals = await User.find({ referrerId: userId });
     
-    // Calculate total earnings from referrals (you might want to calculate this from transactions)
-    const totalEarned = user.totalReferralEarnings || 0;
-
+    // Calculate statistics
+    const totalReferrals = directReferrals.length;
+    const activeReferrals = directReferrals.filter(ref => ref.isActive).length;
+    
+    // Get all commission transactions for this user (referral earnings)
+    const commissionTransactions = await Transaction.find({
+      userId: userId,
+      isCommission: true,
+      description: { $regex: /referral|Referral/i }
+    });
+    
+    // Calculate total earned from referrals
+    const totalEarned = commissionTransactions.reduce((sum, tx) => sum + tx.amount, 0);
+    
+    // Calculate pending earnings (recent referrals not yet converted to commission)
+    const pendingEarnings = 0; // You can implement logic for pending earnings
+    
+    // Get detailed referral info
+    const referrals = directReferrals.map(ref => ({
+      _id: ref._id,
+      fullName: ref.fullName || 'Unknown',
+      email: ref.email || 'No email',
+      phone: ref.phone || 'No phone',
+      joinedAt: ref.createdAt,
+      isActive: ref.isActive,
+      hasMadePurchase: ref.transactionCount > 0,
+      walletBalance: ref.walletBalance || 0
+    }));
+    
     res.json({
       success: true,
       referralStats: {
-        referralCode: user.referralCode,
-        totalReferrals: directReferrals.length,
-        activeReferrals: directReferrals.filter(ref => ref.isActive).length,
+        referralCode: user.referralCode || 'Not set',
+        totalReferrals: totalReferrals,
+        activeReferrals: activeReferrals,
         totalEarned: totalEarned,
-        referrals: directReferrals.map(ref => ({
-          _id: ref._id,
-          fullName: ref.fullName,
-          email: ref.email,
-          joinedAt: ref.createdAt,
-          isActive: ref.isActive
-        }))
+        pendingEarnings: pendingEarnings,
+        referralLink: `https://yourapp.com/register?ref=${user.referralCode}`,
+        referrals: referrals
       }
     });
+    
   } catch (error) {
-    console.error('Error fetching referral stats:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ Error fetching referral stats:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch referral statistics' 
+    });
   }
 });
-
 
 // @desc    Debug endpoint to check user status
 // @route   GET /api/debug/user-status
@@ -8061,6 +8086,289 @@ app.get('/api/auth/check-verification/:email', async (req, res) => {
       success: false, 
       message: 'Failed to check verification status' 
     });
+  }
+});
+
+
+
+
+
+
+// @desc    Use commission to pay for services
+// @route   POST /api/services/use-commission
+// @access  Private
+app.post('/api/services/use-commission', protect, async (req, res) => {
+  try {
+    const {
+      userId,
+      serviceType,
+      amount,
+      serviceDetails,
+      commissionUsed,
+      transactionId
+    } = req.body;
+
+    // 1. Verify user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // 2. Check commission balance
+    if (user.commissionBalance < amount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient commission balance. Available: ₦${user.commissionBalance}, Required: ₦${amount}`
+      });
+    }
+
+    // 3. Deduct commission
+    user.commissionBalance -= amount;
+    
+    // 4. Create commission transaction record
+    const commissionTransaction = new Transaction({
+      userId: user._id,
+      type: 'debit',
+      amount: amount,
+      description: `Commission used for ${serviceType} purchase`,
+      status: 'successful',
+      reference: transactionId,
+      isCommission: true,
+      serviceType: serviceType,
+      details: serviceDetails,
+      remainingBalance: user.commissionBalance
+    });
+
+    await commissionTransaction.save();
+    await user.save();
+
+    // 5. Return success response
+    res.json({
+      success: true,
+      message: `Commission of ₦${amount} used for ${serviceType}`,
+      newCommissionBalance: user.commissionBalance,
+      transactionId: commissionTransaction._id
+    });
+
+  } catch (error) {
+    console.error('❌ Error using commission:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to use commission for service' 
+    });
+  }
+});
+
+
+
+
+
+// @desc    Withdraw commission to wallet
+// @route   POST /api/users/withdraw-commission
+// @access  Private
+app.post('/api/users/withdraw-commission', protect, [
+  body('amount').isFloat({ min: 500 }).withMessage('Minimum withdrawal amount is ₦500')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { amount } = req.body;
+  const userId = req.user._id;
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    console.log(`💸 COMMISSION WITHDRAWAL: User ${userId}, Amount: ₦${amount}`);
+    
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if user has enough commission
+    if (user.commissionBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient commission balance. Available: ₦${user.commissionBalance.toFixed(2)}, Requested: ₦${amount}` 
+      });
+    }
+    
+    // Check minimum withdrawal
+    if (amount < 500) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Minimum withdrawal amount is ₦500' 
+      });
+    }
+    
+    // Save initial balances
+    const commissionBalanceBefore = user.commissionBalance;
+    const walletBalanceBefore = user.walletBalance;
+    
+    // Process withdrawal: subtract from commission, add to wallet
+    user.commissionBalance -= amount;
+    user.walletBalance += amount;
+    
+    // Save user
+    await user.save({ session });
+    
+    const commissionBalanceAfter = user.commissionBalance;
+    const walletBalanceAfter = user.walletBalance;
+    
+    console.log(`✅ COMMISSION WITHDRAWAL PROCESSED:`);
+    console.log(`   Commission: ${commissionBalanceBefore} → ${commissionBalanceAfter}`);
+    console.log(`   Wallet: ${walletBalanceBefore} → ${walletBalanceAfter}`);
+    
+    // Create commission debit transaction
+    await createTransaction(
+      userId,
+      amount,
+      'Commission Withdrawal',
+      'Successful',
+      `Commission withdrawal to wallet`,
+      commissionBalanceBefore,
+      commissionBalanceAfter,
+      session,
+      true, // isCommission
+      'none'
+    );
+    
+    // Create wallet credit transaction
+    await createTransaction(
+      userId,
+      amount,
+      'Credit',
+      'Successful',
+      `Commission withdrawal from commission balance`,
+      walletBalanceBefore,
+      walletBalanceAfter,
+      session,
+      false, // isCommission
+      'none'
+    );
+    
+    await session.commitTransaction();
+    
+    // Create notification
+    await Notification.create({
+      recipientId: userId,
+      title: "Commission Withdrawal Successful 🎉",
+      message: `You have successfully withdrawn ₦${amount.toFixed(2)} from your commission balance to your wallet. New wallet balance: ₦${walletBalanceAfter.toFixed(2)}`,
+      isRead: false
+    });
+    
+    res.json({ 
+      success: true, 
+      message: `Commission withdrawal of ₦${amount.toFixed(2)} to wallet successful`,
+      newCommissionBalance: commissionBalanceAfter,
+      newWalletBalance: walletBalanceAfter
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error withdrawing commission:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+// @desc    Use commission balance for service payment
+// @route   POST /api/services/use-commission
+// @access  Private
+app.post('/api/services/use-commission', protect, [
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+  body('serviceType').notEmpty().withMessage('Service type is required'),
+  body('serviceDetails').notEmpty().withMessage('Service details are required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { amount, serviceType, serviceDetails } = req.body;
+  const userId = req.user._id;
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    console.log(`🔄 USING COMMISSION FOR SERVICE: ${serviceType}, Amount: ₦${amount}`);
+    
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if user has enough commission balance
+    if (user.commissionBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient commission balance. Available: ₦${user.commissionBalance.toFixed(2)}, Required: ₦${amount}`,
+        hasEnough: false
+      });
+    }
+    
+    // Deduct from commission balance
+    const commissionBefore = user.commissionBalance;
+    user.commissionBalance -= amount;
+    await user.save({ session });
+    const commissionAfter = user.commissionBalance;
+    
+    // Create commission debit transaction
+    await createTransaction(
+      userId,
+      amount,
+      'Commission Debit',
+      'Successful',
+      `Commission used for ${serviceType} purchase`,
+      commissionBefore,
+      commissionAfter,
+      session,
+      true, // isCommission
+      'none',
+      null,
+      { serviceDetails: serviceDetails }
+    );
+    
+    await session.commitTransaction();
+    
+    console.log(`✅ COMMISSION USED: ₦${amount} for ${serviceType}`);
+    
+    res.json({
+      success: true,
+      message: `Commission balance used successfully for ${serviceType}`,
+      amountUsed: amount,
+      newCommissionBalance: commissionAfter,
+      serviceType: serviceType,
+      hasEnough: true
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error using commission for service:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to use commission balance' 
+    });
+  } finally {
+    session.endSession();
   }
 });
 
