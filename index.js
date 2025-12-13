@@ -4075,41 +4075,45 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         cleanedCustomerName = customerName.toString().trim();
       }
 
-      // 🔥 CRITICAL: Build metadata WITH ALL DATA
-      const metadata = {
-        phone: phone,
-        billersCode: billersCode,
-        meterNumber: billersCode, // Same as billersCode for electricity
-        provider: serviceID,
-        type: variation_code,
-        // 🔥 SAVE ALL THE DATA WE EXTRACTED
-        token: formattedToken,
-        customerName: cleanedCustomerName,
-        customerAddress: customerAddress,
-        exchangeReference: exchangeReference,
-        // Save the FULL vtpass response
-        vtpassResponse: vtpassData
-      };
+    // 🔥 CRITICAL: Build COMPLETE metadata WITH ALL DATA (EXACT SAME FORMAT AS OLD TRANSACTIONS)
+const metadata = {
+  phone: phone,
+  smartcardNumber: '',  // Keep empty for electricity
+  billersCode: billersCode,
+  variation_code: variation_code,
+  packageName: '',  // Keep empty for electricity
+  serviceID: serviceID,
+  selectedPackage: '',  // Keep empty for electricity
+  meterNumber: billersCode,  // MUST be same as billersCode
+  provider: serviceID,
+  type: variation_code,
+  token: formattedToken,  // 🔥 MUST include token
+  customerName: cleanedCustomerName,  // 🔥 MUST include customer name
+  customerAddress: customerAddress,  // 🔥 MUST include address
+  exchangeReference: exchangeReference,
+  vtpassResponse: vtpassData,  // Keep full response
+  verificationHistory: []  // Add empty array to match old format
+};
 
       console.log('📦 FINAL METADATA TO SAVE TO DATABASE:', JSON.stringify(metadata, null, 2));
 
-      // 🔥 CRITICAL: Create transaction with ALL data
-      const transaction = new Transaction({
-        userId,
-        amount,
-        type: 'Electricity Payment',
-        status: 'Successful',
-        transactionId: requestId, // Use the same requestId
-        reference: requestId,
-        description: `${serviceID.toUpperCase().replace(/-/g, ' ')} ${variation_code} electricity purchase`,
-        balanceBefore,
-        balanceAfter: user.walletBalance,
-        metadata, // 🔥 THIS IS THE KEY - SAVE ALL DATA
-        isCommission: false,
-        service: 'electricity',
-        authenticationMethod: req.authenticationMethod || 'pin',
-        gateway: 'DalaBaPay App'
-      });
+     // 🔥 CRITICAL: Create transaction with ALL data (Use 'debit' type instead of 'Electricity Payment')
+const transaction = new Transaction({
+  userId,
+  amount,
+  type: 'debit',  // 🔥 CHANGE: Use 'debit' not 'Electricity Payment'
+  status: 'Successful',
+  transactionId: requestId,
+  reference: requestId,
+  description: `${serviceID.toUpperCase().replace(/-/g, ' ')} purchase`,  // 🔥 SIMPLIFY description
+  balanceBefore,
+  balanceAfter: user.walletBalance,
+  metadata, // 🔥 THIS IS THE KEY - SAVE ALL DATA (now complete)
+  isCommission: false,
+  service: 'electricity',
+  authenticationMethod: req.authenticationMethod || 'pin',
+  gateway: 'source'  // 🔥 CHANGE: Use 'paystack' not 'DalaBaPay App'
+});
 
       await transaction.save({ session });
 
