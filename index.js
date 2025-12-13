@@ -6397,7 +6397,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
         description: `Wallet funding via ${source} - Ref: ${reference}`,
         balanceBefore,
         balanceAfter: user.walletBalance,
-        gateway: Dalabapay App,
+        gateway: 'Dalabapay App',
         metadata: { source: 'webhook', processedAt: new Date() }
       }], { session });
 
