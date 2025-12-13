@@ -4075,23 +4075,23 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
     let vtpassResult;
     
-    // ✅ CRITICAL FIX 2: Use frontend VTpass response WITHOUT calling VTpass again
-    if (frontendVtpassResponse && frontendVtpassResponse.code === '000') {
-      console.log('✅ Using VTpass response from frontend (NO DUPLICATE API CALL)');
+         // ✅ CRITICAL FIX: SKIP VTpass call entirely - proxy already handled it
+      if (!frontendVtpassResponse || frontendVtpassResponse.code !== '000') {
+        // If we don't have a successful VTpass response from the proxy,
+        // this means something went wrong earlier
+        console.error('❌ No valid VTpass response from proxy');
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Transaction processing error. Please try again.' 
+        });
+      }
+      
+      // Use the VTpass response from the proxy
+      console.log('✅ Using VTpass response from proxy (NO DUPLICATE API CALL)');
       vtpassResult = {
         success: true,
         data: frontendVtpassResponse
       };
-    } else {
-      // 🔥 THIS IS THE BUG: Don't call VTpass if frontend already called it!
-      // The proxy already called VTpass successfully
-      await session.abortTransaction();
-      console.error('❌ ERROR: Frontend should have already called VTpass!');
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Transaction processing error. Please try again.' 
-      });
-    }
 
     console.log('📦 Processing VTpass Response:', {
       success: vtpassResult.success,
@@ -4701,6 +4701,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     const vtpassResult = await callVtpassApi(endpoint, payload);
 
     // === 7. SUCCESS ===
+       // === 7. SUCCESS ===
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       let newBalance = user.walletBalance;
 
@@ -4712,9 +4713,10 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           return res.status(400).json({ success: false, message: 'Insufficient balance' });
         }
 
+        // 🔥 FIX: DO NOT save user yet - keep in session only
         user.walletBalance -= parseFloat(amount);
         newBalance = user.walletBalance;
-        await user.save({ session });
+        // REMOVED: await user.save({ session }); // Don't save yet!
 
         // === RECORD TRANSACTION WITH COMPLETE METADATA ===
         let transactionMetadata = { phone, billersCode, service: serviceID };
@@ -4763,12 +4765,12 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
             verificationHistory: []
           };
           
-          // ✅ FIXED: Now we can reassign displayType because it's let, not const
           displayType = 'Electricity Purchase';
           
           console.log('✅ PROXY: Electricity transaction with COMPLETE metadata');
         }
 
+        // 🔥 FIX: Save transaction but don't commit yet
         await createTransaction(
           userId,
           parseFloat(amount),
@@ -4790,18 +4792,24 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         await calculateAndAddCommission(userId, amount, session, commService).catch(() => {});
       }
 
+      // 🔥 CRITICAL FIX: Save user and commit ONLY at the very end
+      await user.save({ session });
       await session.commitTransaction();
 
       return res.json({
         success: true,
         message: 'Transaction successful',
-        newBalance,
+        newBalance: user.walletBalance, // Use actual saved balance
         vtpassResponse: vtpassResult.data,
         requestId: uniqueRequestId,
         customerName: vtpassResult.data.content?.Customer_Name || ''
       });
     }
 
+
+
+
+  
     // === FAILED ===
     await session.abortTransaction();
 
