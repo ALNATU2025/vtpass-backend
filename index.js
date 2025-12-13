@@ -4678,7 +4678,8 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       // add more as needed
     };
 
-    const displayType = typeMap[serviceID] || 'debit';
+    // 🔥 FIX: Use let instead of const
+    let displayType = typeMap[serviceID] || 'debit';
 
     // === 5. Build VTpass payload ===
     const payload = {
@@ -4715,7 +4716,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         newBalance = user.walletBalance;
         await user.save({ session });
 
-                // === RECORD TRANSACTION WITH COMPLETE METADATA ===
+        // === RECORD TRANSACTION WITH COMPLETE METADATA ===
         let transactionMetadata = { phone, billersCode, service: serviceID };
 
         // 🔥 SPECIAL HANDLING FOR ELECTRICITY TRANSACTIONS
@@ -4762,7 +4763,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
             verificationHistory: []
           };
           
-          // Use 'Electricity Purchase' type for electricity
+          // ✅ FIXED: Now we can reassign displayType because it's let, not const
           displayType = 'Electricity Purchase';
           
           console.log('✅ PROXY: Electricity transaction with COMPLETE metadata');
@@ -4829,7 +4830,6 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     session.endSession();
   }
 });
-
 
 
 
