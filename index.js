@@ -4109,7 +4109,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         isCommission: false,
         service: 'electricity',
         authenticationMethod: req.authenticationMethod || 'pin',
-        gateway: 'DalaBaPay App'  // 🔥 CHANGE: Use 'DalaBaPay App' NOT 'source'
+        gateway: 'DalabaPay App'  // 🔥 CHANGE: Use 'DalabaPay App' for all internal transactions
       });
 
       await transaction.save({ session });
@@ -4123,6 +4123,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         transactionId: requestId,
         hasToken: !!formattedToken,
         token: formattedToken || 'Check SMS',
+        gateway: 'DalabaPay App',
         savedToDB: true
       });
 
@@ -4138,6 +4139,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         customerAddress: customerAddress || 'N/A',
         meterNumber: billersCode,
         units: units,
+        gateway: 'DalabaPay App',  // 🔥 Add gateway in response
         vtpassResponse: {
           ...vtpassData,
           response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL'
@@ -4176,7 +4178,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
