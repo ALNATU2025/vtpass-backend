@@ -3979,7 +3979,7 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity – FINAL FIXED VERSION (SAVES ALL DATA)
+// @desc    Purchase Electricity – ULTIMATE FIXED VERSION (SAVES ALL DATA INCLUDING TOKEN)
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
@@ -4032,103 +4032,98 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       await user.save({ session });
 
       const vtpassData = vtpassResult.data || {};
-      const content = vtpassData.content || {};
       
-      // 🔥 CRITICAL: Extract ALL data from VTpass response
-      const token = vtpassData.purchased_code || 
-                    vtpassData.token || 
-                    vtpassData.Token || 
-                    content.token || 
-                    content.Token || 
-                    null;
+      // 🔥 CRITICAL FIX: Extract ALL data correctly
+      const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+      const customerName = vtpassData.customerName || 'N/A';
+      const customerAddress = vtpassData.customerAddress || 'N/A';
+      const exchangeReference = vtpassData.exchangeReference || requestId;
+      const units = vtpassData.units || '0.00';
 
-      const customerName = vtpassData.customerName || 
-                          content.Customer_Name || 
-                          content.customerName || 
-                          null;
-
-      const customerAddress = vtpassData.customerAddress || 
-                             content.Address || 
-                             content.customerAddress || 
-                             null;
-
-      const exchangeReference = vtpassData.exchangeReference || 
-                               content.exchangeReference || 
-                               requestId;
-
-      console.log('📦 EXTRACTED DATA FROM VTPASS:');
-      console.log('   Token:', token);
+      console.log('📦 EXTRACTED FROM VTPASS:');
+      console.log('   Raw Token:', rawToken);
       console.log('   Customer Name:', customerName);
       console.log('   Customer Address:', customerAddress);
-      console.log('   Exchange Reference:', exchangeReference);
 
-      // 🔥 CRITICAL: Format token - remove "Token : " prefix
+      // 🔥 FIX: Format token properly - remove "Token : " prefix
       let formattedToken = null;
-      if (token) {
-        formattedToken = token.toString().replace('Token : ', '').trim();
+      if (rawToken) {
+        formattedToken = rawToken.toString()
+          .replace('Token : ', '')
+          .replace('Token:', '')
+          .replace('TOKEN : ', '')
+          .replace('TOKEN:', '')
+          .trim();
+        
+        // Ensure proper formatting (add spaces every 4 digits if missing)
+        if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+          formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+        }
+        
         console.log('   Formatted Token:', formattedToken);
       }
 
-      // 🔥 CRITICAL: Clean customer name - remove extra spaces
-      let cleanedCustomerName = null;
-      if (customerName) {
-        cleanedCustomerName = customerName.toString().trim();
-      }
+      // 🔥 CRITICAL FIX: Build metadata with EXACT field names that frontend expects
+      const metadata = {
+        // Core fields
+        serviceID: serviceID,
+        billersCode: billersCode,
+        variation_code: variation_code,
+        amount: amount.toFixed(2),
+        phone: phone,
+        
+        // 🔥 MUST HAVE THESE EXACT FIELD NAMES for frontend extraction:
+        meterNumber: billersCode,  // Frontend looks for this EXACT name
+        token: formattedToken || 'Check SMS',  // Frontend looks for this EXACT name
+        customerName: customerName || 'N/A',  // Frontend looks for this EXACT name
+        customerAddress: customerAddress || 'N/A',  // Frontend looks for this EXACT name
+        
+        // Additional info
+        exchangeReference: exchangeReference,
+        units: units,
+        
+        // Keep vtpass response for reference
+        vtpassResponse: vtpassData,
+        
+        // Frontend expects these fields too
+        serviceType: 'electricity',
+        provider: serviceID,
+        type: variation_code,
+        verificationHistory: []
+      };
 
-    // 🔥 CRITICAL: Build COMPLETE metadata WITH ALL DATA (EXACT SAME FORMAT AS OLD TRANSACTIONS)
-const metadata = {
-  phone: phone,
-  smartcardNumber: '',  // Keep empty for electricity
-  billersCode: billersCode,
-  variation_code: variation_code,
-  packageName: '',  // Keep empty for electricity
-  serviceID: serviceID,
-  selectedPackage: '',  // Keep empty for electricity
-  meterNumber: billersCode,  // MUST be same as billersCode
-  provider: serviceID,
-  type: variation_code,
-  token: formattedToken,  // 🔥 MUST include token
-  customerName: cleanedCustomerName,  // 🔥 MUST include customer name
-  customerAddress: customerAddress,  // 🔥 MUST include address
-  exchangeReference: exchangeReference,
-  vtpassResponse: vtpassData,  // Keep full response
-  verificationHistory: []  // Add empty array to match old format
-};
+      console.log('📦 METADATA TO SAVE:', JSON.stringify(metadata, null, 2));
 
-      console.log('📦 FINAL METADATA TO SAVE TO DATABASE:', JSON.stringify(metadata, null, 2));
-
-     // 🔥 CRITICAL: Create transaction with ALL data (Use 'debit' type instead of 'Electricity Payment')
-const transaction = new Transaction({
-  userId,
-  amount,
-  type: 'debit',  // 🔥 CHANGE: Use 'debit' not 'Electricity Payment'
-  status: 'Successful',
-  transactionId: requestId,
-  reference: requestId,
-  description: `${serviceID.toUpperCase().replace(/-/g, ' ')} purchase`,  // 🔥 SIMPLIFY description
-  balanceBefore,
-  balanceAfter: user.walletBalance,
-  metadata, // 🔥 THIS IS THE KEY - SAVE ALL DATA (now complete)
-  isCommission: false,
-  service: 'electricity',
-  authenticationMethod: req.authenticationMethod || 'pin',
-  gateway: 'source'  // 🔥 CHANGE: Use 'paystack' not 'DalaBaPay App'
-});
+      // 🔥 FIX: Create transaction with correct gateway and type
+      const transaction = new Transaction({
+        userId,
+        amount,
+        type: 'Electricity Purchase',  // 🔥 CHANGE: Use 'Electricity Purchase' NOT 'debit'
+        status: 'Successful',
+        transactionId: requestId,
+        reference: requestId,
+        description: `${serviceID.replace('-', ' ')} purchase for ${phone}`,
+        balanceBefore,
+        balanceAfter: user.walletBalance,
+        metadata: metadata, // 🔥 This contains ALL the data including token
+        isCommission: false,
+        service: 'electricity',
+        authenticationMethod: req.authenticationMethod || 'pin',
+        gateway: 'DalaBaPay App'  // 🔥 CHANGE: Use 'DalaBaPay App' NOT 'source'
+      });
 
       await transaction.save({ session });
 
-      // Calculate commission - FIXED: Pass serviceID instead of 'electricity'
+      // Calculate commission
       await calculateAndAddCommission(userId, amount, session, serviceID);
 
       await session.commitTransaction();
 
-      console.log('✅ ELECTRICITY PURCHASE COMPLETE - DATA SAVED TO DATABASE:', {
-        transactionId: transaction.transactionId,
-        reference: requestId,
+      console.log('✅ ELECTRICITY PURCHASE COMPLETE:', {
+        transactionId: requestId,
         hasToken: !!formattedToken,
-        hasCustomerName: !!cleanedCustomerName,
-        hasCustomerAddress: !!customerAddress,
-        savedInDB: true
+        token: formattedToken || 'Check SMS',
+        savedToDB: true
       });
 
       // Response to frontend
@@ -4136,17 +4131,16 @@ const transaction = new Transaction({
         success: true,
         message: 'Electricity purchased successfully!',
         newBalance: user.walletBalance,
-        transactionId: transaction.transactionId,
+        transactionId: requestId,
         reference: requestId,
         token: formattedToken || 'Check SMS',
-        customerName: cleanedCustomerName || 'N/A',
+        customerName: customerName || 'N/A',
         customerAddress: customerAddress || 'N/A',
+        meterNumber: billersCode,
+        units: units,
         vtpassResponse: {
           ...vtpassData,
-          response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL',
-          requestId: requestId,
-          amount: amount.toFixed(2),
-          transaction_date: new Date().toISOString()
+          response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL'
         }
       });
     } else {
