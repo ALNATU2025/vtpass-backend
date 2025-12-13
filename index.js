@@ -3986,15 +3986,17 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
   body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
-  body('amount').isFloat({ min: 1000 }).withMessage('Minimum ₦1000'),
+  body('amount').isFloat({ min: 2000 }).withMessage('Minimum ₦2000'), // CHANGED FROM 1000 TO 2000
   body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
 
-  const { serviceID, billersCode, variation_code, amount, phone } = req.body;
+  const { serviceID, billersCode, variation_code, amount, phone, request_id, vtpassResponse: frontendVtpassResponse } = req.body;
   const userId = req.user._id;
-  const requestId = generateVtpassRequestId();
+  
+  // ✅ USE FRONTEND REQUEST_ID OR GENERATE NEW
+  const requestId = request_id || generateVtpassRequestId();
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -4007,24 +4009,150 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       throw new Error(`Insufficient balance. Need ₦${amount.toFixed(2)}, have ₦${user.walletBalance.toFixed(2)}`);
     }
 
-    const vtpassPayload = {
-      request_id: requestId,
-      serviceID,
-      billersCode,
-      variation_code,
-      amount: amount.toFixed(2),
-      phone
-    };
+    // ✅ CRITICAL: Check if transaction already exists in database
+    const existingTransaction = await Transaction.findOne({
+      reference: requestId,
+      userId: userId
+    }).session(session);
 
-    console.log('🔌 ELECTRICITY PURCHASE REQUEST:', vtpassPayload);
+    if (existingTransaction) {
+      // If transaction already exists and is successful, just return it
+      if (existingTransaction.status === 'Successful' || existingTransaction.status === 'successful') {
+        await session.abortTransaction();
+        console.log('✅ Transaction already exists and is successful:', requestId);
+        
+        return res.json({
+          success: true,
+          message: 'Transaction already completed',
+          alreadyProcessed: true,
+          transactionId: existingTransaction._id,
+          token: existingTransaction.metadata?.token || 'Check SMS',
+          customerName: existingTransaction.metadata?.customerName || 'N/A',
+          customerAddress: existingTransaction.metadata?.customerAddress || 'N/A',
+          newBalance: user.walletBalance
+        });
+      }
+    }
+
+    console.log('🔌 ELECTRICITY PURCHASE REQUEST:', {
+      serviceID, billersCode, variation_code, amount, phone, requestId,
+      hasFrontendVtpassResponse: !!frontendVtpassResponse
+    });
+
+    let vtpassResult;
     
-    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+    // ✅ CRITICAL: Use frontend VTpass response if available (prevents duplicate API call)
+    if (frontendVtpassResponse && frontendVtpassResponse.code === '000') {
+      console.log('✅ Using VTpass response from frontend (prevents duplicate API call)');
+      vtpassResult = {
+        success: true,
+        data: frontendVtpassResponse
+      };
+    } else {
+      // Only call VTpass if frontend doesn't have the response
+      console.log('🚀 Calling VTpass API...');
+      const vtpassPayload = {
+        request_id: requestId,
+        serviceID,
+        billersCode,
+        variation_code,
+        amount: amount.toFixed(2),
+        phone
+      };
+      vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+    }
 
-    console.log('📦 VTpass Electricity Purchase Response:', {
+    console.log('📦 VTpass Response:', {
       success: vtpassResult.success,
       code: vtpassResult.data?.code,
-      message: vtpassResult.data?.response_description
+      message: vtpassResult.data?.response_description,
+      source: frontendVtpassResponse ? 'frontend' : 'api'
     });
+
+    // ✅ Handle duplicate request_id gracefully
+    if (vtpassResult.data?.code === '019' || 
+        vtpassResult.data?.response_description?.includes('DUPLICATE') ||
+        vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+      
+      console.log('⚠️ Duplicate request_id detected. Transaction was likely successful.');
+      
+      // Even though it's a duplicate, the transaction might have been successful
+      // Check if we have frontend response that shows success
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= amount;
+      await user.save({ session });
+
+      // Extract data from frontend response if available
+      const frontendData = frontendVtpassResponse || {};
+      const rawToken = frontendData.purchased_code || frontendData.token || frontendData.Token || null;
+      const customerName = frontendData.customerName || 'N/A';
+      const customerAddress = frontendData.customerAddress || 'N/A';
+      
+      // Format token
+      let formattedToken = null;
+      if (rawToken) {
+        formattedToken = rawToken.toString()
+          .replace('Token : ', '')
+          .replace('Token:', '')
+          .replace('TOKEN : ', '')
+          .replace('TOKEN:', '')
+          .trim();
+        
+        if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+          formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+        }
+      }
+
+      const metadata = {
+        serviceID: serviceID,
+        billersCode: billersCode,
+        variation_code: variation_code,
+        amount: amount.toFixed(2),
+        phone: phone,
+        meterNumber: billersCode,
+        token: formattedToken || 'Check SMS',
+        customerName: customerName,
+        customerAddress: customerAddress,
+        duplicateError: true,
+        vtpassResponse: vtpassResult.data
+      };
+
+      const transaction = new Transaction({
+        userId,
+        amount,
+        type: 'Electricity Purchase',
+        status: 'Successful', // Mark as successful even if duplicate
+        transactionId: requestId,
+        reference: requestId,
+        description: `${serviceID.replace('-', ' ')} purchase for ${phone}`,
+        balanceBefore,
+        balanceAfter: user.walletBalance,
+        metadata: metadata,
+        isCommission: false,
+        service: 'electricity',
+        authenticationMethod: req.authenticationMethod || 'pin',
+        gateway: 'DalabaPay App'
+      });
+
+      await transaction.save({ session });
+
+      await session.commitTransaction();
+
+      console.log('✅ Duplicate transaction recorded as Successful:', requestId);
+
+      return res.json({
+        success: true,
+        message: 'Transaction processed successfully',
+        newBalance: user.walletBalance,
+        transactionId: requestId,
+        reference: requestId,
+        token: formattedToken || 'Check SMS',
+        customerName: customerName,
+        customerAddress: customerAddress,
+        meterNumber: billersCode,
+        duplicate: true
+      });
+    }
 
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
@@ -4045,7 +4173,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       console.log('   Customer Name:', customerName);
       console.log('   Customer Address:', customerAddress);
 
-      // 🔥 FIX: Format token properly - remove "Token : " prefix
+      // 🔥 FIX: Format token properly
       let formattedToken = null;
       if (rawToken) {
         formattedToken = rawToken.toString()
@@ -4055,7 +4183,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
           .replace('TOKEN:', '')
           .trim();
         
-        // Ensure proper formatting (add spaces every 4 digits if missing)
         if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
           formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
         }
@@ -4063,53 +4190,43 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         console.log('   Formatted Token:', formattedToken);
       }
 
-      // 🔥 CRITICAL FIX: Build metadata with EXACT field names that frontend expects
+      // Build metadata
       const metadata = {
-        // Core fields
         serviceID: serviceID,
         billersCode: billersCode,
         variation_code: variation_code,
         amount: amount.toFixed(2),
         phone: phone,
-        
-        // 🔥 MUST HAVE THESE EXACT FIELD NAMES for frontend extraction:
-        meterNumber: billersCode,  // Frontend looks for this EXACT name
-        token: formattedToken || 'Check SMS',  // Frontend looks for this EXACT name
-        customerName: customerName || 'N/A',  // Frontend looks for this EXACT name
-        customerAddress: customerAddress || 'N/A',  // Frontend looks for this EXACT name
-        
-        // Additional info
+        meterNumber: billersCode,
+        token: formattedToken || 'Check SMS',
+        customerName: customerName || 'N/A',
+        customerAddress: customerAddress || 'N/A',
         exchangeReference: exchangeReference,
         units: units,
-        
-        // Keep vtpass response for reference
         vtpassResponse: vtpassData,
-        
-        // Frontend expects these fields too
         serviceType: 'electricity',
         provider: serviceID,
-        type: variation_code,
-        verificationHistory: []
+        type: variation_code
       };
 
       console.log('📦 METADATA TO SAVE:', JSON.stringify(metadata, null, 2));
 
-      // 🔥 FIX: Create transaction with correct gateway and type
+      // Create transaction
       const transaction = new Transaction({
         userId,
         amount,
-        type: 'Electricity Purchase',  // 🔥 CHANGE: Use 'Electricity Purchase' NOT 'debit'
+        type: 'Electricity Purchase',
         status: 'Successful',
         transactionId: requestId,
         reference: requestId,
         description: `${serviceID.replace('-', ' ')} purchase for ${phone}`,
         balanceBefore,
         balanceAfter: user.walletBalance,
-        metadata: metadata, // 🔥 This contains ALL the data including token
+        metadata: metadata,
         isCommission: false,
         service: 'electricity',
         authenticationMethod: req.authenticationMethod || 'pin',
-        gateway: 'DalabaPay App'  // 🔥 CHANGE: Use 'DalabaPay App' for all internal transactions
+        gateway: 'DalabaPay App'
       });
 
       await transaction.save({ session });
@@ -4123,7 +4240,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         transactionId: requestId,
         hasToken: !!formattedToken,
         token: formattedToken || 'Check SMS',
-        gateway: 'DalabaPay App',
         savedToDB: true
       });
 
@@ -4139,7 +4255,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         customerAddress: customerAddress || 'N/A',
         meterNumber: billersCode,
         units: units,
-        gateway: 'DalabaPay App',  // 🔥 Add gateway in response
+        gateway: 'DalabaPay App',
         vtpassResponse: {
           ...vtpassData,
           response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL'
@@ -4150,9 +4266,9 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       
       let errorMsg = vtpassResult.data?.response_description || 'Purchase failed';
       if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
-        errorMsg = `Amount below minimum allowed. Please increase the amount (minimum ₦1000 for electricity).`;
+        errorMsg = `Amount below minimum allowed. Minimum electricity purchase: ₦2000`;
       } else if (errorMsg.includes('013')) {
-        errorMsg = `Insufficient amount. Please enter at least ₦1000.`;
+        errorMsg = `Insufficient amount. Please enter at least ₦2000.`;
       }
       
       return res.status(400).json({ 
@@ -4167,7 +4283,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     
     let errorMessage = error.message;
     if (errorMessage.includes('BELOW MINIMUM AMOUNT')) {
-      errorMessage = `Amount too low. Minimum is ₦1000 for electricity payments.`;
+      errorMessage = `Amount too low. Minimum is ₦2000 for electricity payments.`;
     }
     
     return res.status(400).json({ 
@@ -4178,6 +4294,8 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
+
+
 
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
