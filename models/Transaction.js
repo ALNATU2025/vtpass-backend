@@ -37,9 +37,12 @@ const transactionSchema = new mongoose.Schema({
     enum: [
         'Airtime Purchase',
         'Data Purchase',
+        'Cable TV Subscription',    // For proxy/backend use (what VTpass returns)
+        'Cable TV Purchase', 
         'Electricity Payment',    // For proxy/backend use
         'Electricity Purchase',   // ADD THIS for frontend display
         'Insurance Purchase',
+        'Education Purchase',
         'Wallet Funding',
         'Transfer Sent',
         'Transfer Received',
