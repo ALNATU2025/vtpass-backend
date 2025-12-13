@@ -3979,14 +3979,17 @@ app.post('/api/vtpass/validate-electricity', protect, [
   }
 });
 
-// @desc    Purchase Electricity – ULTIMATE FIXED VERSION (SAVES ALL DATA INCLUDING TOKEN)
+
+
+
+// @desc    Purchase Electricity – ULTIMATE WORKING VERSION (NO DUPLICATE CALLS)
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
   body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
-  body('amount').isFloat({ min: 2000 }).withMessage('Minimum ₦2000'), // CHANGED FROM 1000 TO 2000
+  body('amount').isFloat({ min: 2000 }).withMessage('Minimum ₦2000'),
   body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -4009,27 +4012,58 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       throw new Error(`Insufficient balance. Need ₦${amount.toFixed(2)}, have ₦${user.walletBalance.toFixed(2)}`);
     }
 
-    // ✅ CRITICAL: Check if transaction already exists in database
+    // ✅ CHECK 1: Check if transaction already exists in database
     const existingTransaction = await Transaction.findOne({
       reference: requestId,
       userId: userId
     }).session(session);
 
     if (existingTransaction) {
-      // If transaction already exists and is successful, just return it
+      // If transaction already exists and is successful, return it with CORRECT data
       if (existingTransaction.status === 'Successful' || existingTransaction.status === 'successful') {
         await session.abortTransaction();
         console.log('✅ Transaction already exists and is successful:', requestId);
+        
+        // 🔥 FIX 1: Use FRONTEEND vtpassResponse for fresh data (NOT old database data)
+        const vtpassData = frontendVtpassResponse || {};
+        
+        // Extract CORRECT data from frontend vtpassResponse
+        const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+        const customerName = vtpassData.customerName || 'N/A';
+        const customerAddress = vtpassData.customerAddress || 'N/A';
+        
+        // Format token properly
+        let formattedToken = null;
+        if (rawToken) {
+          formattedToken = rawToken.toString()
+            .replace('Token : ', '')
+            .replace('Token:', '')
+            .replace('TOKEN : ', '')
+            .replace('TOKEN:', '')
+            .trim();
+          
+          if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+            formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+          }
+        }
+        
+        console.log('🔥 USING FRONTEND VTPASS DATA FOR DUPLICATE:');
+        console.log('   Token from frontend:', formattedToken);
+        console.log('   Customer Name from frontend:', customerName);
+        console.log('   Customer Address from frontend:', customerAddress);
         
         return res.json({
           success: true,
           message: 'Transaction already completed',
           alreadyProcessed: true,
           transactionId: existingTransaction._id,
-          token: existingTransaction.metadata?.token || 'Check SMS',
-          customerName: existingTransaction.metadata?.customerName || 'N/A',
-          customerAddress: existingTransaction.metadata?.customerAddress || 'N/A',
-          newBalance: user.walletBalance
+          token: formattedToken || 'Check SMS',
+          customerName: customerName,
+          customerAddress: customerAddress,
+          meterNumber: billersCode,
+          newBalance: user.walletBalance,
+          // Return the vtpass data so frontend can use it
+          vtpassResponse: vtpassData
         });
       }
     }
@@ -4041,52 +4075,50 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
     let vtpassResult;
     
-    // ✅ CRITICAL: Use frontend VTpass response if available (prevents duplicate API call)
+    // ✅ CRITICAL FIX 2: Use frontend VTpass response WITHOUT calling VTpass again
     if (frontendVtpassResponse && frontendVtpassResponse.code === '000') {
-      console.log('✅ Using VTpass response from frontend (prevents duplicate API call)');
+      console.log('✅ Using VTpass response from frontend (NO DUPLICATE API CALL)');
       vtpassResult = {
         success: true,
         data: frontendVtpassResponse
       };
     } else {
-      // Only call VTpass if frontend doesn't have the response
-      console.log('🚀 Calling VTpass API...');
-      const vtpassPayload = {
-        request_id: requestId,
-        serviceID,
-        billersCode,
-        variation_code,
-        amount: amount.toFixed(2),
-        phone
-      };
-      vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+      // 🔥 THIS IS THE BUG: Don't call VTpass if frontend already called it!
+      // The proxy already called VTpass successfully
+      await session.abortTransaction();
+      console.error('❌ ERROR: Frontend should have already called VTpass!');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction processing error. Please try again.' 
+      });
     }
 
-    console.log('📦 VTpass Response:', {
+    console.log('📦 Processing VTpass Response:', {
       success: vtpassResult.success,
       code: vtpassResult.data?.code,
-      message: vtpassResult.data?.response_description,
-      source: frontendVtpassResponse ? 'frontend' : 'api'
+      message: vtpassResult.data?.response_description
     });
 
-    // ✅ Handle duplicate request_id gracefully
+    // ✅ Handle duplicate request_id (VTpass already processed it)
     if (vtpassResult.data?.code === '019' || 
         vtpassResult.data?.response_description?.includes('DUPLICATE') ||
         vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
       
-      console.log('⚠️ Duplicate request_id detected. Transaction was likely successful.');
+      console.log('🔁 VTpass says duplicate, but transaction was successful on first call');
       
-      // Even though it's a duplicate, the transaction might have been successful
-      // Check if we have frontend response that shows success
+      // 🔥 CRITICAL: Even if VTpass says "duplicate", the transaction WAS SUCCESSFUL
+      // Extract data from the SUCCESSFUL frontend response
+      const vtpassData = frontendVtpassResponse || {};
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
       await user.save({ session });
 
-      // Extract data from frontend response if available
-      const frontendData = frontendVtpassResponse || {};
-      const rawToken = frontendData.purchased_code || frontendData.token || frontendData.Token || null;
-      const customerName = frontendData.customerName || 'N/A';
-      const customerAddress = frontendData.customerAddress || 'N/A';
+      // Extract data from the successful VTpass response
+      const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+      const customerName = vtpassData.customerName || 'N/A';
+      const customerAddress = vtpassData.customerAddress || 'N/A';
+      const exchangeReference = vtpassData.exchangeReference || requestId;
+      const units = vtpassData.units || '0.00';
       
       // Format token
       let formattedToken = null;
@@ -4103,6 +4135,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         }
       }
 
+      // Build COMPLETE metadata
       const metadata = {
         serviceID: serviceID,
         billersCode: billersCode,
@@ -4113,18 +4146,22 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         token: formattedToken || 'Check SMS',
         customerName: customerName,
         customerAddress: customerAddress,
-        duplicateError: true,
-        vtpassResponse: vtpassResult.data
+        exchangeReference: exchangeReference,
+        units: units,
+        vtpassResponse: vtpassData,
+        serviceType: 'electricity',
+        provider: serviceID,
+        type: variation_code
       };
 
       const transaction = new Transaction({
         userId,
         amount,
         type: 'Electricity Purchase',
-        status: 'Successful', // Mark as successful even if duplicate
+        status: 'Successful',
         transactionId: requestId,
         reference: requestId,
-        description: `${serviceID.replace('-', ' ')} purchase for ${phone}`,
+        description: `${serviceID.replace('-', ' ')} purchase`,
         balanceBefore,
         balanceAfter: user.walletBalance,
         metadata: metadata,
@@ -4136,13 +4173,16 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
       await transaction.save({ session });
 
+      // Calculate commission
+      await calculateAndAddCommission(userId, amount, session, serviceID);
+
       await session.commitTransaction();
 
-      console.log('✅ Duplicate transaction recorded as Successful:', requestId);
+      console.log('✅ Duplicate transaction recorded as Successful with token:', formattedToken);
 
       return res.json({
         success: true,
-        message: 'Transaction processed successfully',
+        message: 'Electricity purchased successfully!',
         newBalance: user.walletBalance,
         transactionId: requestId,
         reference: requestId,
@@ -4150,10 +4190,14 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         customerName: customerName,
         customerAddress: customerAddress,
         meterNumber: billersCode,
-        duplicate: true
+        units: units,
+        gateway: 'DalabaPay App',
+        balanceBefore: balanceBefore,
+        vtpassResponse: vtpassData
       });
     }
 
+    // ✅ SUCCESSFUL TRANSACTION
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
@@ -4161,7 +4205,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
       const vtpassData = vtpassResult.data || {};
       
-      // 🔥 CRITICAL FIX: Extract ALL data correctly
+      // Extract ALL data correctly
       const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
       const customerName = vtpassData.customerName || 'N/A';
       const customerAddress = vtpassData.customerAddress || 'N/A';
@@ -4173,7 +4217,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
       console.log('   Customer Name:', customerName);
       console.log('   Customer Address:', customerAddress);
 
-      // 🔥 FIX: Format token properly
+      // Format token properly
       let formattedToken = null;
       if (rawToken) {
         formattedToken = rawToken.toString()
@@ -4219,7 +4263,7 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         status: 'Successful',
         transactionId: requestId,
         reference: requestId,
-        description: `${serviceID.replace('-', ' ')} purchase for ${phone}`,
+        description: `${serviceID.replace('-', ' ')} purchase`,
         balanceBefore,
         balanceAfter: user.walletBalance,
         metadata: metadata,
@@ -4238,7 +4282,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
 
       console.log('✅ ELECTRICITY PURCHASE COMPLETE:', {
         transactionId: requestId,
-        hasToken: !!formattedToken,
         token: formattedToken || 'Check SMS',
         savedToDB: true
       });
@@ -4256,10 +4299,8 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
         meterNumber: billersCode,
         units: units,
         gateway: 'DalabaPay App',
-        vtpassResponse: {
-          ...vtpassData,
-          response_description: vtpassData.response_description || 'TRANSACTION SUCCESSFUL'
-        }
+        balanceBefore: balanceBefore,
+        vtpassResponse: vtpassData
       });
     } else {
       await session.abortTransaction();
@@ -4294,7 +4335,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
     session.endSession();
   }
 });
-
 
 
 // @desc    Get VTpass services
@@ -4675,12 +4715,64 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         newBalance = user.walletBalance;
         await user.save({ session });
 
-        // === RECORD TRANSACTION WITH VALID ENUM VALUES ===
+                // === RECORD TRANSACTION WITH COMPLETE METADATA ===
+        let transactionMetadata = { phone, billersCode, service: serviceID };
+
+        // 🔥 SPECIAL HANDLING FOR ELECTRICITY TRANSACTIONS
+        if (serviceID.includes('electric') && billersCode && vtpassResult.data) {
+          const vtpassData = vtpassResult.data;
+          
+          // Extract electricity data from VTpass
+          const token = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+          const customerName = vtpassData.customerName || vtpassData.content?.Customer_Name || null;
+          const customerAddress = vtpassData.customerAddress || vtpassData.content?.Address || null;
+          
+          // Format token
+          let formattedToken = null;
+          if (token) {
+            formattedToken = token.toString()
+              .replace('Token : ', '')
+              .replace('Token:', '')
+              .replace('TOKEN : ', '')
+              .replace('TOKEN:', '')
+              .trim();
+            
+            if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+              formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+            }
+          }
+          
+          // Create COMPLETE electricity metadata
+          transactionMetadata = {
+            phone: phone || '',
+            smartcardNumber: '',
+            billersCode: billersCode,
+            variation_code: variation_code || '',
+            packageName: '',
+            serviceID: serviceID,
+            selectedPackage: '',
+            meterNumber: billersCode,
+            provider: serviceID,
+            type: variation_code || 'prepaid',
+            token: formattedToken || 'Check SMS',
+            customerName: customerName ? customerName.toString().trim() : 'N/A',
+            customerAddress: customerAddress || 'N/A',
+            exchangeReference: vtpassData.exchangeReference || uniqueRequestId,
+            vtpassResponse: vtpassData,
+            verificationHistory: []
+          };
+          
+          // Use 'Electricity Purchase' type for electricity
+          displayType = 'Electricity Purchase';
+          
+          console.log('✅ PROXY: Electricity transaction with COMPLETE metadata');
+        }
+
         await createTransaction(
           userId,
           parseFloat(amount),
-          displayType,           // ← CORRECT: 'Airtime Purchase', 'Data Purchase', etc.
-          'Successful',          // ← CORRECT: Matches enum
+          displayType,
+          'Successful',
           `${serviceID.toUpperCase()} purchase`,
           balanceBefore,
           newBalance,
@@ -4688,7 +4780,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           false,
           'pin',
           uniqueRequestId,
-          { phone, billersCode, service: serviceID }
+          transactionMetadata
         );
 
         // === CREDIT COMMISSION ===
@@ -6305,7 +6397,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
         description: `Wallet funding via ${source} - Ref: ${reference}`,
         balanceBefore,
         balanceAfter: user.walletBalance,
-        gateway: source,
+        gateway: Dalabapay App,
         metadata: { source: 'webhook', processedAt: new Date() }
       }], { session });
 
