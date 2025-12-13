@@ -37,9 +37,8 @@ const transactionSchema = new mongoose.Schema({
     enum: [
         'Airtime Purchase',
         'Data Purchase',
-        'Cable TV Subscription',
-        'Electricity Payment',
-        'Education Payment',
+        'Electricity Payment',    // For proxy/backend use
+        'Electricity Purchase',   // ADD THIS for frontend display
         'Insurance Purchase',
         'Wallet Funding',
         'Transfer Sent',
