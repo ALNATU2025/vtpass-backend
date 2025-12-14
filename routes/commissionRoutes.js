@@ -4,6 +4,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { protect } = require('../middleware/authMiddleware');
+const { verifyTransactionAuth } = require('../middleware/transactionAuthMiddleware');
 
 
 
