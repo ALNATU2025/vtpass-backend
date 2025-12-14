@@ -5,6 +5,7 @@ const Settings = require('../models/AppSettings');
 const bcrypt = require('bcryptjs');
 const AuthLog = require('../models/AuthLog');
 const moment = require('moment-timezone'); // already required in index.js
+const rateLimit = require('express-rate-limit');
 
 // Helper: Get current time in Lagos timezone
 function getLagosTime() {
