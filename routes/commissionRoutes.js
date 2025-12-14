@@ -1,13 +1,22 @@
 // routes/commissionRoutes.js
 const express = require('express');
 const router = express.Router();
-const rateLimit = require('express-rate-limit'); // ADD THIS LINE
+const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { protect } = require('../middleware/authMiddleware');
 const { verifyTransactionAuth } = require('../middleware/transactionAuthMiddleware');
 
-// ADD THIS RATE LIMITER (adjust as needed)
+// Helper function to format currency
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('en-NG', {
+    style: 'currency',
+    currency: 'NGN',
+    minimumFractionDigits: 2
+  }).format(amount);
+};
+
+// Rate limiter for withdrawals
 const withdrawLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5,                   // max 5 withdrawals per window
@@ -39,8 +48,8 @@ router.get('/balance', protect, async (req, res) => {
       data: {
         commissionBalance: user.commissionBalance,
         walletBalance: user.walletBalance,
-        formattedCommissionBalance: user.formattedCommissionBalance,
-        formattedWalletBalance: user.formattedWalletBalance,
+        formattedCommissionBalance: formatCurrency(user.commissionBalance),
+        formattedWalletBalance: formatCurrency(user.walletBalance),
         user: {
           fullName: user.fullName,
           email: user.email,
@@ -74,11 +83,22 @@ router.post('/withdraw', protect, withdrawLimiter, verifyTransactionAuth, async 
       });
     }
     
+    // Convert to number
+    const withdrawalAmount = parseFloat(amount);
+    
     // Check minimum withdrawal
-    if (amount < 500) {
+    if (withdrawalAmount < 500) {
       return res.status(400).json({
         success: false,
         message: 'Minimum withdrawal amount is ₦500'
+      });
+    }
+    
+    // Check maximum withdrawal (optional)
+    if (withdrawalAmount > 50000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum withdrawal amount is ₦50,000'
       });
     }
     
@@ -90,8 +110,16 @@ router.post('/withdraw', protect, withdrawLimiter, verifyTransactionAuth, async 
       });
     }
     
+    // Check if user has enough commission balance
+    if (user.commissionBalance < withdrawalAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient commission balance. Available: ${formatCurrency(user.commissionBalance)}`
+      });
+    }
+    
     // Process withdrawal
-    const result = await user.withdrawCommissionToWallet(amount);
+    const result = await user.withdrawCommissionToWallet(withdrawalAmount);
     
     res.json({
       success: true,
@@ -99,8 +127,12 @@ router.post('/withdraw', protect, withdrawLimiter, verifyTransactionAuth, async 
       data: {
         newCommissionBalance: result.newCommissionBalance,
         newWalletBalance: result.newWalletBalance,
+        formattedNewCommissionBalance: formatCurrency(result.newCommissionBalance),
+        formattedNewWalletBalance: formatCurrency(result.newWalletBalance),
         commissionTransactionId: result.commissionTransactionId,
-        walletTransactionId: result.walletTransactionId
+        walletTransactionId: result.walletTransactionId,
+        amountWithdrawn: withdrawalAmount,
+        formattedAmountWithdrawn: formatCurrency(withdrawalAmount)
       }
     });
     
@@ -140,12 +172,19 @@ router.get('/transactions', protect, async (req, res) => {
       .limit(parseInt(limit))
       .select('-__v');
     
+    // Format amounts for display
+    const formattedTransactions = transactions.map(transaction => ({
+      ...transaction.toObject(),
+      formattedAmount: formatCurrency(transaction.amount),
+      formattedBalance: transaction.balanceAfter ? formatCurrency(transaction.balanceAfter) : null
+    }));
+    
     const total = await Transaction.countDocuments(query);
     
     res.json({
       success: true,
       data: {
-        transactions,
+        transactions: formattedTransactions,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -185,7 +224,9 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
       });
     }
     
-    if (amount <= 0) {
+    const serviceAmount = parseFloat(amount);
+    
+    if (serviceAmount <= 0) {
       return res.status(400).json({
         success: false,
         message: 'Amount must be greater than 0'
@@ -200,18 +241,27 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
       });
     }
     
+    // Check if user has enough commission balance
+    if (user.commissionBalance < serviceAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient commission balance. Available: ${formatCurrency(user.commissionBalance)}`
+      });
+    }
+    
     // Deduct commission
     const commissionResult = await user.deductCommissionForService(
-      amount,
+      serviceAmount,
       serviceType,
       serviceDetails
     );
     
     res.json({
       success: true,
-      message: `₦${amount.toFixed(2)} commission allocated for ${serviceType} purchase`,
+      message: `${formatCurrency(serviceAmount)} commission allocated for ${serviceType} purchase`,
       data: {
         newCommissionBalance: commissionResult.newCommissionBalance,
+        formattedNewCommissionBalance: formatCurrency(commissionResult.newCommissionBalance),
         transactionId: commissionResult.transactionId,
         commissionTransaction: commissionResult.commissionTransaction,
         commissionOnly: true
@@ -226,6 +276,7 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     });
   }
 });
+
 // @desc    Complete commission-based service purchase (called after VTPass success)
 // @route   POST /api/commission/complete-service-purchase
 // @access  Private
@@ -305,6 +356,14 @@ router.post('/refund', protect, async (req, res) => {
       });
     }
     
+    // Verify it's a commission transaction
+    if (!transaction.isCommission) {
+      return res.status(400).json({
+        success: false,
+        message: 'Not a commission transaction'
+      });
+    }
+    
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({
@@ -318,9 +377,10 @@ router.post('/refund', protect, async (req, res) => {
     
     res.json({
       success: true,
-      message: `₦${transaction.amount.toFixed(2)} commission refunded successfully`,
+      message: `${formatCurrency(transaction.amount)} commission refunded successfully`,
       data: {
         newCommissionBalance: refundResult.newCommissionBalance,
+        formattedNewCommissionBalance: formatCurrency(refundResult.newCommissionBalance),
         refundTransactionId: refundResult.refundTransactionId
       }
     });
