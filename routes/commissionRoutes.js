@@ -1,16 +1,11 @@
 // routes/commissionRoutes.js
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit'); // ADD THIS LINE
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const { protect } = require('../middleware/authMiddleware');
 const { verifyTransactionAuth } = require('../middleware/transactionAuthMiddleware');
-
-
-
-
-
-
 
 // ADD THIS RATE LIMITER (adjust as needed)
 const withdrawLimiter = rateLimit({
@@ -23,9 +18,6 @@ const withdrawLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-
-
-
 
 // @desc    Get commission balance
 // @route   GET /api/commission/balance
@@ -69,7 +61,7 @@ router.get('/balance', protect, async (req, res) => {
 // @desc    Withdraw commission to main wallet
 // @route   POST /api/commission/withdraw
 // @access  Private
-router.post('/withdraw', protect, async (req, res) => {
+router.post('/withdraw', protect, withdrawLimiter, async (req, res) => { // Added withdrawLimiter middleware
   try {
     const { amount, transactionPin, useBiometric } = req.body;
     const userId = req.user._id;
