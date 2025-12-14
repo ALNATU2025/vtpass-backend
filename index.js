@@ -158,6 +158,10 @@ const transactionRoutes = require('./routes/transactionRoutes');
 app.use('/api/transactions', transactionRoutes);
 
 
+const commissionRoutes = require('./routes/commissionRoutes');
+app.use('/api/commission', commissionRoutes);  // ← THIS LINE WAS MISSING
+
+
 // Initialize cache
 const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
 // Create uploads directory if it doesn't exist
