@@ -231,6 +231,279 @@ userSchema.virtual('formattedCommissionBalance').get(function () {
   return `₦${this.commissionBalance.toFixed(2)}`;
 });
 
+
+
+
+
+// Add to models/User.js after existing methods
+
+// Method to verify transaction PIN with lock checking
+userSchema.methods.verifyTransactionPin = async function (enteredPin) {
+  try {
+    // Check if PIN is locked
+    if (this.isPinLocked()) {
+      const remainingTime = this.getRemainingLockTime();
+      throw new Error(`Account locked. Try again in ${remainingTime} minutes.`);
+    }
+
+    if (!this.transactionPin) {
+      return { success: false, message: 'Transaction PIN not set' };
+    }
+
+    const isMatch = await bcrypt.compare(enteredPin, this.transactionPin);
+    
+    if (isMatch) {
+      // Reset failed attempts on success
+      await this.resetFailedPinAttempts();
+      return { success: true, message: 'PIN verified successfully' };
+    } else {
+      // Increment failed attempts
+      await this.incrementFailedPinAttempts();
+      
+      if (this.failedPinAttempts >= 3) {
+        return { 
+          success: false, 
+          message: 'Account locked for 15 minutes due to multiple failed attempts' 
+        };
+      }
+      
+      const remainingAttempts = 3 - this.failedPinAttempts;
+      return { 
+        success: false, 
+        message: `Invalid PIN. ${remainingAttempts} attempts remaining` 
+      };
+    }
+  } catch (error) {
+    console.error('Error verifying PIN:', error);
+    return { success: false, message: error.message };
+  }
+};
+
+// Method to check commission balance
+userSchema.methods.checkCommissionBalance = function (amount) {
+  if (this.commissionBalance < amount) {
+    return {
+      success: false,
+      available: this.commissionBalance,
+      required: amount,
+      message: `Insufficient commission balance. Available: ₦${this.commissionBalance.toFixed(2)}`
+    };
+  }
+  return {
+    success: true,
+    available: this.commissionBalance,
+    required: amount,
+    message: 'Sufficient commission balance'
+  };
+};
+
+// Method to deduct commission for service purchase
+userSchema.methods.deductCommissionForService = async function (amount, serviceType, serviceDetails) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const balanceCheck = this.checkCommissionBalance(amount);
+    if (!balanceCheck.success) {
+      throw new Error(balanceCheck.message);
+    }
+    
+    const oldCommissionBalance = this.commissionBalance;
+    this.commissionBalance -= amount;
+    
+    // Create commission transaction
+    const commissionTransaction = new Transaction({
+      userId: this._id,
+      type: 'Commission Debit', // Using your Transaction model enum
+      amount: amount,
+      status: 'Pending', // Will update after VTPass success
+      description: `Commission used for ${serviceType} purchase`,
+      balanceBefore: oldCommissionBalance,
+      balanceAfter: this.commissionBalance,
+      isCommission: true,
+      service: serviceType,
+      metadata: {
+        ...serviceDetails,
+        commissionUsed: true,
+        serviceType: serviceType,
+        timestamp: new Date()
+      }
+    });
+    
+    await this.save({ session });
+    await commissionTransaction.save({ session });
+    
+    await session.commitTransaction();
+    
+    return {
+      success: true,
+      newCommissionBalance: this.commissionBalance,
+      deductedAmount: amount,
+      transactionId: commissionTransaction._id,
+      commissionTransaction: commissionTransaction
+    };
+    
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+// Method to withdraw commission to main wallet
+userSchema.methods.withdrawCommissionToWallet = async function (amount, transactionPin = null) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    // Verify PIN if provided
+    if (transactionPin) {
+      const pinVerification = await this.verifyTransactionPin(transactionPin);
+      if (!pinVerification.success) {
+        throw new Error(pinVerification.message);
+      }
+    }
+    
+    // Check balance
+    const balanceCheck = this.checkCommissionBalance(amount);
+    if (!balanceCheck.success) {
+      throw new Error(balanceCheck.message);
+    }
+    
+    // Check minimum withdrawal
+    if (amount < 500) {
+      throw new Error('Minimum withdrawal amount is ₦500');
+    }
+    
+    const oldCommissionBalance = this.commissionBalance;
+    const oldWalletBalance = this.walletBalance || 0;
+    
+    // Deduct from commission
+    this.commissionBalance -= amount;
+    
+    // Add to main wallet
+    this.walletBalance = (this.walletBalance || 0) + amount;
+    
+    // Create commission withdrawal transaction
+    const commissionTransaction = new Transaction({
+      userId: this._id,
+      type: 'Commission Withdrawal',
+      amount: amount,
+      status: 'Successful',
+      description: 'Commission withdrawn to main wallet',
+      balanceBefore: oldCommissionBalance,
+      balanceAfter: this.commissionBalance,
+      isCommission: true,
+      service: 'commission_withdrawal',
+      metadata: {
+        withdrawal: true,
+        destination: 'main_wallet',
+        oldWalletBalance: oldWalletBalance,
+        newWalletBalance: this.walletBalance,
+        withdrawalType: 'commission_to_wallet'
+      }
+    });
+    
+    // Create wallet credit transaction
+    const walletTransaction = new Transaction({
+      userId: this._id,
+      type: 'Commission Credit',
+      amount: amount,
+      status: 'Successful',
+      description: 'Commission transferred to main wallet',
+      balanceBefore: oldWalletBalance,
+      balanceAfter: this.walletBalance,
+      isCommission: false,
+      service: 'wallet_credit',
+      metadata: {
+        source: 'commission_wallet',
+        commissionTransactionId: commissionTransaction._id,
+        commissionAmount: amount
+      }
+    });
+    
+    await this.save({ session });
+    await commissionTransaction.save({ session });
+    await walletTransaction.save({ session });
+    
+    await session.commitTransaction();
+    
+    return {
+      success: true,
+      newCommissionBalance: this.commissionBalance,
+      newWalletBalance: this.walletBalance,
+      commissionTransactionId: commissionTransaction._id,
+      walletTransactionId: walletTransaction._id,
+      message: `₦${amount.toFixed(2)} successfully withdrawn to main wallet`
+    };
+    
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+// Method to refund commission (if VTPass transaction fails)
+userSchema.methods.refundCommission = async function (amount, originalTransactionId) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const oldCommissionBalance = this.commissionBalance;
+    this.commissionBalance += amount;
+    
+    // Create refund transaction
+    const refundTransaction = new Transaction({
+      userId: this._id,
+      type: 'Commission Credit', // This is correct for refund
+      amount: amount,
+      status: 'Successful',
+      description: 'Commission refunded - Service purchase failed',
+      balanceBefore: oldCommissionBalance,
+      balanceAfter: this.commissionBalance,
+      isCommission: true,
+      service: 'commission_refund',
+      metadata: {
+        refund: true,
+        originalTransactionId: originalTransactionId,
+        refundReason: 'service_purchase_failed',
+        timestamp: new Date()
+      }
+    });
+    
+    // Update original transaction status
+    await Transaction.findByIdAndUpdate(
+      originalTransactionId,
+      {
+        status: 'Failed',
+        'metadata.refunded': true,
+        'metadata.refundTransactionId': refundTransaction._id
+      },
+      { session }
+    );
+    
+    await this.save({ session });
+    await refundTransaction.save({ session });
+    
+    await session.commitTransaction();
+    
+    return {
+      success: true,
+      newCommissionBalance: this.commissionBalance,
+      refundTransactionId: refundTransaction._id
+    };
+    
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
 // Index for better performance
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
