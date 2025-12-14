@@ -1,8 +1,9 @@
+//models/transaction.js
 const mongoose = require('mongoose');
 
 const metadataSchema = new mongoose.Schema({
     phone: { type: String },
-    smartcardNumber: { type: String }, // No default value
+    smartcardNumber: { type: String },
     billersCode: { type: String },
     variation_code: { type: String },
     packageName: { type: String },
@@ -11,9 +12,9 @@ const metadataSchema = new mongoose.Schema({
     meterNumber: { type: String },
     provider: { type: String },
     type: { type: String },
-    token: { type: String }, // No default value - can be null
-    customerName: { type: String }, // No default value - can be null
-    customerAddress: { type: String }, // No default value - can be null
+    token: { type: String },
+    customerName: { type: String },
+    customerAddress: { type: String },
     exchangeReference: { type: String },
     vtpassResponse: { type: mongoose.Schema.Types.Mixed },
     paystackData: { type: mongoose.Schema.Types.Mixed },
@@ -32,38 +33,55 @@ const transactionSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-   type: {
-    type: String,
-    enum: [
-        'Airtime Purchase',
-        'Data Purchase',
-        'Cable TV Subscription',    // For proxy/backend use (what VTpass returns)
-        'Cable TV Purchase', 
-        'Electricity Payment',    // For proxy/backend use
-        'Electricity Purchase',   // ADD THIS for frontend display
-        'Insurance Purchase',
-        'Education Purchase',
-        'Wallet Funding',
-        'Transfer Sent',
-        'Transfer Received',
-        'Commission Credit',
-        'Commission Withdrawal',
-        'debit',
-        'credit',
-        'wallet_funding',
-        'virtual_account_topup'   // ✅ Added correctly
-    ],
-    required: true
-},
-
+    type: {
+        type: String,
+        enum: [
+            'Airtime Purchase',
+            'Data Purchase',
+            'Cable TV Subscription',
+            'Cable TV Purchase',
+            'Electricity Payment',
+            'Electricity Purchase',
+            'Insurance Purchase',
+            'Education Purchase',
+            'Wallet Funding',
+            'Transfer Sent',
+            'Transfer Received',
+            'Commission Credit',
+            'Commission Withdrawal',
+            'Commission Debit',
+            'debit',
+            'credit',
+            'wallet_funding',
+            'virtual_account_topup'
+        ],
+        required: true
+    },
     amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
-        enum: ['Successful', 'Pending', 'Failed', 'Processing'],
+        enum: ['Successful', 'Pending', 'Failed', 'Processing', 'Refunded'],
         default: 'Pending'
     },
-    transactionId: { type: String, unique: true, sparse: true },
-    reference: { type: String, unique: true, sparse: true, index: true },
+    transactionId: { 
+        type: String, 
+        unique: true, 
+        sparse: true,
+        default: function() {
+            return `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+        }
+    },
+    reference: { 
+        type: String, 
+        unique: true, 
+        index: true,
+        default: function() {
+            // Generate unique reference
+            const timestamp = Date.now();
+            const random = Math.floor(Math.random() * 1000000);
+            return `REF_${timestamp}_${random}`;
+        }
+    },
     description: { type: String, required: true },
     balanceBefore: { type: Number, default: 0 },
     balanceAfter: { type: Number, default: 0 },
@@ -75,8 +93,6 @@ const transactionSchema = new mongoose.Schema({
         enum: ['pin', 'biometric', 'none', 'paystack', 'manual'],
         default: 'none'
     },
-    
-    // NEW FIELDS FOR FAILED TRANSACTION FIX
     gateway: { type: String, default: 'paystack' },
     gatewayResponse: { type: mongoose.Schema.Types.Mixed },
     gatewayReference: { type: String, index: true },
@@ -91,20 +107,41 @@ const transactionSchema = new mongoose.Schema({
     versionKey: false
 });
 
-// Auto generate transactionId
+// Pre-save hooks
 transactionSchema.pre('save', function(next) {
+    // Ensure transactionId is set
     if (!this.transactionId) {
-        this.transactionId = `TXN${Date.now()}${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+        this.transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
     }
+    
+    // Ensure reference is set
+    if (!this.reference) {
+        const timestamp = Date.now();
+        const random = Math.floor(Math.random() * 1000000);
+        this.reference = `REF_${timestamp}_${random}`;
+    }
+    
     next();
 });
 
-// Virtual: Phone number from metadata
+// Virtuals
 transactionSchema.virtual('phoneNumber').get(function() {
     return this.metadata?.phone || this.metadata?.billersCode || null;
 });
 
-// NIGERIA TIMEZONE (UTC+1) — FINAL FIX
+transactionSchema.virtual('formattedAmount').get(function() {
+    return `₦${this.amount.toFixed(2)}`;
+});
+
+transactionSchema.virtual('formattedBalanceBefore').get(function() {
+    return `₦${(this.balanceBefore || 0).toFixed(2)}`;
+});
+
+transactionSchema.virtual('formattedBalanceAfter').get(function() {
+    return `₦${(this.balanceAfter || 0).toFixed(2)}`;
+});
+
+// Nigeria timezone (UTC+1)
 transactionSchema.virtual('nigeriaTime').get(function() {
     if (!this.createdAt) return null;
     return new Date(this.createdAt.getTime() + 60 * 60 * 1000);
@@ -123,7 +160,7 @@ transactionSchema.virtual('formattedNigeriaTime').get(function() {
       : '';
 });
 
-// FIX: Convert createdAt to Nigeria time in ALL API responses
+// Transform for JSON
 transactionSchema.set('toJSON', {
     virtuals: true,
     transform: (doc, ret) => {
@@ -144,6 +181,8 @@ transactionSchema.index({ userId: 1, createdAt: -1 });
 transactionSchema.index({ userId: 1, isCommission: 1 });
 transactionSchema.index({ reference: 1 });
 transactionSchema.index({ status: 1, createdAt: -1 });
-transactionSchema.index({ gatewayReference: 1 }); // NEW INDEX
+transactionSchema.index({ gatewayReference: 1 });
+transactionSchema.index({ type: 1, createdAt: -1 });
+transactionSchema.index({ service: 1, createdAt: -1 });
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
