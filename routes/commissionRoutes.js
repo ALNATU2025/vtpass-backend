@@ -6,6 +6,25 @@ const Transaction = require('../models/Transaction');
 const { protect } = require('../middleware/auth');
 const { verifyTransactionAuth } = require('../middleware/transactionAuth');
 
+
+
+
+
+// ADD THIS RATE LIMITER (adjust as needed)
+const withdrawLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,                   // max 5 withdrawals per window
+  message: {
+    success: false,
+    message: 'Too many withdrawal attempts. Please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+
+
+
 // @desc    Get commission balance
 // @route   GET /api/commission/balance
 // @access  Private
