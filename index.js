@@ -1895,83 +1895,77 @@ app.get('/api/users/commission-balance', protect, async (req, res) => {
 // @desc    Withdraw commission to wallet
 // @route   POST /api/users/withdraw-commission
 // @access  Private
-app.post('/api/users/withdraw-commission', protect, verifyTransactionAuth, [
-  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-  const { amount } = req.body;
-  const userId = req.user._id;
-  
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
+app.post('/api/users/withdraw-commission', protect, async (req, res) => {
   try {
-    const user = await User.findById(userId).session(session);
+    const { userId, amount, transactionPin, useBiometric } = req.body;
+
+    // 1. Find user
+    const user = await User.findById(userId);
     if (!user) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
-    if (user.commissionBalance < amount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Insufficient commission balance' });
+
+    // 2. Verify PIN if provided
+    if (transactionPin) {
+      const isPinValid = await user.verifyTransactionPin(transactionPin);
+      if (!isPinValid) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid transaction PIN' 
+        });
+      }
     }
+
+    // 3. Check commission balance
+    if (user.commissionBalance < amount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient commission balance. Available: ₦${user.commissionBalance}, Required: ₦${amount}`
+      });
+    }
+
+    // 4. Deduct commission and add to wallet
+    const oldCommissionBalance = user.commissionBalance;
+    const oldWalletBalance = user.walletBalance;
     
-    const commissionBalanceBefore = user.commissionBalance;
     user.commissionBalance -= amount;
-    const commissionBalanceAfter = user.commissionBalance;
-    
-    const walletBalanceBefore = user.walletBalance;
     user.walletBalance += amount;
-    const walletBalanceAfter = user.walletBalance;
-    
-    await user.save({ session });
-    
-    await createTransaction(
-      userId,
-      amount,
-      'debit',
-      'successful',
-      `Commission withdrawal to wallet`,
-      commissionBalanceBefore,
-      commissionBalanceAfter,
-      session,
-      true,
-      req.authenticationMethod
-    );
-    
-    await createTransaction(
-      userId,
-      amount,
-      'credit',
-      'successful',
-      `Commission withdrawal from commission balance`,
-      walletBalanceBefore,
-      walletBalanceAfter,
-      session,
-      false,
-      req.authenticationMethod
-    );
-    
-    await session.commitTransaction();
-    
-    res.json({ 
-      success: true, 
-      message: `Commission withdrawal of ${amount} to wallet successful`,
-      newCommissionBalance: commissionBalanceAfter,
-      newWalletBalance: walletBalanceAfter
+
+    // 5. Create commission withdrawal transaction - FIXED STATUS
+    const commissionTransaction = new Transaction({
+      userId: user._id,
+      type: 'Commission Withdrawal',
+      amount: amount,
+      status: 'Successful', // ✅ FIXED: Capital 'S'
+      description: `Commission withdrawal to wallet`,
+      balanceBefore: oldWalletBalance,
+      balanceAfter: user.walletBalance,
+      isCommission: true,
+      service: 'commission_withdrawal'
     });
+
+    // 6. Save everything
+    await user.save();
+    await commissionTransaction.save();
+
+    res.json({
+      success: true,
+      message: `Commission of ₦${amount} withdrawn to wallet`,
+      newWalletBalance: user.walletBalance,
+      newCommissionBalance: user.commissionBalance,
+      transactionId: commissionTransaction.transactionId
+    });
+
   } catch (error) {
-    await session.abortTransaction();
-    console.error('Error withdrawing commission:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  } finally {
-    session.endSession();
+    console.error('❌ Error withdrawing commission:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to withdraw commission',
+      error: error.message 
+    });
   }
 });
+
 // @desc    Upload profile image
 // @route   POST /api/users/upload-profile-image
 // @access  Private
@@ -8104,11 +8098,11 @@ app.post('/api/services/use-commission', protect, async (req, res) => {
       serviceType,
       amount,
       serviceDetails,
-      commissionUsed,
-      transactionId
+      transactionPin,
+      useBiometric
     } = req.body;
 
-    // 1. Verify user
+    // 1. Find user
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ 
@@ -8117,7 +8111,18 @@ app.post('/api/services/use-commission', protect, async (req, res) => {
       });
     }
 
-    // 2. Check commission balance
+    // 2. Verify PIN if provided
+    if (transactionPin) {
+      const isPinValid = await user.verifyTransactionPin(transactionPin);
+      if (!isPinValid) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid transaction PIN' 
+        });
+      }
+    }
+
+    // 3. Check commission balance
     if (user.commissionBalance < amount) {
       return res.status(400).json({
         success: false,
@@ -8125,43 +8130,49 @@ app.post('/api/services/use-commission', protect, async (req, res) => {
       });
     }
 
-    // 3. Deduct commission
+    // 4. Deduct commission ONLY - DON'T touch wallet balance
+    const oldCommissionBalance = user.commissionBalance;
     user.commissionBalance -= amount;
-    
-    // 4. Create commission transaction record
+
+    // 5. Create commission usage transaction
     const commissionTransaction = new Transaction({
       userId: user._id,
-      type: 'debit',
+      type: 'Commission Credit', // ✅ This is correct for commission usage
       amount: amount,
+      status: 'Successful', // ✅ FIXED: Capital 'S'
       description: `Commission used for ${serviceType} purchase`,
-      status: 'successful',
-      reference: transactionId,
+      balanceBefore: oldCommissionBalance,
+      balanceAfter: user.commissionBalance,
       isCommission: true,
-      serviceType: serviceType,
-      details: serviceDetails,
-      remainingBalance: user.commissionBalance
+      service: serviceType,
+      metadata: {
+        ...serviceDetails,
+        commissionUsed: true
+      }
     });
 
-    await commissionTransaction.save();
+    // 6. Save
     await user.save();
+    await commissionTransaction.save();
 
-    // 5. Return success response
+    // 7. Return commission-only update
     res.json({
       success: true,
-      message: `Commission of ₦${amount} used for ${serviceType}`,
+      message: `₦${amount} commission used for ${serviceType}`,
       newCommissionBalance: user.commissionBalance,
-      transactionId: commissionTransaction._id
+      transactionId: commissionTransaction.transactionId,
+      commissionOnly: true // ✅ Flag that only commission was used
     });
 
   } catch (error) {
     console.error('❌ Error using commission:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to use commission for service' 
+      message: 'Failed to use commission',
+      error: error.message 
     });
   }
 });
-
 
 
 
