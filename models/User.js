@@ -334,6 +334,22 @@ userSchema.methods.deductCommissionForService = async function (amount, serviceT
     await commissionTransaction.save({ session });
     
     await session.commitTransaction();
+
+
+    // ADD THIS NOTIFICATION BLOCK HERE
+try {
+  await Notification.create({
+    recipientId: this._id,
+    title: "Commission Withdrawn 💸",
+    message: `₦${amount.toFixed(2)} successfully transferred from commission to your main wallet. New wallet balance: ₦${this.walletBalance.toFixed(2)}`,
+    isRead: false
+  });
+} catch (notifError) {
+  console.error('Failed to create withdrawal notification:', notifError);
+  // Don't fail the whole withdrawal if notification fails
+}
+// END OF NOTIFICATION BLOCK
+    
     
     return {
       success: true,
