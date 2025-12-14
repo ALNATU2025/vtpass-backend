@@ -61,9 +61,9 @@ router.get('/balance', protect, async (req, res) => {
 // @desc    Withdraw commission to main wallet
 // @route   POST /api/commission/withdraw
 // @access  Private
-router.post('/withdraw', protect, withdrawLimiter, async (req, res) => { // Added withdrawLimiter middleware
+router.post('/withdraw', protect, withdrawLimiter, verifyTransactionAuth, async (req, res) => {
   try {
-    const { amount, transactionPin, useBiometric } = req.body;
+    const { amount } = req.body;
     const userId = req.user._id;
     
     // Validate amount
@@ -90,43 +90,25 @@ router.post('/withdraw', protect, withdrawLimiter, async (req, res) => { // Adde
       });
     }
     
-    // Verify authentication
-    const authReq = {
-      ...req,
-      body: { transactionPin, useBiometric }
-    };
+    // Process withdrawal
+    const result = await user.withdrawCommissionToWallet(amount);
     
-    // Use verifyTransactionAuth middleware manually
-    verifyTransactionAuth(authReq, res, async () => {
-      try {
-        // Process withdrawal
-        const result = await user.withdrawCommissionToWallet(amount, transactionPin);
-        
-        res.json({
-          success: true,
-          message: result.message,
-          data: {
-            newCommissionBalance: result.newCommissionBalance,
-            newWalletBalance: result.newWalletBalance,
-            commissionTransactionId: result.commissionTransactionId,
-            walletTransactionId: result.walletTransactionId
-          }
-        });
-        
-      } catch (error) {
-        console.error('❌ Commission withdrawal processing error:', error);
-        res.status(400).json({
-          success: false,
-          message: error.message || 'Failed to process withdrawal'
-        });
+    res.json({
+      success: true,
+      message: result.message,
+      data: {
+        newCommissionBalance: result.newCommissionBalance,
+        newWalletBalance: result.newWalletBalance,
+        commissionTransactionId: result.commissionTransactionId,
+        walletTransactionId: result.walletTransactionId
       }
     });
     
   } catch (error) {
-    console.error('❌ Commission withdrawal error:', error);
-    res.status(500).json({
+    console.error('❌ Commission withdrawal processing error:', error);
+    res.status(400).json({
       success: false,
-      message: 'Internal server error'
+      message: error.message || 'Failed to process withdrawal'
     });
   }
 });
@@ -185,14 +167,12 @@ router.get('/transactions', protect, async (req, res) => {
 // @desc    Use commission for service purchase
 // @route   POST /api/commission/use-for-service
 // @access  Private
-router.post('/use-for-service', protect, async (req, res) => {
+router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res) => {
   try {
     const {
       serviceType,
       amount,
-      serviceDetails,
-      transactionPin,
-      useBiometric
+      serviceDetails
     } = req.body;
     
     const userId = req.user._id;
@@ -220,50 +200,32 @@ router.post('/use-for-service', protect, async (req, res) => {
       });
     }
     
-    // Verify authentication
-    const authReq = {
-      ...req,
-      body: { transactionPin, useBiometric }
-    };
+    // Deduct commission
+    const commissionResult = await user.deductCommissionForService(
+      amount,
+      serviceType,
+      serviceDetails
+    );
     
-    verifyTransactionAuth(authReq, res, async () => {
-      try {
-        // Deduct commission
-        const commissionResult = await user.deductCommissionForService(
-          amount,
-          serviceType,
-          serviceDetails
-        );
-        
-        res.json({
-          success: true,
-          message: `₦${amount.toFixed(2)} commission allocated for ${serviceType} purchase`,
-          data: {
-            newCommissionBalance: commissionResult.newCommissionBalance,
-            transactionId: commissionResult.transactionId,
-            commissionTransaction: commissionResult.commissionTransaction,
-            commissionOnly: true
-          }
-        });
-        
-      } catch (error) {
-        console.error('❌ Commission deduction error:', error);
-        res.status(400).json({
-          success: false,
-          message: error.message || 'Failed to use commission'
-        });
+    res.json({
+      success: true,
+      message: `₦${amount.toFixed(2)} commission allocated for ${serviceType} purchase`,
+      data: {
+        newCommissionBalance: commissionResult.newCommissionBalance,
+        transactionId: commissionResult.transactionId,
+        commissionTransaction: commissionResult.commissionTransaction,
+        commissionOnly: true
       }
     });
     
   } catch (error) {
-    console.error('❌ Use commission for service error:', error);
-    res.status(500).json({
+    console.error('❌ Commission deduction error:', error);
+    res.status(400).json({
       success: false,
-      message: 'Internal server error'
+      message: error.message || 'Failed to use commission'
     });
   }
 });
-
 // @desc    Complete commission-based service purchase (called after VTPass success)
 // @route   POST /api/commission/complete-service-purchase
 // @access  Private
