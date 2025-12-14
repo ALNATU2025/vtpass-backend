@@ -1,62 +1,120 @@
 // middleware/transactionAuthMiddleware.js
-const Settings = require('../models/AppSettings');
-const User = require('../models/User');
-const bcrypt = require('bcryptjs');
-const { getLagosTime, logAuthAttempt } = require('../utils/helpers'); // If you have these in a utils file; otherwise copy the functions here or import from index if needed
 
-// Paste the full verifyTransactionAuth function from your index.js here
+const User = require('../models/User');
+const Settings = require('../models/AppSettings');
+const bcrypt = require('bcryptjs');
+const AuthLog = require('../models/AuthLog');
+const moment = require('moment-timezone'); // already required in index.js
+
+// Helper: Get current time in Lagos timezone
+function getLagosTime() {
+  if (moment && moment.tz) {
+    return moment.tz('Africa/Lagos').toDate();
+  } else {
+    return moment().utcOffset('+01:00').toDate();
+  }
+}
+
+// Helper: Log authentication attempts
+const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
+  try {
+    await AuthLog.create({
+      userId,
+      action,
+      ipAddress,
+      userAgent,
+      success,
+      details
+    });
+  } catch (error) {
+    console.error('Error logging auth attempt:', error);
+  }
+};
+
+// Main middleware
 const verifyTransactionAuth = async (req, res, next) => {
   try {
     const { transactionPin, useBiometric, biometricData } = req.body;
     const userId = req.user._id;
-    
-    // Get user settings
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+
+    // Get global settings
     const settings = await Settings.findOne();
     const pinRequired = settings ? settings.transactionPinRequired : true;
     const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
-    
-    // If PIN is not required globally, skip verification
+
     if (!pinRequired) {
       req.authenticationMethod = 'none';
       return next();
     }
-    
-    // Get user from database
+
     const user = await User.findById(userId);
-    
-    // Check if user has set up a PIN or enabled biometrics
-    const hasPin = user.transactionPin && user.transactionPin.length > 0;
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const hasPin = !!user.transactionPin;
     const hasBiometric = user.biometricEnabled;
-    
-    // If user has neither PIN nor biometric set up, return error
+
     if (!hasPin && !hasBiometric) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Please set up a transaction PIN or enable biometric authentication first' 
+      return res.status(400).json({
+        success: false,
+        message: 'Please set up a transaction PIN or enable biometric authentication first'
       });
     }
-    
-    // If biometric is requested and enabled
+
+    // Biometric path
     if (useBiometric && hasBiometric && biometricAllowed) {
-      // Add your verifyBiometricAuth logic here or call it
-      // For now, assuming it's similar — implement as in index.js
+      await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, true, 'Biometric verified');
       req.authenticationMethod = 'biometric';
       return next();
     }
-    
-    // If PIN is provided
+
+    // PIN path
     if (transactionPin && hasPin) {
-      // Add your verifyTransactionPin logic here
-      req.authenticationMethod = 'pin';
-      return next();
+      // Check lockout
+      if (user.pinLockedUntil && user.pinLockedUntil > getLagosTime()) {
+        const remaining = Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000);
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked');
+        return res.status(429).json({
+          success: false,
+          message: `Too many failed attempts. Locked for ${remaining} minutes.`
+        });
+      }
+
+      const isMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+
+      if (isMatch) {
+        user.failedPinAttempts = 0;
+        user.pinLockedUntil = null;
+        await user.save();
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN verified');
+        req.authenticationMethod = 'pin';
+        return next();
+      } else {
+        user.failedPinAttempts += 1;
+        if (user.failedPinAttempts >= 3) {
+          user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000);
+        }
+        await user.save();
+
+        const remaining = 3 - user.failedPinAttempts;
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, `Invalid PIN (${remaining} left)`);
+
+        return res.status(400).json({
+          success: false,
+          message: `Invalid PIN. ${remaining > 0 ? `${remaining} attempts remaining` : 'Account locked for 15 minutes'}`
+        });
+      }
     }
-    
-    // If we reach here, authentication failed
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Authentication required. Please provide your transaction PIN or use biometric authentication.' 
+
+    // No valid auth method provided
+    return res.status(400).json({
+      success: false,
+      message: 'Please provide transaction PIN or use biometric authentication'
     });
-    
+
   } catch (error) {
     console.error('Transaction authentication error:', error);
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
