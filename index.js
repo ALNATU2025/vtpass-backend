@@ -2854,6 +2854,79 @@ app.get('/api/transactions/user/:userId', adminProtect, async (req, res) => {
   }
 });
 
+
+
+
+// Current user transactions
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const transactions = await Transaction.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('userId', 'fullName email phone _id')
+      .lean();
+
+    const transactionsWithUser = transactions.map(tx => ({
+      ...tx,
+      user: tx.userId ? {
+        fullName: tx.userId.fullName || 'You',
+        email: tx.userId.email || '',
+        phone: tx.userId.phone || '',
+        _id: tx.userId._id
+      } : null
+    }));
+
+    res.json({ success: true, transactions: transactionsWithUser });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+
+router.get('/all', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
+    const transactions = await Transaction.find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('userId', 'fullName email phone _id')
+      .lean();
+
+    const transactionsWithUser = transactions.map(tx => ({
+      ...tx,
+      user: tx.userId ? {
+        fullName: tx.userId.fullName || 'Unknown User',
+        email: tx.userId.email || 'no-email@example.com',
+        phone: tx.userId.phone || 'N/A',
+        _id: tx.userId._id
+      } : {
+        fullName: 'Deleted User',
+        email: 'deleted@account.com',
+        phone: 'N/A',
+        _id: 'deleted'
+      }
+    }));
+
+    const totalItems = await Transaction.countDocuments();
+
+    res.json({
+      success: true,
+      transactions: transactionsWithUser,
+      totalItems
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
 // @desc    Auto-fix missing transactions
 // @route   POST /api/transactions/auto-fix-missing
 // @access  Private
