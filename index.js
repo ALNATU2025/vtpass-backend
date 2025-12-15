@@ -2716,6 +2716,8 @@ app.get('/api/commission-transactions', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
@@ -2733,15 +2735,47 @@ app.get('/api/transactions/all', adminProtect, [
     
     const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
-      .populate('userId', 'fullName email')
+      .populate({
+        path: 'userId',
+        select: 'fullName email phone',
+        model: 'User'
+      })
       .skip(skip)
       .limit(parseInt(limit));
     
     const total = await Transaction.countDocuments();
     
+    // Format transactions to ensure user data is always available
+    const formattedTransactions = transactions.map(transaction => {
+      const transactionObj = transaction.toObject();
+      
+      // Extract user data from populated userId
+      let userData = {
+        fullName: 'Unknown User',
+        email: 'No Email',
+        phone: 'No Phone'
+      };
+      
+      if (transactionObj.userId && typeof transactionObj.userId === 'object') {
+        userData = {
+          fullName: transactionObj.userId.fullName || 'Unknown User',
+          email: transactionObj.userId.email || 'No Email',
+          phone: transactionObj.userId.phone || 'No Phone',
+          userId: transactionObj.userId._id
+        };
+      } else if (transactionObj.userId && typeof transactionObj.userId === 'string') {
+        userData.userId = transactionObj.userId;
+      }
+      
+      return {
+        ...transactionObj,
+        user: userData
+      };
+    });
+    
     res.json({ 
       success: true, 
-      transactions,
+      transactions: formattedTransactions,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
       totalItems: total
