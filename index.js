@@ -33,6 +33,9 @@ const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString()
 // OTP storage with auto-cleanup
 const otpStore = new Map();
 
+// 🔥 ADD THIS LINE - THIS FIXES THE ERROR
+const otpRequests = new Map();   // ← Rate limiting for OTP requests (5 per minute per email)
+
 // Clean expired OTPs periodically (every 5 minutes)
 setInterval(() => {
   const now = Date.now();
