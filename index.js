@@ -29,24 +29,6 @@ const AuthLog = require('./models/AuthLog');
 
 
 
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-// OTP storage with auto-cleanup
-const otpStore = new Map();
-
-// 🔥 ADD THIS LINE - THIS FIXES THE ERROR
-const otpRequests = new Map();   // ← Rate limiting for OTP requests (5 per minute per email)
-
-// Clean expired OTPs periodically (every 5 minutes)
-setInterval(() => {
-  const now = Date.now();
-  for (const [email, data] of otpStore.entries()) {
-    if (data.expiresAt < now) {
-      otpStore.delete(email);
-    }
-  }
-  console.log(`🧹 Cleaned expired OTPs. Current store size: ${otpStore.size}`);
-}, 5 * 60 * 1000);
 
 
 
@@ -172,6 +154,82 @@ app.use('/api/transactions', transactionRoutes);
 
 const commissionRoutes = require('./routes/commissionRoutes');
 app.use('/api/commission', commissionRoutes);  // ← THIS LINE WAS MISSING
+
+
+
+// Global OTP Variables (ADD THIS AT TOP, AFTER IMPORTS)
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const otpStore = new Map();
+const otpRequests = new Map(); // For rate limiting
+
+// Clean expired OTPs periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [email, data] of otpStore.entries()) {
+    if (data.expiresAt < now) {
+      otpStore.delete(email);
+    }
+  }
+  console.log(`🧹 Cleaned expired OTPs. Current store size: ${otpStore.size}`);
+}, 5 * 60 * 1000);
+
+// Clean old rate limiting entries
+setInterval(() => {
+  const now = Date.now();
+  const window = 60 * 1000;
+  
+  for (const [email, timestamps] of otpRequests.entries()) {
+    const recent = timestamps.filter(t => now - t < window);
+    if (recent.length === 0) {
+      otpRequests.delete(email);
+    } else {
+      otpRequests.set(email, recent);
+    }
+  }
+  console.log(`🧹 Cleaned old rate limits. Current entries: ${otpRequests.size}`);
+}, 10 * 60 * 1000);
+
+// Auth middleware
+const protect = async (req, res, next) => {
+  let token;
+  
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = await User.findById(decoded.id).select('-password');
+      next();
+    } catch (error) {
+      console.error('Auth error:', error);
+      res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+  }
+  
+  if (!token) {
+    res.status(401).json({ success: false, message: 'Not authorized, no token' });
+  }
+};
+
+// Token generation helpers
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+};
+
+const generateRefreshToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+};
+
+// Password validation helper
+const validatePassword = (password) => {
+  const minLength = 8;
+  const hasUpperCase = /[A-Z]/.test(password);
+  const hasLowerCase = /[a-z]/.test(password);
+  const hasNumbers = /\d/.test(password);
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+  
+  return password.length >= minLength && hasUpperCase && hasLowerCase && hasNumbers && hasSpecialChar;
+};
+
 
 
 // Initialize cache
@@ -2877,14 +2935,30 @@ app.get('/api/transactions/statistics', protect, async (req, res) => {
       status: 'failed' 
     });
 
-    // Total amounts
+    // Total amounts - FIXED: Use mongoose.Types.ObjectId
     const amountStats = await Transaction.aggregate([
-      { $match: { userId: mongoose.Types.ObjectId(userId) } },
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       {
         $group: {
           _id: null,
-          totalSpent: { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', 0] } },
-          totalReceived: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } }
+          totalSpent: { 
+            $sum: { 
+              $cond: [
+                { $in: ['$type', ['debit', 'Commission Debit', 'Commission Withdrawal']] }, 
+                '$amount', 
+                0 
+              ] 
+            } 
+          },
+          totalReceived: { 
+            $sum: { 
+              $cond: [
+                { $in: ['$type', ['credit', 'Commission Credit']] }, 
+                '$amount', 
+                0 
+              ] 
+            } 
+          }
         }
       }
     ]);
@@ -2911,7 +2985,7 @@ app.get('/api/transactions/statistics', protect, async (req, res) => {
       message: 'Failed to fetch statistics'
     });
   }
-});
+}); 
 
 
 // @desc    Get a specific transaction by ID
