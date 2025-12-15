@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
+const brevo = require('@getbrevo/brevo');
 
 
 const User = require('./models/User');
