@@ -30,8 +30,9 @@ const transactionSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
-        index: true
+        required: false,
+        index: true,
+        sparse: true
     },
     type: {
         type: String,
@@ -71,6 +72,16 @@ const transactionSchema = new mongoose.Schema({
             return `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
         }
     },
+
+    userEmailSnapshot: { type: String, index: true },
+    userNameSnapshot: { type: String },
+
+    isSystemTransaction: {
+    type: Boolean,
+    default: false,
+    index: true
+},
+    
     reference: { 
         type: String, 
         unique: true, 
@@ -184,5 +195,10 @@ transactionSchema.index({ status: 1, createdAt: -1 });
 transactionSchema.index({ gatewayReference: 1 });
 transactionSchema.index({ type: 1, createdAt: -1 });
 transactionSchema.index({ service: 1, createdAt: -1 });
+
+transactionSchema.index({ createdAt: -1 }); // For global sorting
+
+
+
 
 module.exports = mongoose.models.Transaction || mongoose.model('Transaction', transactionSchema);
