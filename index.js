@@ -2733,6 +2733,7 @@ app.get('/api/transactions/all', adminProtect, [
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
+    // THIS IS THE CRITICAL PART - MUST HAVE .populate()
     const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
       .populate({
@@ -2745,11 +2746,10 @@ app.get('/api/transactions/all', adminProtect, [
     
     const total = await Transaction.countDocuments();
     
-    // Format transactions to ensure user data is always available
+    // Format to ensure user data is accessible
     const formattedTransactions = transactions.map(transaction => {
       const transactionObj = transaction.toObject();
       
-      // Extract user data from populated userId
       let userData = {
         fullName: 'Unknown User',
         email: 'No Email',
@@ -2763,8 +2763,6 @@ app.get('/api/transactions/all', adminProtect, [
           phone: transactionObj.userId.phone || 'No Phone',
           userId: transactionObj.userId._id
         };
-      } else if (transactionObj.userId && typeof transactionObj.userId === 'string') {
-        userData.userId = transactionObj.userId;
       }
       
       return {
