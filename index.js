@@ -2733,42 +2733,58 @@ app.get('/api/transactions/all', adminProtect, [
     const { page = 1, limit = 50 } = req.query;
     const skip = (page - 1) * limit;
     
-    // Get transactions with populated user data
+    // 1. Get transactions
     const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .populate({
-        path: 'userId',
-        select: 'fullName email phone',
-        model: 'User'
-      })
       .lean();
     
-    // Format the response to include user info even if user is deleted
-    const formattedTransactions = transactions.map(transaction => {
-      const transactionObj = { ...transaction };
+    // 2. Get all user IDs from transactions
+    const userIds = [];
+    for (const tx of transactions) {
+      if (tx.userId && mongoose.Types.ObjectId.isValid(tx.userId)) {
+        userIds.push(new mongoose.Types.ObjectId(tx.userId));
+      }
+    }
+    
+    // 3. Fetch all users at once
+    const users = await User.find({ 
+      _id: { $in: userIds } 
+    })
+    .select('fullName email phone')
+    .lean();
+    
+    // 4. Create a map: userId -> user data
+    const userMap = {};
+    for (const user of users) {
+      userMap[user._id.toString()] = {
+        _id: user._id,
+        fullName: user.fullName || 'Unknown User',
+        email: user.email || 'no-email@example.com',
+        phone: user.phone || 'N/A'
+      };
+    }
+    
+    // 5. Add user data to each transaction
+    const transactionsWithUsers = transactions.map(tx => {
+      const txCopy = { ...tx };
+      const userId = tx.userId?.toString();
       
-      // Check if userId was populated
-      if (transaction.userId && typeof transaction.userId === 'object') {
-        // User was found and populated
-        transactionObj.user = {
-          _id: transaction.userId._id,
-          fullName: transaction.userId.fullName || 'Unknown User',
-          email: transaction.userId.email || 'no-email@example.com',
-          phone: transaction.userId.phone || 'N/A'
-        };
-      } else if (transaction.userId) {
-        // User exists but wasn't populated (shouldn't happen with proper populate)
-        transactionObj.user = {
-          _id: transaction.userId,
-          fullName: 'Unknown User',
-          email: 'no-email@example.com',
+      if (userId && userMap[userId]) {
+        // User exists
+        txCopy.user = userMap[userId];
+      } else if (userId) {
+        // User ID exists but user not found (deleted)
+        txCopy.user = {
+          _id: userId,
+          fullName: 'Deleted User',
+          email: 'deleted@account.removed',
           phone: 'N/A'
         };
       } else {
-        // No userId associated
-        transactionObj.user = {
+        // No user ID (system transaction)
+        txCopy.user = {
           _id: null,
           fullName: 'System Transaction',
           email: 'system@transaction',
@@ -2776,29 +2792,21 @@ app.get('/api/transactions/all', adminProtect, [
         };
       }
       
-      // Keep userId for backward compatibility
-      transactionObj.userId = transaction.userId?._id || transaction.userId;
-      
-      return transactionObj;
+      return txCopy;
     });
     
     const total = await Transaction.countDocuments();
     
-    // DEBUG: Log first transaction
-    if (formattedTransactions.length > 0) {
-      console.log('FIRST TRANSACTION USER:', formattedTransactions[0].user);
-    }
-    
     res.json({ 
       success: true, 
-      transactions: formattedTransactions,
+      transactions: transactionsWithUsers,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
       totalItems: total
     });
+    
   } catch (error) {
     console.error('Error fetching all transactions:', error);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
