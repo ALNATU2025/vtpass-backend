@@ -2718,6 +2718,9 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
+// @desc    Get all transactions (Admin only)
+// @route   GET /api/transactions/all
+// @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
@@ -2727,94 +2730,71 @@ app.get('/api/transactions/all', adminProtect, [
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   try {
-    const { page = 1, limit = 5 } = req.query; // Test with 5 only
+    const { page = 1, limit = 50 } = req.query;
     const skip = (page - 1) * limit;
     
-    console.log('=== DEBUG START: /api/transactions/all ===');
-    
-    // 1. First get raw transactions
-    const rawTransactions = await Transaction.find({})
+    // Get transactions with populated user data
+    const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
+      .populate({
+        path: 'userId',
+        select: 'fullName email phone',
+        model: 'User'
+      })
       .lean();
     
-    console.log('DEBUG 1: Got', rawTransactions.length, 'raw transactions');
-    console.log('DEBUG 1a: First transaction userId:', {
-      userId: rawTransactions[0]?.userId,
-      userIdType: typeof rawTransactions[0]?.userId,
-      isObjectId: mongoose.Types.ObjectId.isValid(rawTransactions[0]?.userId)
-    });
-    
-    // 2. Try populate with simple syntax
-    console.log('DEBUG 2: Trying populate...');
-    const transactions = await Transaction.find({})
-      .sort({ createdAt: -1 })
-      .populate('userId', 'fullName email phone')
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    console.log('DEBUG 2a: After populate, first transaction:', {
-      hasUserId: !!transactions[0]?.userId,
-      userIdType: typeof transactions[0]?.userId,
-      userIdValue: transactions[0]?.userId,
-      isObject: transactions[0]?.userId && typeof transactions[0].userId === 'object',
-      hasFullName: transactions[0]?.userId?.fullName
-    });
-    
-    // 3. Check if users exist
-    const userIds = rawTransactions.map(t => t.userId).filter(id => id);
-    console.log('DEBUG 3: Unique userIds to check:', userIds.length);
-    
-    const users = await User.find({ _id: { $in: userIds } }).select('fullName email phone').lean();
-    console.log('DEBUG 3a: Found', users.length, 'users in database');
-    users.forEach((user, i) => {
-      console.log(`User ${i}: ${user._id} -> ${user.fullName} (${user.email})`);
-    });
-    
-    // 4. Manual population as fallback
-    const userMap = {};
-    users.forEach(user => {
-      userMap[user._id.toString()] = user;
-    });
-    
-    const formattedTransactions = rawTransactions.map(transaction => {
+    // Format the response to include user info even if user is deleted
+    const formattedTransactions = transactions.map(transaction => {
       const transactionObj = { ...transaction };
-      const userId = transaction.userId?.toString();
-      const user = userMap[userId];
       
-      return {
-        ...transactionObj,
-        user: user ? {
-          fullName: user.fullName || 'Unknown User',
-          email: user.email || 'No Email',
-          phone: user.phone || 'No Phone',
-          userId: user._id
-        } : {
+      // Check if userId was populated
+      if (transaction.userId && typeof transaction.userId === 'object') {
+        // User was found and populated
+        transactionObj.user = {
+          _id: transaction.userId._id,
+          fullName: transaction.userId.fullName || 'Unknown User',
+          email: transaction.userId.email || 'no-email@example.com',
+          phone: transaction.userId.phone || 'N/A'
+        };
+      } else if (transaction.userId) {
+        // User exists but wasn't populated (shouldn't happen with proper populate)
+        transactionObj.user = {
+          _id: transaction.userId,
           fullName: 'Unknown User',
-          email: 'No Email',
-          phone: 'No Phone',
-          userId: transaction.userId
-        }
-      };
+          email: 'no-email@example.com',
+          phone: 'N/A'
+        };
+      } else {
+        // No userId associated
+        transactionObj.user = {
+          _id: null,
+          fullName: 'System Transaction',
+          email: 'system@transaction',
+          phone: 'N/A'
+        };
+      }
+      
+      // Keep userId for backward compatibility
+      transactionObj.userId = transaction.userId?._id || transaction.userId;
+      
+      return transactionObj;
     });
-    
-    console.log('DEBUG 4: First formatted transaction user:', formattedTransactions[0]?.user);
-    console.log('=== DEBUG END ===');
     
     const total = await Transaction.countDocuments();
+    
+    // DEBUG: Log first transaction
+    if (formattedTransactions.length > 0) {
+      console.log('FIRST TRANSACTION USER:', formattedTransactions[0].user);
+    }
     
     res.json({ 
       success: true, 
       transactions: formattedTransactions,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
-      totalItems: total,
-      debug: {
-        rawTransactions: rawTransactions.length,
-        usersFound: users.length,
-        manualPopulation: true
-      }
+      totalItems: total
     });
   } catch (error) {
     console.error('Error fetching all transactions:', error);
