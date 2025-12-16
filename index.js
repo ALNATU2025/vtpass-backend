@@ -624,7 +624,7 @@ const adminProtect = async (req, res, next) => {
       return next();
     }
     
-    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "690088325ca99bed6ab8d4a6";
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "690088325ca99bed6ab8d4a5";
     if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
       return next();
     }
