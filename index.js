@@ -2718,7 +2718,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only)
+// @desc    Get all transactions (Admin only) - FIXED VERSION
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
@@ -2733,29 +2733,45 @@ app.get('/api/transactions/all', adminProtect, [
     const { page = 1, limit = 50 } = req.query;
     const skip = (page - 1) * limit;
     
-    // 1. Get transactions
+    console.log('🔍 DEBUG: Starting /api/transactions/all endpoint');
+    
+    // 1. Get ALL transactions first
     const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
     
-    // 2. Get all user IDs from transactions
+    console.log(`🔍 DEBUG: Found ${transactions.length} transactions`);
+    
+    // 2. Get ALL user IDs from transactions
     const userIds = [];
     for (const tx of transactions) {
-      if (tx.userId && mongoose.Types.ObjectId.isValid(tx.userId)) {
-        userIds.push(new mongoose.Types.ObjectId(tx.userId));
+      if (tx.userId) {
+        // Convert to ObjectId if valid
+        if (mongoose.Types.ObjectId.isValid(tx.userId)) {
+          userIds.push(new mongoose.Types.ObjectId(tx.userId));
+        } else {
+          console.log(`⚠️ WARNING: Invalid userId ${tx.userId} in transaction ${tx._id}`);
+        }
       }
     }
     
-    // 3. Fetch all users at once
-    const users = await User.find({ 
-      _id: { $in: userIds } 
-    })
-    .select('fullName email phone')
-    .lean();
+    console.log(`🔍 DEBUG: Unique userIds to fetch: ${userIds.length}`);
     
-    // 4. Create a map: userId -> user data
+    // 3. Fetch ALL users at once
+    let users = [];
+    if (userIds.length > 0) {
+      users = await User.find({ 
+        _id: { $in: userIds } 
+      })
+      .select('fullName email phone')
+      .lean();
+    }
+    
+    console.log(`🔍 DEBUG: Found ${users.length} users in database`);
+    
+    // 4. Create a quick lookup map
     const userMap = {};
     for (const user of users) {
       userMap[user._id.toString()] = {
@@ -2766,25 +2782,27 @@ app.get('/api/transactions/all', adminProtect, [
       };
     }
     
-    // 5. Add user data to each transaction
+    // 5. Attach user data to each transaction
     const transactionsWithUsers = transactions.map(tx => {
-      const txCopy = { ...tx };
+      const transaction = { ...tx };
       const userId = tx.userId?.toString();
       
       if (userId && userMap[userId]) {
-        // User exists
-        txCopy.user = userMap[userId];
+        // User exists in database
+        transaction.user = userMap[userId];
+        console.log(`✅ Attached user: ${userMap[userId].fullName} to transaction ${tx._id}`);
       } else if (userId) {
-        // User ID exists but user not found (deleted)
-        txCopy.user = {
+        // User ID exists but user not found (might be deleted)
+        transaction.user = {
           _id: userId,
           fullName: 'Deleted User',
           email: 'deleted@account.removed',
           phone: 'N/A'
         };
+        console.log(`⚠️ User ${userId} not found (deleted), marked as deleted`);
       } else {
-        // No user ID (system transaction)
-        txCopy.user = {
+        // No user ID
+        transaction.user = {
           _id: null,
           fullName: 'System Transaction',
           email: 'system@transaction',
@@ -2792,8 +2810,19 @@ app.get('/api/transactions/all', adminProtect, [
         };
       }
       
-      return txCopy;
+      return transaction;
     });
+    
+    // 6. Verify first transaction has user data
+    if (transactionsWithUsers.length > 0) {
+      const firstTx = transactionsWithUsers[0];
+      console.log('🔍 DEBUG: First transaction user data:', {
+        hasUser: !!firstTx.user,
+        userName: firstTx.user?.fullName,
+        userEmail: firstTx.user?.email,
+        userId: firstTx.user?._id
+      });
+    }
     
     const total = await Transaction.countDocuments();
     
@@ -2806,7 +2835,8 @@ app.get('/api/transactions/all', adminProtect, [
     });
     
   } catch (error) {
-    console.error('Error fetching all transactions:', error);
+    console.error('❌ Error in /api/transactions/all:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
