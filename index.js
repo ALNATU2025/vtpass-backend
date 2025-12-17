@@ -2370,13 +2370,13 @@ app.post('/api/users/fund', adminProtect, [
     
     console.log(`💰 New balance: ${balanceAfter}`);
     
-    // Create transaction with the note
+    // FIXED: Change 'successful' to 'Successful'
     await createTransaction(
       userId,
       amount,
       'credit',
-      'successful',
-      note, // Use the note from request or default
+      'Successful', // ← CHANGE THIS LINE - Capital 'S'
+      note,
       balanceBefore,
       balanceAfter,
       session,
@@ -2392,7 +2392,7 @@ app.post('/api/users/fund', adminProtect, [
       message: `Successfully funded user ${user.email} with ${amount}`, 
       newBalance: balanceAfter,
       userId: userId,
-      transactionId: Date.now().toString() // Generate a simple transaction ID
+      transactionId: Date.now().toString()
     });
     
   } catch (error) {
