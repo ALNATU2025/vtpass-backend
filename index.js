@@ -3340,7 +3340,7 @@ app.get('/api/notifications/statistics', protect, async (req, res) => {
   }
 });
 
-// @desc    Get user's notifications
+// @desc    Get user's notifications (personal + general)
 // @route   GET /api/notifications
 // @access  Private
 app.get('/api/notifications', protect, [
@@ -3351,17 +3351,38 @@ app.get('/api/notifications', protect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   try {
     const userId = req.user._id;
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
-    const notifications = await Notification.find({ recipientId: userId })
+    console.log('🔔 Fetching notifications for user:', userId);
+    
+    // Query: Get notifications where:
+    // 1. recipient is this user (personal notifications)
+    // 2. recipient is null AND user hasn't read it (general notifications)
+    // 3. User is in readBy array (already read general notifications)
+    
+    const query = {
+      $or: [
+        { recipient: userId }, // Personal notifications for this user
+        { 
+          recipient: null, // General notifications
+          readBy: { $ne: userId } // Not read by this user yet
+        }
+      ]
+    };
+    
+    const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .populate('recipient', 'email fullName'); // Optional: populate recipient details
     
-    const total = await Notification.countDocuments({ recipientId: userId });
+    const total = await Notification.countDocuments(query);
+    
+    console.log(`📊 Found ${notifications.length} notifications for user ${userId}`);
     
     res.json({
       success: true,
@@ -3371,10 +3392,11 @@ app.get('/api/notifications', protect, [
       totalItems: total
     });
   } catch (error) {
-    console.error('Error fetching notifications:', error);
+    console.error('❌ Error fetching notifications:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
@@ -3384,16 +3406,28 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     const userId = req.user._id;
     
     const notification = await Notification.findById(id);
+    
     if (!notification) {
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
     
-    if (notification.recipientId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
+    // For personal notifications, set a read flag or just track in readBy
+    // For general notifications, add user to readBy array
+    if (notification.recipient === null) {
+      // General notification - add user to readBy if not already
+      if (!notification.readBy.includes(userId)) {
+        notification.readBy.push(userId);
+        await notification.save();
+      }
+    } else {
+      // Personal notification - check if recipient matches
+      if (notification.recipient.toString() !== userId.toString()) {
+        return res.status(403).json({ success: false, message: 'Access denied' });
+      }
+      // You could add a read flag here if needed
+      // notification.isRead = true;
+      // await notification.save();
     }
-    
-    notification.isRead = true;
-    await notification.save();
     
     res.json({ success: true, message: 'Notification marked as read' });
   } catch (error) {
@@ -3402,52 +3436,98 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
   }
 });
 
-// @desc    Send notification (Admin only) - ENHANCED
-// @route   POST /api/notifications/send
-// @access  Private/Admin
-app.post('/api/notifications/send', adminProtect, [
-  body('title').notEmpty().withMessage('Title is required'),
-  body('message').notEmpty().withMessage('Message is required')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
+
+
+
+
+// Migration script - run once
+app.get('/api/notifications/migrate', async (req, res) => {
   try {
-    const { title, message, recipientId, notificationType } = req.body;
+    // Find all notifications with recipientId field
+    const oldNotifications = await db.collection('notifications').find({
+      recipientId: { $exists: true }
+    }).toArray();
     
-    if (recipientId) {
-      const recipient = await User.findById(recipientId);
-      if (!recipient) {
-        return res.status(404).json({ success: false, message: 'Recipient not found' });
-      }
-      
-      await Notification.create({
-        recipientId,
-        title,
-        message
-      });
-      
-      res.json({ 
-        success: true, 
-        message: 'Notification sent successfully to user'
-      });
-    } else {
-      const users = await User.find({ isActive: true });
-      
-      const notifications = users.map(user => ({
-        recipientId: user._id,
-        title,
-        message
-      }));
-      
-      await Notification.insertMany(notifications);
-      
-      res.json({ 
-        success: true, 
-        message: `Notification sent to ${users.length} users`
+    console.log(`Found ${oldNotifications.length} old notifications to migrate`);
+    
+    for (const oldNotif of oldNotifications) {
+      // Update to new schema
+      await db.collection('notifications').updateOne(
+        { _id: oldNotif._id },
+        {
+          $set: {
+            recipient: oldNotif.recipientId,
+            readBy: oldNotif.isRead ? [oldNotif.recipientId] : []
+          },
+          $unset: {
+            recipientId: "",
+            isRead: ""
+          }
+        }
+      );
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Migrated ${oldNotifications.length} notifications` 
+    });
+    
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ success: false, message: 'Migration failed' });
+  }
+});
+
+
+
+
+// @desc    Send notification to user
+// @route   POST /api/notifications/send
+// @access  Private (Admin)
+app.post('/api/notifications/send', protect, async (req, res) => {
+  try {
+    const { title, message, recipientId } = req.body;
+    
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    
+    // Validate input
+    if (!title || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Title and message are required' 
       });
     }
+    
+    // If recipientId is provided, send to specific user
+    // If recipientId is null or empty, send as general notification
+    let notificationData = {
+      title,
+      message,
+      recipient: recipientId || null
+    };
+    
+    // Create notification
+    const notification = new Notification(notificationData);
+    
+    await notification.save();
+    
+    res.json({ 
+      success: true, 
+      message: recipientId ? 
+        'Notification sent successfully to user' : 
+        'General notification sent successfully',
+      notification: {
+        id: notification._id,
+        title: notification.title,
+        recipient: notification.recipient,
+        isGeneral: notification.isGeneral,
+        createdAt: notification.createdAt
+      }
+    });
+    
   } catch (error) {
     console.error('Error sending notification:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
