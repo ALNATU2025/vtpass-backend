@@ -2343,7 +2343,11 @@ app.post('/api/users/fund', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   const { userId, amount } = req.body;
+  const note = req.body.note || `Admin funding of ${amount}`;
+  
+  console.log(`📥 Funding request: User: ${userId}, Amount: ${amount}, Note: ${note}`);
   
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -2352,20 +2356,27 @@ app.post('/api/users/fund', adminProtect, [
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
+      console.log(`❌ User ${userId} not found`);
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
+    console.log(`👤 User found: ${user.email}, Current balance: ${user.walletBalance}`);
     
     const balanceBefore = user.walletBalance;
     user.walletBalance += amount;
     const balanceAfter = user.walletBalance;
+    
     await user.save({ session });
     
+    console.log(`💰 New balance: ${balanceAfter}`);
+    
+    // Create transaction with the note
     await createTransaction(
       userId,
       amount,
       'credit',
       'successful',
-      `Admin funding of ${amount}`,
+      note, // Use the note from request or default
       balanceBefore,
       balanceAfter,
       session,
@@ -2374,16 +2385,25 @@ app.post('/api/users/fund', adminProtect, [
     );
     
     await session.commitTransaction();
+    console.log(`✅ Successfully funded user ${user.email}`);
     
     res.json({ 
       success: true, 
       message: `Successfully funded user ${user.email} with ${amount}`, 
-      newBalance: balanceAfter 
+      newBalance: balanceAfter,
+      userId: userId,
+      transactionId: Date.now().toString() // Generate a simple transaction ID
     });
+    
   } catch (error) {
     await session.abortTransaction();
-    console.error('Error funding user:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ Error funding user:', error);
+    console.error('Error details:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   } finally {
     session.endSession();
   }
