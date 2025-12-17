@@ -2140,6 +2140,30 @@ app.get('/api/users', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+// @desc    Get ALL users without pagination (Admin only - for transactions)
+// @route   GET /api/admin/all-users
+// @access  Private/Admin
+app.get('/api/admin/all-users', adminProtect, async (req, res) => {
+  try {
+    const users = await User.find({})
+      .select('-password')
+      .lean();
+    
+    res.json({ 
+      success: true, 
+      users,
+      total: users.length
+    });
+  } catch (error) {
+    console.error('Error fetching all users:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
 // @desc    Toggle user active status (Admin only)
 // @route   PUT /api/users/toggle-status/:userId
 // @access  Private/Admin
