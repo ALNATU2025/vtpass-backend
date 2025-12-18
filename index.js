@@ -25,13 +25,6 @@ const Settings = require('./models/AppSettings');
 const AuthLog = require('./models/AuthLog');
 
 
-
-
-
-
-
-
-
 // Try to load security middleware with error handling
 let helmet, rateLimit, mongoSanitize, xss, hpp, moment;
 try {
@@ -121,7 +114,6 @@ if (rateLimit && typeof rateLimit === 'function') {
 
 
 
-
 // ✅ ADD THIS DEBUG ROUTE HERE (BEFORE ANY 404 HANDLERS)
 app.get("/api/debug/ip", async (req, res) => {
   try {
@@ -143,6 +135,47 @@ app.get("/api/debug/ip", async (req, res) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors());
+
+
+// ==================== ADD MAINTENANCE MIDDLEWARE HERE ====================
+app.use(async (req, res, next) => {
+  try {
+    // Skip maintenance check for certain routes
+    const publicRoutes = [
+      '/api/users/login',
+      '/api/users/register',
+      '/api/settings',
+      '/health',
+      '/api/auth/send-verification-otp',
+      '/api/auth/verify-otp',
+      '/api/debug/ip',
+      '/api/wallet/top-up',
+      '/api/wallet/force-topup',
+      '/api/payments/verify-paystack',
+      '/api/paystack/verify-transaction'
+    ];
+    
+    if (publicRoutes.some(route => req.path.startsWith(route))) {
+      return next();
+    }
+    
+    const settings = await Settings.findOne();
+    if (settings && settings.isMaintenanceMode === true) {
+      return res.status(503).json({
+        success: false,
+        message: 'System is currently under maintenance. Please try again later.',
+        code: 'MAINTENANCE_MODE'
+      });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Maintenance check error:', error);
+    next(); // Don't block on error
+  }
+});
+// ==================== END MAINTENANCE MIDDLEWARE ====================
+
 
 const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
 app.use("/", virtualAccountSyncRoutes);
@@ -461,6 +494,49 @@ const protect = async (req, res, next) => {
     });
   }
 };
+
+
+
+
+// After your protect middleware (around line ~250), add:
+
+// ==================== SERVICE AVAILABILITY MIDDLEWARE ====================
+
+// Reusable middleware to check if a service is enabled globally
+const checkServiceEnabled = (serviceKey) => {
+  return async (req, res, next) => {
+    try {
+      const settings = await Settings.findOne();
+      
+      if (!settings || settings[serviceKey] === false) {
+        const serviceNames = {
+          'isAirtimeEnabled': 'Airtime service',
+          'isDataEnabled': 'Data service',
+          'isCableTvEnabled': 'Cable TV service',
+          'isElectricityEnabled': 'Electricity service',
+          'isTransferEnabled': 'Money transfer service',
+          'isMaintenanceMode': 'Maintenance mode'
+        };
+        
+        return res.status(403).json({
+          success: false,
+          message: `${serviceNames[serviceKey] || 'This service'} is currently disabled. Please try again later.`,
+          code: 'SERVICE_DISABLED'
+        });
+      }
+      
+      next();
+    } catch (error) {
+      console.error(`Error checking ${serviceKey}:`, error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Service availability check failed' 
+      });
+    }
+  };
+};
+
+
 
 
 // @desc    Check token status and refresh if needed
@@ -2560,7 +2636,7 @@ app.get('/api/transactions/statistics', adminProtect, [
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
-app.post('/api/transfer', protect, verifyTransactionAuth, [
+app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'), [
   body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
 ], async (req, res) => {
@@ -3789,7 +3865,7 @@ app.post('/api/vtpass/validate-smartcard', protect, [
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
-app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, [
+app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkServiceEnabled('isCableTvEnabled'), [
   body('serviceID').notEmpty().withMessage('Service ID is required'),
   body('billersCode').notEmpty().withMessage('Billers code is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
@@ -3958,7 +4034,7 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
 // @access  Private
-app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, [
+app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, checkServiceEnabled('isAirtimeEnabled'), [
   body('network').isIn(['mtn', 'airtel', 'glo', 'etisalat']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
   body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least 50')
@@ -4081,7 +4157,7 @@ function generateVtpassRequestId() {
 // @desc    Purchase Data – FINAL 100% WORKING VERSION (DEC 2025)
 // @route   POST /api/vtpass/data/purchase
 // @access  Private
-app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, [
+app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, checkServiceEnabled('isDataEnabled'), [
   body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
   body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
   body('variationCode').notEmpty().withMessage('Data plan is required'),
@@ -4296,7 +4372,7 @@ app.post('/api/vtpass/validate-electricity', protect, [
 // @desc    Purchase Electricity – ULTIMATE WORKING VERSION (NO DUPLICATE CALLS)
 // @route   POST /api/vtpass/electricity/purchase
 // @access  Private
-app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, [
+app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, checkServiceEnabled('isElectricityEnabled'), [
   body('serviceID').notEmpty().withMessage('Provider required'),
   body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
   body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
@@ -4931,6 +5007,49 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
   console.log('PROXY ENDPOINT HIT - FINAL FIXED');
   console.log('Body:', JSON.stringify(req.body, null, 2));
 
+  // ========== ADD SERVICE CHECK HERE (NEW CODE) ==========
+  const serviceChecks = {
+    'mtn': 'isAirtimeEnabled',
+    'airtel': 'isAirtimeEnabled', 
+    'glo': 'isAirtimeEnabled',
+    'etisalat': 'isAirtimeEnabled',
+    '9mobile': 'isAirtimeEnabled',
+    'mtn-data': 'isDataEnabled',
+    'airtel-data': 'isDataEnabled',
+    'glo-data': 'isDataEnabled',
+    'etisalat-data': 'isDataEnabled',
+    'dstv': 'isCableTvEnabled',
+    'gotv': 'isCableTvEnabled',
+    'startimes': 'isCableTvEnabled',
+    'ikeja-electric': 'isElectricityEnabled',
+    'eko-electric': 'isElectricityEnabled',
+    'abuja-electric': 'isElectricityEnabled',
+    'ibadan-electric': 'isElectricityEnabled',
+    'enugu-electric': 'isElectricityEnabled',
+    'kano-electric': 'isElectricityEnabled',
+    'ph-electric': 'isElectricityEnabled'
+  };
+
+  const { serviceID } = req.body;
+  const serviceKey = serviceChecks[serviceID];
+  
+  if (serviceKey) {
+    try {
+      const settings = await Settings.findOne();
+      if (!settings || settings[serviceKey] === false) {
+        return res.status(403).json({
+          success: false,
+          message: 'This service is currently disabled. Please try again later.',
+          code: 'SERVICE_DISABLED'
+        });
+      }
+    } catch (error) {
+      console.error('Service check error:', error);
+      // Continue if check fails - don't block the transaction
+    }
+  }
+  // ========== END OF NEW CODE ==========
+
   const session = await mongoose.startSession();
 
   try {
@@ -5012,7 +5131,6 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     const vtpassResult = await callVtpassApi(endpoint, payload);
 
     // === 7. SUCCESS ===
-       // === 7. SUCCESS ===
     if (vtpassResult.success && vtpassResult.data?.code === '000') {
       let newBalance = user.walletBalance;
 
@@ -5117,6 +5235,34 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
+    // === FAILED ===
+    await session.abortTransaction();
+
+    const msg = vtpassResult.data?.response_description || 'Transaction failed';
+
+    if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate transaction',
+        code: 'DUPLICATE',
+        retryable: true
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: msg,
+      vtpassResponse: vtpassResult.data
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('PROXY ERROR:', error);
+    res.status(500).json({ success: false, message: 'Service unavailable' });
+  } finally {
+    session.endSession();
+  }
+});
 
 
 
