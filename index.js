@@ -3516,43 +3516,6 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
 
 
 
-// Migration script - run once
-app.get('/api/notifications/migrate', async (req, res) => {
-  try {
-    // Find all notifications with recipientId field
-    const oldNotifications = await db.collection('notifications').find({
-      recipientId: { $exists: true }
-    }).toArray();
-    
-    console.log(`Found ${oldNotifications.length} old notifications to migrate`);
-    
-    for (const oldNotif of oldNotifications) {
-      // Update to new schema
-      await db.collection('notifications').updateOne(
-        { _id: oldNotif._id },
-        {
-          $set: {
-            recipient: oldNotif.recipientId,
-            readBy: oldNotif.isRead ? [oldNotif.recipientId] : []
-          },
-          $unset: {
-            recipientId: "",
-            isRead: ""
-          }
-        }
-      );
-    }
-    
-    res.json({ 
-      success: true, 
-      message: `Migrated ${oldNotifications.length} notifications` 
-    });
-    
-  } catch (error) {
-    console.error('Migration error:', error);
-    res.status(500).json({ success: false, message: 'Migration failed' });
-  }
-});
 
 
 
