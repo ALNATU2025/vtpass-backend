@@ -5262,39 +5262,8 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
   } finally {
     session.endSession();
   }
-});
+}); // <-- END OF THE ROUTE - ONLY ONE CLOSING BRACE HERE
 
-
-
-  
-    // === FAILED ===
-    await session.abortTransaction();
-
-    const msg = vtpassResult.data?.response_description || 'Transaction failed';
-
-    if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Duplicate transaction',
-        code: 'DUPLICATE',
-        retryable: true
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      message: msg,
-      vtpassResponse: vtpassResult.data
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('PROXY ERROR:', error);
-    res.status(500).json({ success: false, message: 'Service unavailable' });
-  } finally {
-    session.endSession();
-  }
-});
 
 
 
