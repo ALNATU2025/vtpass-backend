@@ -137,7 +137,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 
 
-// ==================== ADD MAINTENANCE MIDDLEWARE HERE ====================
+// ==================== MAINTENANCE MODE MIDDLEWARE ====================
 app.use(async (req, res, next) => {
   try {
     // Skip maintenance check for certain routes
@@ -149,7 +149,7 @@ app.use(async (req, res, next) => {
       '/api/auth/send-verification-otp',
       '/api/auth/verify-otp',
       '/api/debug/ip',
-      '/api/wallet/top-up',
+      '/api/wallet/top-up',  // Allow funding during maintenance
       '/api/wallet/force-topup',
       '/api/payments/verify-paystack',
       '/api/paystack/verify-transaction'
