@@ -2033,7 +2033,7 @@ app.get('/api/users/commission-balance', protect, async (req, res) => {
 
 
 
-// @desc    Use commission balance for service payment - SIMPLIFIED NO-TRANSACTION VERSION
+// @desc    Use commission balance for service payment - FIXED PRODUCTION VERSION
 // @route   POST /api/services/use-commission
 // @access  Private
 app.post('/api/services/use-commission', protect, [
@@ -2053,7 +2053,7 @@ app.post('/api/services/use-commission', protect, [
   console.log('Service Details:', JSON.stringify(serviceDetails, null, 2));
   
   try {
-    // Get user WITHOUT session to avoid transaction conflicts
+    // Get user WITHOUT session first
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -2072,10 +2072,22 @@ app.post('/api/services/use-commission', protect, [
     // STEP 1: Prepare VTpass payload
     // ============================================
     const generateRequestId = () => {
-      return 'COMM_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substr(2, 9);
+      return `COMM_${timestamp}_${random}_${userId.toString().substr(-6)}`;
     };
     
-    // Map serviceType to VTpass serviceID
+    const vtpassPayload = {
+      request_id: generateRequestId(),
+      amount: amount.toString(),
+      serviceID: '',
+      phone: serviceDetails.phone || '',
+      billersCode: serviceDetails.billersCode || serviceDetails.meterNumber || serviceDetails.smartcardNumber || '',
+      variation_code: serviceDetails.variation_code || '',
+      type: serviceDetails.type || 'prepaid'
+    };
+    
+    // Set correct serviceID
     const serviceMap = {
       'airtime': {
         'MTN': 'mtn',
@@ -2095,18 +2107,6 @@ app.post('/api/services/use-commission', protect, [
       'insurance': 'auto-insurance'
     };
     
-    // Prepare VTpass payload
-    const vtpassPayload = {
-      request_id: generateRequestId(),
-      amount: amount.toString(),
-      serviceID: '',
-      phone: serviceDetails.phone || '',
-      billersCode: serviceDetails.billersCode || serviceDetails.meterNumber || serviceDetails.smartcardNumber || '',
-      variation_code: serviceDetails.variation_code || '',
-      type: serviceDetails.type || 'prepaid'
-    };
-    
-    // Set correct serviceID
     if (serviceType === 'airtime' || serviceType === 'data') {
       const network = serviceDetails.network || 'MTN';
       vtpassPayload.serviceID = serviceMap[serviceType][network] || serviceMap.airtime.MTN;
@@ -2117,41 +2117,24 @@ app.post('/api/services/use-commission', protect, [
     console.log('🎯 VTpass Payload:', vtpassPayload);
     
     // ============================================
-    // STEP 2: Call VTpass to deliver service
+    // STEP 2: Check for duplicate transaction FIRST
     // ============================================
-    let vtpassResult;
-    try {
-      console.log(`📡 Calling VTpass API for ${vtpassPayload.serviceID}...`);
-      
-      const vtpassResponse = await axios.post(`${process.env.BASE_URL || 'http://localhost:5000'}/api/vtpass/proxy`, vtpassPayload, {
-        headers: {
-          'Authorization': req.headers.authorization,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      vtpassResult = vtpassResponse.data;
-      console.log('✅ VTpass Response received');
-      
-      if (!vtpassResult.success) {
-        return res.status(400).json({
-          success: false,
-          message: vtpassResult.message || 'Service delivery failed',
-          vtpassError: vtpassResult
-        });
-      }
-      
-    } catch (vtpassError) {
-      console.error('❌ VTpass API Error:', vtpassError.response?.data || vtpassError.message);
-      return res.status(500).json({
-        success: false,
-        message: 'Service temporarily unavailable. Please try again.',
-        error: vtpassError.message
+    const existingTransaction = await Transaction.findOne({
+      'metadata.commissionRequestId': vtpassPayload.request_id
+    });
+    
+    if (existingTransaction) {
+      console.log('✅ Transaction already processed, returning success');
+      return res.json({
+        success: true,
+        message: `${serviceType} already processed successfully!`,
+        alreadyProcessed: true,
+        serviceType: serviceType
       });
     }
     
     // ============================================
-    // STEP 3: Deduct from commission (AFTER VTpass succeeds)
+    // STEP 3: Deduct from commission balance FIRST (before VTpass)
     // ============================================
     const commissionBefore = user.commissionBalance;
     const commissionAfter = commissionBefore - amount;
@@ -2164,64 +2147,136 @@ app.post('/api/services/use-commission', protect, [
     console.log(`   Before: ₦${commissionBefore.toFixed(2)} → After: ₦${commissionAfter.toFixed(2)}`);
     
     // ============================================
-    // STEP 4: Create commission debit transaction
+    // STEP 4: Call VTpass to deliver service (WITH header to prevent wallet deduction)
+    // ============================================
+    let vtpassResult;
+    try {
+      console.log(`📡 Calling VTpass API for ${vtpassPayload.serviceID}...`);
+      
+      const vtpassResponse = await axios.post(`${process.env.BASE_URL || 'http://localhost:5000'}/api/vtpass/proxy`, vtpassPayload, {
+        headers: {
+          'Authorization': req.headers.authorization,
+          'Content-Type': 'application/json',
+          'x-commission-usage': 'true' // TELL VTpass NOT to deduct from wallet
+        }
+      });
+      
+      vtpassResult = vtpassResponse.data;
+      console.log('✅ VTpass Response received');
+      
+      if (!vtpassResult.success) {
+        // If VTpass fails, REFUND the commission
+        user.commissionBalance = commissionBefore;
+        await user.save();
+        
+        return res.status(400).json({
+          success: false,
+          message: vtpassResult.message || 'Service delivery failed',
+          commissionRefunded: true,
+          vtpassError: vtpassResult
+        });
+      }
+      
+    } catch (vtpassError) {
+      console.error('❌ VTpass API Error:', vtpassError.response?.data || vtpassError.message);
+      
+      // If VTpass fails, REFUND the commission
+      user.commissionBalance = commissionBefore;
+      await user.save();
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Service temporarily unavailable. Commission has been refunded.',
+        commissionRefunded: true,
+        error: vtpassError.message
+      });
+    }
+    
+    // ============================================
+    // STEP 5: Create commission debit transaction
     // ============================================
     const commissionTransaction = new Transaction({
       userId: userId,
       amount: amount,
-      type: 'debit',
+      type: 'Commission Debit',
       status: 'Successful',
       description: `Commission used for ${serviceType} purchase`,
       balanceBefore: commissionBefore,
       balanceAfter: commissionAfter,
       isCommission: true,
-      reference: vtpassPayload.request_id,
-      details: {
+      reference: `COMM_DEBIT_${vtpassPayload.request_id}`,
+      metadata: {
+        phone: serviceDetails.phone || '',
+        commissionRequestId: vtpassPayload.request_id,
         serviceType: serviceType,
         serviceDetails: serviceDetails,
         vtpassResponse: vtpassResult,
         network: serviceDetails.network || 'N/A',
-        phone: serviceDetails.phone || 'N/A',
-        commissionUsed: true
+        commissionUsed: true,
+        commissionSource: serviceType
       },
       createdAt: new Date()
     });
     
-    await commissionTransaction.save();
+    try {
+      await commissionTransaction.save();
+      console.log('✅ Commission transaction saved');
+    } catch (error) {
+      // If duplicate, log but continue
+      if (error.code === 11000) {
+        console.log('⚠️ Commission transaction already exists');
+      } else {
+        throw error;
+      }
+    }
     
     // ============================================
-    // STEP 5: Create service purchase transaction record
+    // STEP 6: Create service purchase transaction
     // ============================================
     const serviceTransaction = new Transaction({
       userId: userId,
       amount: amount,
-      type: 'debit',
+      type: serviceType === 'airtime' ? 'Airtime Purchase' : 
+            serviceType === 'data' ? 'Data Purchase' :
+            serviceType === 'electricity' ? 'Electricity Purchase' :
+            serviceType === 'cable' ? 'Cable TV Purchase' : 'debit',
       status: 'Successful',
       description: `${serviceType} purchased using commission`,
-      balanceBefore: commissionBefore,
-      balanceAfter: commissionAfter,
+      balanceBefore: user.walletBalance, // Show wallet balance (unchanged)
+      balanceAfter: user.walletBalance, // Wallet unchanged
       isCommission: false,
-      reference: vtpassPayload.request_id + '_SERVICE',
-      details: {
+      reference: `SERVICE_${vtpassPayload.request_id}`,
+      metadata: {
         ...serviceDetails,
         vtpassResponse: vtpassResult,
         commissionUsed: true,
         commissionAmount: amount,
+        commissionRequestId: vtpassPayload.request_id,
         serviceDelivered: true,
         deliveredTo: serviceDetails.phone || serviceDetails.meterNumber || 'user'
       },
       createdAt: new Date()
     });
     
-    await serviceTransaction.save();
+    try {
+      await serviceTransaction.save();
+      console.log('✅ Service transaction saved');
+    } catch (error) {
+      // If duplicate, log but continue
+      if (error.code === 11000) {
+        console.log('⚠️ Service transaction already exists');
+      } else {
+        throw error;
+      }
+    }
     
+    // ============================================
+    // STEP 7: Return SUCCESS response
+    // ============================================
     console.log(`✅ SUCCESS: Commission used & service delivered!`);
     console.log(`   Service: ${serviceType} to ${serviceDetails.phone || 'N/A'}`);
     console.log(`   VTpass Ref: ${vtpassResult.requestId || vtpassPayload.request_id}`);
     
-    // ============================================
-    // STEP 6: Return SUCCESS response
-    // ============================================
     res.json({
       success: true,
       message: `✅ ${serviceType} purchased successfully using commission! Sent to ${serviceDetails.phone || 'your account'}`,
@@ -2246,16 +2301,6 @@ app.post('/api/services/use-commission', protect, [
   } catch (error) {
     console.error('❌ Error in use-commission endpoint:', error);
     
-    // If it's a MongoDB duplicate error, still return success
-    if (error.code === 11000 || error.message.includes('duplicate')) {
-      return res.json({
-        success: true,
-        message: `✅ ${serviceType} already processed successfully!`,
-        alreadyProcessed: true,
-        serviceType: serviceType
-      });
-    }
-    
     res.status(500).json({ 
       success: false, 
       message: 'An unexpected error occurred. Please contact support.',
@@ -2263,7 +2308,6 @@ app.post('/api/services/use-commission', protect, [
     });
   }
 });
-
 
 
 // @desc    Upload profile image
@@ -5237,17 +5281,54 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
     const vtpassResult = await callVtpassApi(endpoint, payload);
 
-    // === 7. SUCCESS ===
-    if (vtpassResult.success && vtpassResult.data?.code === '000') {
-      let newBalance = user.walletBalance;
+  // === 7. SUCCESS ===
+if (vtpassResult.success && vtpassResult.data?.code === '000') {
+  let newBalance = user.walletBalance;
+  
+  // ✅ CRITICAL: Check if commission is being used
+  const isUsingCommission = req.headers['x-commission-usage'] === 'true';
+  
+  console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
+  console.log(`📊 Wallet before: ₦${user.walletBalance}, Commission before: ₦${user.commissionBalance}`);
 
-      if (amount && parseFloat(amount) > 0 && endpoint === '/pay') {
-        const balanceBefore = user.walletBalance;
+  if (amount && parseFloat(amount) > 0 && endpoint === '/pay') {
+    const balanceBefore = isUsingCommission ? user.commissionBalance : user.walletBalance;
 
-        if (user.walletBalance < parseFloat(amount)) {
-          await session.abortTransaction();
-          return res.status(400).json({ success: false, message: 'Insufficient balance' });
-        }
+    // ✅ CHECK CORRECT BALANCE BASED ON PAYMENT METHOD
+    if (isUsingCommission) {
+      // Check commission balance
+      if (user.commissionBalance < parseFloat(amount)) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Insufficient commission balance' 
+        });
+      }
+    } else {
+      // Check wallet balance
+      if (user.walletBalance < parseFloat(amount)) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Insufficient wallet balance' 
+        });
+      }
+    }
+
+    // ✅ DEDUCT FROM CORRECT BALANCE
+    if (isUsingCommission) {
+      // Deduct from commission ONLY
+      user.commissionBalance -= parseFloat(amount);
+      newBalance = user.commissionBalance;
+      console.log(`💰 Deducted ₦${amount} from COMMISSION`);
+      console.log(`📊 Commission after: ₦${user.commissionBalance}`);
+    } else {
+      // Deduct from wallet ONLY
+      user.walletBalance -= parseFloat(amount);
+      newBalance = user.walletBalance;
+      console.log(`💰 Deducted ₦${amount} from WALLET`);
+      console.log(`📊 Wallet after: ₦${user.walletBalance}`);
+    }
 
         // 🔥 FIX: DO NOT save user yet - keep in session only
         user.walletBalance -= parseFloat(amount);
@@ -5306,40 +5387,56 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
           console.log('✅ PROXY: Electricity transaction with COMPLETE metadata');
         }
 
-        // 🔥 FIX: Save transaction but don't commit yet
-        await createTransaction(
-          userId,
-          parseFloat(amount),
-          displayType,
-          'Successful',
-          `${serviceID.toUpperCase()} purchase`,
-          balanceBefore,
-          newBalance,
-          session,
-          false,
-          'pin',
-          uniqueRequestId,
-          transactionMetadata
-        );
+      // 🔥 FIX: Save transaction but don't commit yet
+await createTransaction(
+  userId,
+  parseFloat(amount),
+  displayType,
+  'Successful',
+  `${serviceID.toUpperCase()} purchase ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+  balanceBefore,
+  newBalance,
+  session,
+  isUsingCommission, // ✅ This tells if it's a commission transaction
+  'pin',
+  uniqueRequestId,
+  {
+    ...transactionMetadata,
+    // ✅ Add payment method info
+    paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+    commissionUsed: isUsingCommission,
+    walletUsed: !isUsingCommission
+  }
+);
 
         // === CREDIT COMMISSION ===
-        const commMap = { mtn: 'airtime', 'mtn-data': 'data', dstv: 'tv' };
-        const commService = commMap[serviceID] || serviceID.split('-')[0];
-        await calculateAndAddCommission(userId, amount, session, commService).catch(() => {});
+// ✅ Only credit commission if NOT paying with commission
+if (!isUsingCommission) {
+  const commMap = { mtn: 'airtime', 'mtn-data': 'data', dstv: 'tv' };
+  const commService = commMap[serviceID] || serviceID.split('-')[0];
+  await calculateAndAddCommission(userId, amount, session, commService).catch(() => {
+    console.log('⚠️ Commission calculation failed, but transaction succeeded');
+  });
+  console.log('💰 Commission credited for wallet payment');
+} else {
+  console.log('⚠️ Skipping commission credit (payment made with commission)');
+}
       }
 
       // 🔥 CRITICAL FIX: Save user and commit ONLY at the very end
       await user.save({ session });
       await session.commitTransaction();
 
-      return res.json({
-        success: true,
-        message: 'Transaction successful',
-        newBalance: user.walletBalance, // Use actual saved balance
-        vtpassResponse: vtpassResult.data,
-        requestId: uniqueRequestId,
-        customerName: vtpassResult.data.content?.Customer_Name || ''
-      });
+   return res.json({
+  success: true,
+  message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+  newWalletBalance: user.walletBalance, // Always return wallet balance
+  newCommissionBalance: user.commissionBalance, // Always return commission balance
+  paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+  vtpassResponse: vtpassResult.data,
+  requestId: uniqueRequestId,
+  customerName: vtpassResult.data.content?.Customer_Name || ''
+});
     }
 
     // === FAILED ===
