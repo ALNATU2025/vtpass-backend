@@ -984,19 +984,28 @@ const createTransaction = async (
 
 const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
   try {
-    console.log(`COMMISSION: serviceType="${serviceType}" | Amount=₦${amount}`);
+    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceType}" | Amount=₦${amount}`);
 
     const settings = await Settings.findOne().session(session);
     const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
 
     const cleanAmount = parseFloat(amount);
-    if (isNaN(cleanAmount) || cleanAmount <= 0) return 0;
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      console.log('⚠️ Invalid amount for commission');
+      return 0;
+    }
 
     const commissionAmount = cleanAmount * rate;
-    if (commissionAmount <= 0) return 0;
+    if (commissionAmount <= 0) {
+      console.log('⚠️ Commission amount too small');
+      return 0;
+    }
 
     const user = await User.findById(userId).session(session);
-    if (!user) return 0;
+    if (!user) {
+      console.log('❌ User not found for commission');
+      return 0;
+    }
 
     if (typeof user.commissionBalance !== 'number') user.commissionBalance = 0;
 
@@ -1005,54 +1014,60 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     await user.save({ session });
 
     const lowerType = (serviceType || '').toString().toLowerCase().trim();
+    console.log(`🔍 Processing commission for service type: "${lowerType}"`);
 
-    let description = `Service Commission Credit (₦${commissionAmount.toFixed(2)})`;
-    let source = 'Service';
+    let description = '';
+    let source = '';
 
-    // **FIXED: BETTER ELECTRICITY DETECTION**
-    // Check for ANY electricity-related keywords
-    if (lowerType.includes('electric') || 
-        lowerType.includes('ibadan') || 
-        lowerType.includes('eko') || 
-        lowerType.includes('ikeja') || 
-        lowerType.includes('kaduna') ||
-        lowerType.includes('jos') ||
-        lowerType.includes('kano') ||
-        lowerType.includes('port') ||
-        lowerType.includes('enugu') ||
-        lowerType.includes('ph') ||
-        lowerType.includes('abuja') ||
-        lowerType.includes('benin') ||
-        lowerType.includes('aba') ||
-        lowerType.includes('yola') ||
-        lowerType.includes('owerri')) {
-      description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Electricity';
-    }
-    else if (lowerType.includes('airtime')) {
-      description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Airtime';
-    }
-    else if (lowerType.includes('data')) {
-      description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Data';
-    }
-    else if (lowerType.includes('cable') || lowerType.includes('tv') ||
-             lowerType.includes('dstv') || lowerType.includes('gotv') || 
-             lowerType.includes('startimes') || lowerType.includes('showmax')) {
-      description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Cable TV';
-    }
-    else if (lowerType.includes('educ') || lowerType.includes('school') || 
-             lowerType.includes('waec') || lowerType.includes('jamb')) {
-      description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Education';
-    }
-    else if (lowerType.includes('insur')) {
-      description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Insurance';
+    // 🔥 **CRITICAL FIX: Check the EXACT strings you're passing**
+    switch (lowerType) {
+      case 'airtime':
+        description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Airtime';
+        break;
+        
+      case 'data':
+        description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Data';
+        break;
+        
+      case 'tv':
+        description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Cable TV';
+        break;
+        
+      case 'education':
+        description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Education';
+        break;
+        
+      case 'insurance':
+        description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Insurance';
+        break;
+        
+      // For electricity - check if it contains 'electric' or is a known electricity serviceID
+      default:
+        if (lowerType.includes('electric') || 
+            lowerType === 'ikeja-electric' || 
+            lowerType === 'eko-electric' || 
+            lowerType === 'ibadan-electric' ||
+            lowerType === 'abuja-electric' ||
+            lowerType === 'enugu-electric' ||
+            lowerType === 'kano-electric' ||
+            lowerType === 'ph-electric') {
+          description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+          source = 'Electricity';
+        } else {
+          // Fallback - use the service type as is
+          description = `${serviceType.charAt(0).toUpperCase() + serviceType.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+          source = serviceType.charAt(0).toUpperCase() + serviceType.slice(1);
+        }
     }
 
+    console.log(`✅ Commission determined: ${description} | Source: ${source}`);
+
+    // Create commission transaction
     await createTransaction(
       userId,
       commissionAmount,
@@ -1062,17 +1077,22 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
       balanceBefore,
       user.commissionBalance,
       session,
-      true,
+      true, // isCommission = true
       'none',
       null,
-      { commissionSource: source }
+      { 
+        commissionSource: source,
+        originalService: lowerType,
+        commissionRate: rate,
+        originalAmount: cleanAmount
+      }
     );
 
-    console.log(`COMMISSION ADDED: ${description} → Source: ${source}`);
+    console.log(`💰 COMMISSION ADDED: ${description} → Source: ${source}`);
     return commissionAmount;
 
   } catch (error) {
-    console.error('COMMISSION ERROR:', error);
+    console.error('❌ COMMISSION CALCULATION ERROR:', error);
     return 0;
   }
 };
@@ -5410,17 +5430,35 @@ await createTransaction(
 );
 
         // === CREDIT COMMISSION ===
-// ✅ Only credit commission if NOT paying with commission
-if (!isUsingCommission) {
-  const commMap = { mtn: 'airtime', 'mtn-data': 'data', dstv: 'tv' };
-  const commService = commMap[serviceID] || serviceID.split('-')[0];
-  await calculateAndAddCommission(userId, amount, session, commService).catch(() => {
-    console.log('⚠️ Commission calculation failed, but transaction succeeded');
-  });
-  console.log('💰 Commission credited for wallet payment');
-} else {
-  console.log('⚠️ Skipping commission credit (payment made with commission)');
+// Map serviceID to the correct commission type
+let commissionType = '';
+
+if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
+  commissionType = 'airtime';
+} 
+else if (serviceID === 'mtn-data' || serviceID === 'airtel-data' || serviceID === 'glo-data' || serviceID === 'etisalat-data') {
+  commissionType = 'data';
 }
+else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
+  commissionType = 'tv';
+}
+else if (serviceID.includes('electric')) {
+  commissionType = serviceID; // Pass the full serviceID like 'ikeja-electric'
+}
+else if (serviceID === 'waec' || serviceID === 'jamb') {
+  commissionType = 'education';
+}
+else if (serviceID.includes('insurance')) {
+  commissionType = 'insurance';
+}
+else {
+  commissionType = serviceID.split('-')[0];
+}
+
+console.log(`💰 Commission type mapped: ${serviceID} → ${commissionType}`);
+await calculateAndAddCommission(userId, amount, session, commissionType).catch(() => {
+  console.log('⚠️ Commission calculation failed, but transaction succeeded');
+});
       }
 
       // 🔥 CRITICAL FIX: Save user and commit ONLY at the very end
