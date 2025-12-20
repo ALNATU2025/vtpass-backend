@@ -2033,7 +2033,7 @@ app.get('/api/users/commission-balance', protect, async (req, res) => {
 
 
 
-// @desc    Use commission balance for service payment
+// @desc    Use commission balance for service payment (COMPLETE REPLACEMENT)
 // @route   POST /api/services/use-commission
 // @access  Private
 app.post('/api/services/use-commission', protect, [
@@ -2054,6 +2054,7 @@ app.post('/api/services/use-commission', protect, [
   
   try {
     console.log(`🔄 USING COMMISSION FOR SERVICE: ${serviceType}, Amount: ₦${amount}`);
+    console.log('Service Details:', JSON.stringify(serviceDetails, null, 2));
     
     const user = await User.findById(userId).session(session);
     if (!user) {
@@ -2071,7 +2072,9 @@ app.post('/api/services/use-commission', protect, [
       });
     }
     
-    // Deduct from commission balance
+    // ============================================
+    // STEP 1: Deduct from commission balance
+    // ============================================
     const commissionBefore = user.commissionBalance;
     user.commissionBalance -= amount;
     await user.save({ session });
@@ -2093,17 +2096,133 @@ app.post('/api/services/use-commission', protect, [
       { serviceDetails: serviceDetails }
     );
     
+    // ============================================
+    // STEP 2: TEMPORARILY ADD TO WALLET for VTpass payment
+    // ============================================
+    const walletBefore = user.walletBalance;
+    user.walletBalance += amount; // Add commission amount to wallet temporarily
+    await user.save({ session });
+    
+    console.log(`💳 Temporarily added ₦${amount} to wallet for VTpass payment`);
+    
+    // ============================================
+    // STEP 3: Call VTpass to deliver service
+    // ============================================
+    console.log(`📞 Calling VTpass proxy for ${serviceType}...`);
+    
+    // Map serviceType to VTpass serviceID
+    const serviceMap = {
+      'airtime': {
+        'MTN': 'mtn',
+        'Airtel': 'airtel',
+        'Glo': 'glo',
+        '9mobile': '9mobile'
+      },
+      'data': {
+        'MTN': 'mtn-data',
+        'Airtel': 'airtel-data',
+        'Glo': 'glo-data',
+        '9mobile': '9mobile-data'
+      },
+      'electricity': 'ikeja-electric',
+      'cable': 'dstv',
+      'education': 'waec',
+      'insurance': 'auto-insurance'
+    };
+    
+    // Prepare VTpass payload
+    let vtpassPayload = {
+      request_id: generateVtpassRequestId(),
+      amount: amount.toString(),
+      serviceID: '',
+      phone: serviceDetails.phone || '',
+      billersCode: serviceDetails.billersCode || serviceDetails.meterNumber || serviceDetails.smartcardNumber || '',
+      variation_code: serviceDetails.variation_code || '',
+      type: serviceDetails.type || 'prepaid'
+    };
+    
+    // Set correct serviceID
+    if (serviceType === 'airtime' || serviceType === 'data') {
+      const network = serviceDetails.network || 'MTN';
+      vtpassPayload.serviceID = serviceMap[serviceType][network] || serviceMap[serviceType]['MTN'];
+    } else {
+      vtpassPayload.serviceID = serviceMap[serviceType] || serviceType;
+    }
+    
+    console.log('VTpass Payload:', vtpassPayload);
+    
+    // Call VTpass proxy endpoint
+    const vtpassResponse = await axios.post('http://localhost:5000/api/vtpass/proxy', vtpassPayload, {
+      headers: {
+        'Authorization': `Bearer ${req.headers.authorization?.split(' ')[1]}`,
+        'Content-Type': 'application/json'
+      }
+    }).catch(error => {
+      console.error('VTpass API Error:', error.response?.data || error.message);
+      throw new Error(`VTpass service failed: ${error.response?.data?.message || error.message}`);
+    });
+    
+    if (!vtpassResponse.data.success) {
+      // ROLLBACK everything if VTpass fails
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Service delivery failed: ${vtpassResponse.data.message}`,
+        vtpassError: vtpassResponse.data
+      });
+    }
+    
+    console.log(`✅ VTpass success:`, vtpassResponse.data.message);
+    
+    // ============================================
+    // STEP 4: DEDUCT FROM WALLET (the temporary amount)
+    // ============================================
+    user.walletBalance -= amount; // Deduct the temporary amount
+    const walletAfter = user.walletBalance;
+    await user.save({ session });
+    
+    console.log(`💳 Deducted temporary ₦${amount} from wallet`);
+    
+    // Create wallet transaction showing the payment
+    await createTransaction(
+      userId,
+      amount,
+      `${serviceType.charAt(0).toUpperCase() + serviceType.slice(1)} Purchase`,
+      'Successful',
+      `Paid for ${serviceType} using commission balance`,
+      walletBefore, // Shows wallet balance before temporary addition
+      walletAfter,  // Shows wallet balance back to original
+      session,
+      false,
+      'none',
+      vtpassPayload.request_id,
+      {
+        ...serviceDetails,
+        vtpassResponse: vtpassResponse.data,
+        commissionUsed: true,
+        commissionAmount: amount,
+        originalWalletBalance: walletBefore
+      }
+    );
+    
     await session.commitTransaction();
     
-    console.log(`✅ COMMISSION USED: ₦${amount} for ${serviceType}`);
+    console.log(`✅ COMPLETE: Commission used & service delivered!`);
     
     res.json({
       success: true,
-      message: `Commission balance used successfully for ${serviceType}`,
+      message: `Commission used successfully! ${serviceType} purchased and delivered.`,
       amountUsed: amount,
       newCommissionBalance: commissionAfter,
+      newWalletBalance: walletAfter, // Should be same as original
       serviceType: serviceType,
-      hasEnough: true
+      hasEnough: true,
+      vtpassTransaction: {
+        success: true,
+        requestId: vtpassPayload.request_id,
+        serviceDelivered: true,
+        response: vtpassResponse.data
+      }
     });
     
   } catch (error) {
@@ -2111,7 +2230,8 @@ app.post('/api/services/use-commission', protect, [
     console.error('❌ Error using commission for service:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to use commission balance' 
+      message: error.message || 'Failed to use commission balance',
+      error: error.toString()
     });
   } finally {
     session.endSession();
