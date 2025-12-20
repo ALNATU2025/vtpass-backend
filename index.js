@@ -23,6 +23,7 @@ const Notification = require('./models/Notification');
 const Beneficiary = require('./models/Beneficiary');
 const Settings = require('./models/AppSettings');
 const AuthLog = require('./models/AuthLog');
+const Alert = require('./models/Alert');
 
 
 // Try to load security middleware with error handling
@@ -2422,6 +2423,30 @@ app.get('/api/users', adminProtect, [
   } catch (error) {
     console.error('Error fetching all users:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+// @desc    Get VTpass low balance alerts
+// @route   GET /api/admin/vtpass-alerts
+// @access  Private/Admin
+app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
+  try {
+    const alerts = await Alert.find({ type: 'VTPASS_LOW_BALANCE' })
+      .sort({ createdAt: -1 })
+      .limit(50);
+    
+    res.json({
+      success: true,
+      count: alerts.length,
+      alerts
+    });
+  } catch (error) {
+    console.error('Error fetching alerts:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -5171,14 +5196,71 @@ app.post('/api/transactions/atomic', protect, async (req, res) => {
 });
 
 
-// @desc    VTpass Proxy Endpoint - FINAL FIXED VERSION (Dec 2025)
+
+// Helper function to alert admin about low VTpass balance
+async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
+  try {
+    console.log('🚨 ADMIN ALERT: VTpass wallet low!');
+    console.log(`   Service: ${serviceID}`);
+    console.log(`   Required Amount: ₦${amount}`);
+    console.log(`   Available Balance: ₦${vtpassBalance}`);
+    console.log(`   Time: ${new Date().toISOString()}`);
+    
+    // Create Alert document (you need to create Alert model first)
+    try {
+      const Alert = require('../models/Alert'); // Adjust path as needed
+      
+      const alert = new Alert({
+        type: 'VTPASS_LOW_BALANCE',
+        title: 'VTpass Wallet Low Balance Alert',
+        message: `VTpass wallet balance is low. Current: ₦${vtpassBalance}, Required: ₦${amount}`,
+        severity: vtpassBalance < 5000 ? 'CRITICAL' : 'WARNING',
+        data: {
+          serviceID,
+          requiredAmount: amount,
+          availableBalance: vtpassBalance,
+          timestamp: new Date()
+        },
+        acknowledged: false
+      });
+      
+      await alert.save();
+      console.log('✅ Admin alert saved to database');
+    } catch (dbError) {
+      console.error('Could not save alert to database:', dbError.message);
+    }
+    
+    // Send email notification (configure your email service)
+    // await sendEmailNotification({
+    //   to: 'admin@yourdomain.com',
+    //   subject: `🚨 VTpass Wallet Low Balance Alert - ₦${vtpassBalance}`,
+    //   html: `
+    //     <h2>VTpass Wallet Low Balance Alert</h2>
+    //     <p><strong>Current Balance:</strong> ₦${vtpassBalance}</p>
+    //     <p><strong>Required Amount:</strong> ₦${amount}</p>
+    //     <p><strong>Service:</strong> ${serviceID}</p>
+    //     <p><strong>Time:</strong> ${new Date()}</p>
+    //     <p><strong>Action Required:</strong> Please add funds to VTpass merchant wallet immediately!</p>
+    //     <p>Login to <a href="https://vtpass.com">vtpass.com</a> to credit your wallet.</p>
+    //   `
+    // });
+    
+  } catch (error) {
+    console.error('Failed to send admin alert:', error);
+  }
+}
+
+
+
+
+// @desc    VTpass Proxy Endpoint - COMPLETE FIXED VERSION
 // @route   POST /api/vtpass/proxy
 // @access  Private
 app.post('/api/vtpass/proxy', protect, async (req, res) => {
-  console.log('PROXY ENDPOINT HIT - FINAL FIXED');
+  console.log('PROXY ENDPOINT HIT - COMPLETE FIXED VERSION');
   console.log('Body:', JSON.stringify(req.body, null, 2));
 
-  // ========== ADD SERVICE CHECK HERE (NEW CODE) ==========
+  // ========== SERVICE CHECK ==========
   const serviceChecks = {
     'mtn': 'isAirtimeEnabled',
     'airtel': 'isAirtimeEnabled', 
@@ -5216,10 +5298,9 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       }
     } catch (error) {
       console.error('Service check error:', error);
-      // Continue if check fails - don't block the transaction
+      // Continue if check fails
     }
   }
-  // ========== END OF NEW CODE ==========
 
   const session = await mongoose.startSession();
 
@@ -5229,11 +5310,10 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     const { request_id, serviceID, amount, phone, variation_code, billersCode, type } = req.body;
     const userId = req.user._id;
 
-    // === 1. Use client request_id (guaranteed unique) ===
+    // === 1. Use client request_id ===
     const uniqueRequestId = request_id && request_id.length >= 10 
       ? request_id 
       : generateVtpassRequestId();
-
     console.log('Using request_id:', uniqueRequestId);
 
     // === 2. Get user ===
@@ -5259,33 +5339,73 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       });
     }
 
-    // === 4. Map serviceID → correct display type (for Flutter tabs) ===
-    const typeMap = {
-      mtn: 'Airtime Purchase',
-      airtel: 'Airtime Purchase',
-      glo: 'Airtime Purchase',
-      etisalat: 'Airtime Purchase',
-      '9mobile': 'Airtime Purchase',
-      'mtn-data': 'Data Purchase',
-      'airtel-data': 'Data Purchase',
-      'glo-data': 'Data Purchase',
-      'etisalat-data': 'Data Purchase',
-      dstv: 'Cable TV Subscription',
-      gotv: 'Cable TV Subscription',
-      startimes: 'Cable TV Subscription',
-      'ikeja-electric': 'Electricity Payment',
-      'eko-electric': 'Electricity Payment',
-      'abuja-electric': 'Electricity Payment',
-      // add more as needed
-    };
+    // === 4. Check if user has sufficient balance FIRST ===
+    const isUsingCommission = req.headers['x-commission-usage'] === 'true';
+    console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
+    
+    if (amount && parseFloat(amount) > 0) {
+      if (isUsingCommission) {
+        // Check commission balance
+        if (user.commissionBalance < parseFloat(amount)) {
+          await session.abortTransaction();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Insufficient commission balance. Available: ₦${user.commissionBalance.toFixed(2)}` 
+          });
+        }
+      } else {
+        // Check wallet balance
+        if (user.walletBalance < parseFloat(amount)) {
+          await session.abortTransaction();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Insufficient wallet balance. Available: ₦${user.walletBalance.toFixed(2)}` 
+          });
+        }
+      }
+    }
 
-    // 🔥 FIX: Use let instead of const
-    let displayType = typeMap[serviceID] || 'debit';
+    // === 5. Check VTpass Wallet Balance BEFORE calling VTpass ===
+    console.log('💰 Checking VTpass wallet balance before transaction...');
+    try {
+      const vtpassApiKey = process.env.VTPASS_API_KEY;
+      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+      
+      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+        auth: {
+          username: vtpassApiKey,
+          password: vtpassSecretKey
+        },
+        timeout: 10000
+      });
 
-    // === 5. Build VTpass payload ===
+      const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+      console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
+
+      // Check if balance is sufficient
+      if (vtpassBalance < parseFloat(amount)) {
+        // 🔥 SEND ADMIN ALERT
+        await sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance);
+        
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: 'Service temporarily unavailable due to insufficient provider funds. Our team has been notified.',
+          code: 'VTPASS_INSUFFICIENT_FUNDS',
+          vtpassBalance: vtpassBalance,
+          requiredAmount: amount,
+          adminAlerted: true
+        });
+      }
+    } catch (balanceError) {
+      console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
+      // Continue with transaction but log warning
+    }
+
+    // === 6. Build VTpass payload ===
     const payload = {
       request_id: uniqueRequestId,
-      serviceID: serviceID.includes('data') ? serviceID : serviceID,
+      serviceID: serviceID,
       phone,
       billersCode,
       variation_code,
@@ -5294,193 +5414,160 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
 
     if (amount) payload.amount = parseFloat(amount).toFixed(2);
 
-    // === 6. Call VTpass ===
+    // === 7. Determine endpoint ===
     const endpoint = serviceID.includes('electric') && billersCode && !variation_code 
       ? '/merchant-verify' 
       : '/pay';
 
+    // === 8. Call VTpass API ===
     const vtpassResult = await callVtpassApi(endpoint, payload);
 
-  // === 7. SUCCESS ===
-if (vtpassResult.success && vtpassResult.data?.code === '000') {
-  let newBalance = user.walletBalance;
-  
-  // ✅ CRITICAL: Check if commission is being used
-  const isUsingCommission = req.headers['x-commission-usage'] === 'true';
-  
-  console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
-  console.log(`📊 Wallet before: ₦${user.walletBalance}, Commission before: ₦${user.commissionBalance}`);
-
-  if (amount && parseFloat(amount) > 0 && endpoint === '/pay') {
-    const balanceBefore = isUsingCommission ? user.commissionBalance : user.walletBalance;
-
-    // ✅ CHECK CORRECT BALANCE BASED ON PAYMENT METHOD
-    if (isUsingCommission) {
-      // Check commission balance
-      if (user.commissionBalance < parseFloat(amount)) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Insufficient commission balance' 
-        });
-      }
-    } else {
-      // Check wallet balance
-      if (user.walletBalance < parseFloat(amount)) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Insufficient wallet balance' 
-        });
-      }
-    }
-
-    // ✅ DEDUCT FROM CORRECT BALANCE
-    if (isUsingCommission) {
-      // Deduct from commission ONLY
-      user.commissionBalance -= parseFloat(amount);
-      newBalance = user.commissionBalance;
-      console.log(`💰 Deducted ₦${amount} from COMMISSION`);
-      console.log(`📊 Commission after: ₦${user.commissionBalance}`);
-    } else {
-      // Deduct from wallet ONLY
-      user.walletBalance -= parseFloat(amount);
-      newBalance = user.walletBalance;
-      console.log(`💰 Deducted ₦${amount} from WALLET`);
-      console.log(`📊 Wallet after: ₦${user.walletBalance}`);
-    }
-
-        // 🔥 FIX: DO NOT save user yet - keep in session only
-        user.walletBalance -= parseFloat(amount);
-        newBalance = user.walletBalance;
-        // REMOVED: await user.save({ session }); // Don't save yet!
-
-        // === RECORD TRANSACTION WITH COMPLETE METADATA ===
-        let transactionMetadata = { phone, billersCode, service: serviceID };
-
-        // 🔥 SPECIAL HANDLING FOR ELECTRICITY TRANSACTIONS
-        if (serviceID.includes('electric') && billersCode && vtpassResult.data) {
-          const vtpassData = vtpassResult.data;
-          
-          // Extract electricity data from VTpass
-          const token = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
-          const customerName = vtpassData.customerName || vtpassData.content?.Customer_Name || null;
-          const customerAddress = vtpassData.customerAddress || vtpassData.content?.Address || null;
-          
-          // Format token
-          let formattedToken = null;
-          if (token) {
-            formattedToken = token.toString()
-              .replace('Token : ', '')
-              .replace('Token:', '')
-              .replace('TOKEN : ', '')
-              .replace('TOKEN:', '')
-              .trim();
-            
-            if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
-              formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
-            }
-          }
-          
-          // Create COMPLETE electricity metadata
-          transactionMetadata = {
-            phone: phone || '',
-            smartcardNumber: '',
-            billersCode: billersCode,
-            variation_code: variation_code || '',
-            packageName: '',
-            serviceID: serviceID,
-            selectedPackage: '',
-            meterNumber: billersCode,
-            provider: serviceID,
-            type: variation_code || 'prepaid',
-            token: formattedToken || 'Check SMS',
-            customerName: customerName ? customerName.toString().trim() : 'N/A',
-            customerAddress: customerAddress || 'N/A',
-            exchangeReference: vtpassData.exchangeReference || uniqueRequestId,
-            vtpassResponse: vtpassData,
-            verificationHistory: []
-          };
-          
-          displayType = 'Electricity Purchase';
-          
-          console.log('✅ PROXY: Electricity transaction with COMPLETE metadata');
+    // === 9. Handle VTpass response ===
+    if (vtpassResult.success && vtpassResult.data?.code === '000') {
+      // SUCCESS: Process the transaction
+      
+      // Deduct from correct balance
+      if (amount && parseFloat(amount) > 0) {
+        if (isUsingCommission) {
+          user.commissionBalance -= parseFloat(amount);
+          console.log(`💰 Deducted ₦${amount} from COMMISSION`);
+        } else {
+          user.walletBalance -= parseFloat(amount);
+          console.log(`💰 Deducted ₦${amount} from WALLET`);
         }
-
-      // 🔥 FIX: Save transaction but don't commit yet
-await createTransaction(
-  userId,
-  parseFloat(amount),
-  displayType,
-  'Successful',
-  `${serviceID.toUpperCase()} purchase ${isUsingCommission ? '(Paid with Commission)' : ''}`,
-  balanceBefore,
-  newBalance,
-  session,
-  isUsingCommission, // ✅ This tells if it's a commission transaction
-  'pin',
-  uniqueRequestId,
-  {
-    ...transactionMetadata,
-    // ✅ Add payment method info
-    paymentMethod: isUsingCommission ? 'commission' : 'wallet',
-    commissionUsed: isUsingCommission,
-    walletUsed: !isUsingCommission
-  }
-);
-
-        // === CREDIT COMMISSION ===
-// Map serviceID to the correct commission type
-let commissionType = '';
-
-if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
-  commissionType = 'airtime';
-} 
-else if (serviceID === 'mtn-data' || serviceID === 'airtel-data' || serviceID === 'glo-data' || serviceID === 'etisalat-data') {
-  commissionType = 'data';
-}
-else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
-  commissionType = 'tv';
-}
-else if (serviceID.includes('electric')) {
-  commissionType = serviceID; // Pass the full serviceID like 'ikeja-electric'
-}
-else if (serviceID === 'waec' || serviceID === 'jamb') {
-  commissionType = 'education';
-}
-else if (serviceID.includes('insurance')) {
-  commissionType = 'insurance';
-}
-else {
-  commissionType = serviceID.split('-')[0];
-}
-
-console.log(`💰 Commission type mapped: ${serviceID} → ${commissionType}`);
-await calculateAndAddCommission(userId, amount, session, commissionType).catch(() => {
-  console.log('⚠️ Commission calculation failed, but transaction succeeded');
-});
       }
 
-      // 🔥 CRITICAL FIX: Save user and commit ONLY at the very end
+      // Map display type
+      const typeMap = {
+        mtn: 'Airtime Purchase',
+        airtel: 'Airtime Purchase',
+        glo: 'Airtime Purchase',
+        etisalat: 'Airtime Purchase',
+        '9mobile': 'Airtime Purchase',
+        'mtn-data': 'Data Purchase',
+        'airtel-data': 'Data Purchase',
+        'glo-data': 'Data Purchase',
+        'etisalat-data': 'Data Purchase',
+        dstv: 'Cable TV Subscription',
+        gotv: 'Cable TV Subscription',
+        startimes: 'Cable TV Subscription',
+        'ikeja-electric': 'Electricity Payment',
+        'eko-electric': 'Electricity Payment',
+        'abuja-electric': 'Electricity Payment',
+        'ibadan-electric': 'Electricity Payment',
+      };
+      
+      let displayType = typeMap[serviceID] || 'debit';
+
+      // Create transaction metadata
+      let transactionMetadata = { 
+        phone, 
+        billersCode, 
+        service: serviceID,
+        paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+        commissionUsed: isUsingCommission,
+        walletUsed: !isUsingCommission
+      };
+
+      // Handle electricity specific data
+      if (serviceID.includes('electric') && vtpassResult.data) {
+        const vtpassData = vtpassResult.data;
+        const token = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+        
+        let formattedToken = null;
+        if (token) {
+          formattedToken = token.toString()
+            .replace('Token : ', '')
+            .replace('Token:', '')
+            .replace('TOKEN : ', '')
+            .replace('TOKEN:', '')
+            .trim();
+          
+          if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+            formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+          }
+        }
+        
+        transactionMetadata = {
+          ...transactionMetadata,
+          meterNumber: billersCode,
+          token: formattedToken || 'Check SMS',
+          customerName: vtpassData.customerName || vtpassData.content?.Customer_Name || 'N/A',
+          customerAddress: vtpassData.customerAddress || vtpassData.content?.Address || 'N/A',
+        };
+        
+        displayType = 'Electricity Purchase';
+      }
+
+      // Record transaction
+      await createTransaction(
+        userId,
+        parseFloat(amount),
+        displayType,
+        'Successful',
+        `${serviceID.toUpperCase()} purchase ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+        isUsingCommission ? user.commissionBalance + parseFloat(amount) : user.walletBalance + parseFloat(amount),
+        isUsingCommission ? user.commissionBalance : user.walletBalance,
+        session,
+        isUsingCommission,
+        'pin',
+        uniqueRequestId,
+        transactionMetadata
+      );
+
+      // Calculate commission
+      let commissionType = '';
+      if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
+        commissionType = 'airtime';
+      } else if (serviceID.includes('data')) {
+        commissionType = 'data';
+      } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
+        commissionType = 'tv';
+      } else if (serviceID.includes('electric')) {
+        commissionType = serviceID;
+      } else {
+        commissionType = serviceID.split('-')[0];
+      }
+      
+      await calculateAndAddCommission(userId, amount, session, commissionType)
+        .catch(err => console.log('⚠️ Commission calculation failed:', err));
+
+      // Save user and commit
       await user.save({ session });
       await session.commitTransaction();
 
-   return res.json({
-  success: true,
-  message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
-  newWalletBalance: user.walletBalance, // Always return wallet balance
-  newCommissionBalance: user.commissionBalance, // Always return commission balance
-  paymentMethod: isUsingCommission ? 'commission' : 'wallet',
-  vtpassResponse: vtpassResult.data,
-  requestId: uniqueRequestId,
-  customerName: vtpassResult.data.content?.Customer_Name || ''
-});
+      return res.json({
+        success: true,
+        message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+        newWalletBalance: user.walletBalance,
+        newCommissionBalance: user.commissionBalance,
+        paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+        vtpassResponse: vtpassResult.data,
+        requestId: uniqueRequestId,
+        customerName: vtpassResult.data.content?.Customer_Name || ''
+      });
     }
 
-    // === FAILED ===
+    // === 10. Handle VTpass FAILURE ===
     await session.abortTransaction();
 
     const msg = vtpassResult.data?.response_description || 'Transaction failed';
+    const errorCode = vtpassResult.data?.code || 'UNKNOWN';
+
+    // Handle LOW WALLET BALANCE error
+    if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
+      // 🔥 SEND ADMIN ALERT
+      await sendAdminLowBalanceAlert(serviceID, amount, 0);
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Service temporarily unavailable due to provider wallet issues. Our team has been notified and will fix this shortly.',
+        code: 'VTPASS_WALLET_EMPTY',
+        retryable: false,
+        adminAlerted: true,
+        vtpassResponse: vtpassResult.data
+      });
+    }
 
     if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
       return res.status(400).json({
@@ -5500,12 +5587,15 @@ await calculateAndAddCommission(userId, amount, session, commissionType).catch((
   } catch (error) {
     await session.abortTransaction();
     console.error('PROXY ERROR:', error);
-    res.status(500).json({ success: false, message: 'Service unavailable' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Service unavailable',
+      error: error.message 
+    });
   } finally {
     session.endSession();
   }
-}); // <-- END OF THE ROUTE - ONLY ONE CLOSING BRACE HERE
-
+});
 
 
 
