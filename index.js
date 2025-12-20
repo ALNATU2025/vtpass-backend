@@ -7660,6 +7660,36 @@ app.post('/api/transactions/verify-payment', protect, [
 
 
 
+// @desc    Check if transaction is duplicate
+// @route   GET /api/transactions/check-duplicate/:requestId
+// @access  Private
+app.get('/api/transactions/check-duplicate/:requestId', protect, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const userId = req.user._id;
+    
+    const existing = await Transaction.findOne({
+      userId: userId,
+      'details.vtpassResponse.requestId': requestId
+    });
+    
+    res.json({
+      success: true,
+      isDuplicate: !!existing,
+      transaction: existing
+    });
+  } catch (error) {
+    console.error('Error checking duplicate:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error checking duplicate transaction'
+    });
+  }
+});
+
+
+
+
 
 // @desc    Check if transaction reference already exists
 // @route   GET /api/transactions/check-reference/:reference
