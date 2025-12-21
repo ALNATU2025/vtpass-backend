@@ -982,11 +982,16 @@ const createTransaction = async (
 
 
 
-
-const calculateAndAddCommission = async (userId, amount, session, serviceType) => {
+//CALCULATE COMMISSION 
+const calculateAndAddCommission = async (userId, amount, serviceType, session) => {
   try {
     console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceType}" | Amount=₦${amount}`);
-
+    
+    // Handle case where serviceType might be undefined or an object
+    const serviceTypeString = typeof serviceType === 'string' ? serviceType : 
+                              serviceType && typeof serviceType === 'object' ? 'unknown' : 
+                              'unknown';
+    
     const settings = await Settings.findOne().session(session);
     const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
 
@@ -1014,13 +1019,12 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
     user.commissionBalance += commissionAmount;
     await user.save({ session });
 
-    const lowerType = (serviceType || '').toString().toLowerCase().trim();
+    const lowerType = serviceTypeString.toLowerCase().trim();
     console.log(`🔍 Processing commission for service type: "${lowerType}"`);
 
     let description = '';
     let source = '';
 
-    // 🔥 **CRITICAL FIX: Check the EXACT strings you're passing**
     switch (lowerType) {
       case 'airtime':
         description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
@@ -1047,22 +1051,24 @@ const calculateAndAddCommission = async (userId, amount, session, serviceType) =
         source = 'Insurance';
         break;
         
-      // For electricity - check if it contains 'electric' or is a known electricity serviceID
+      case 'ikeja-electric':
+      case 'eko-electric':
+      case 'ibadan-electric':
+      case 'abuja-electric':
+      case 'enugu-electric':
+      case 'kano-electric':
+      case 'ph-electric':
+        description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Electricity';
+        break;
+        
       default:
-        if (lowerType.includes('electric') || 
-            lowerType === 'ikeja-electric' || 
-            lowerType === 'eko-electric' || 
-            lowerType === 'ibadan-electric' ||
-            lowerType === 'abuja-electric' ||
-            lowerType === 'enugu-electric' ||
-            lowerType === 'kano-electric' ||
-            lowerType === 'ph-electric') {
+        if (lowerType.includes('electric')) {
           description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
           source = 'Electricity';
         } else {
-          // Fallback - use the service type as is
-          description = `${serviceType.charAt(0).toUpperCase() + serviceType.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
-          source = serviceType.charAt(0).toUpperCase() + serviceType.slice(1);
+          description = `${serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+          source = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
         }
     }
 
@@ -5586,9 +5592,11 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         displayType = 'Electricity Purchase';
       }
 
-      // Record transaction
-      const balanceBefore = isUsingCommission ? user.commissionBalance + transactionAmount : user.walletBalance + transactionAmount;
-      const balanceAfter = isUsingCommission ? user.commissionBalance : user.walletBalance;
+    // Record transaction
+const balanceBefore = isUsingCommission ? 
+  (user.commissionBalance + transactionAmount) : 
+  (user.walletBalance + transactionAmount);
+const balanceAfter = isUsingCommission ? user.commissionBalance : user.walletBalance;
 
       await createTransaction(
         userId,
@@ -5605,24 +5613,24 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         transactionMetadata
       );
 
-      // Calculate commission - only if there's an actual purchase
-      if (transactionAmount > 0) {
-        let commissionType = '';
-        if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
-          commissionType = 'airtime';
-        } else if (serviceID.includes('data')) {
-          commissionType = 'data';
-        } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
-          commissionType = 'tv';
-        } else if (serviceID.includes('electric')) {
-          commissionType = serviceID;
-        } else {
-          commissionType = serviceID.split('-')[0];
-        }
-        
-        await calculateAndAddCommission(userId, amount, commissionType, session)
-          .catch(err => console.log('⚠️ Commission calculation failed:', err));
-      }
+   // Calculate commission - only if there's an actual purchase
+if (transactionAmount > 0) {
+  let commissionType = '';
+  if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
+    commissionType = 'airtime';
+  } else if (serviceID.includes('data')) {
+    commissionType = 'data';
+  } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
+    commissionType = 'tv';
+  } else if (serviceID.includes('electric')) {
+    commissionType = serviceID; // e.g., "ibadan-electric"
+  } else {
+    commissionType = serviceID.split('-')[0];
+  }
+  
+  await calculateAndAddCommission(userId, transactionAmount, commissionType, session)
+    .catch(err => console.log('⚠️ Commission calculation failed:', err));
+}
 
       // Save user and commit
       await user.save({ session });
