@@ -2429,27 +2429,110 @@ app.get('/api/users', adminProtect, [
 
 
 
+// @desc    Get VTpass wallet balance
+// @route   GET /api/admin/vtpass-balance
+// @access  Private/Admin
+app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => {
+  try {
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    if (!vtpassApiKey || !vtpassSecretKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'VTpass API credentials not configured'
+      });
+    }
+    
+    const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+      auth: {
+        username: vtpassApiKey,
+        password: vtpassSecretKey
+      },
+      timeout: 10000
+    });
 
-// @desc    Get VTpass low balance alerts
+    const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+    
+    res.json({
+      success: true,
+      balance: vtpassBalance,
+      lastChecked: new Date(),
+      currency: 'NGN'
+    });
+    
+  } catch (error) {
+    console.error('Error fetching VTpass balance:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch VTpass balance',
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+// @desc    Get VTpass alerts
 // @route   GET /api/admin/vtpass-alerts
 // @access  Private/Admin
 app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
   try {
-    const alerts = await Alert.find({ type: 'VTPASS_LOW_BALANCE' })
+    const alerts = await Alert.find({ 
+      type: 'VTPASS_LOW_BALANCE',
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+    })
       .sort({ createdAt: -1 })
-      .limit(50);
+      .limit(20);
+    
+    // Get current VTpass balance to include in response
+    let currentBalance = 0;
+    try {
+      const vtpassApiKey = process.env.VTPASS_API_KEY;
+      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+      
+      if (vtpassApiKey && vtpassSecretKey) {
+        const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+          auth: {
+            username: vtpassApiKey,
+            password: vtpassSecretKey
+          },
+          timeout: 5000
+        });
+        currentBalance = balanceResponse.data.contents?.balance || 0;
+      }
+    } catch (balanceError) {
+      console.error('Could not fetch current balance:', balanceError.message);
+    }
     
     res.json({
       success: true,
       count: alerts.length,
-      alerts
+      currentBalance: currentBalance,
+      alerts: alerts.map(alert => ({
+        id: alert._id,
+        type: alert.type,
+        title: alert.title,
+        message: alert.message,
+        severity: alert.severity,
+        data: alert.data,
+        createdAt: alert.createdAt,
+        acknowledged: alert.acknowledged
+      }))
     });
+    
   } catch (error) {
     console.error('Error fetching alerts:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error',
+      error: error.message 
+    });
   }
 });
-
 
 
 // @desc    Get ALL users without pagination (Admin only - for transactions)
