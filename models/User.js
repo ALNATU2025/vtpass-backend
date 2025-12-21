@@ -34,6 +34,27 @@ const userSchema = mongoose.Schema(
       type: String,
       required: true,
     },
+
+    // Add these fields in the schema (around line 85)
+pinResetToken: {
+  type: String,
+  default: null,
+},
+pinResetTokenExpires: {
+  type: Date,
+  default: null,
+},
+pinResetTokenAttempts: {
+  type: Number,
+  default: 0,
+},
+pinResetTokenVerified: {
+  type: Boolean,
+  default: false,
+},
+
+
+    
     walletBalance: {
       type: Number,
       default: 0.0,
@@ -161,10 +182,17 @@ const userSchema = mongoose.Schema(
 
 // Hash transaction PIN before saving if modified
 userSchema.pre('save', async function (next) {
+  // Only hash transactionPin if it's a 6-digit number
   if (this.isModified('transactionPin') && this.transactionPin) {
-    console.log(`DEBUG (User Model Pre-Save): Hashing transaction PIN for user ${this.email}`); // FIXED: Added backticks
-    const salt = await bcrypt.genSalt(10);
-    this.transactionPin = await bcrypt.hash(this.transactionPin, salt);
+    // Check if it's already hashed (starts with $2a$ or $2b$)
+    if (!this.transactionPin.startsWith('$2a$') && !this.transactionPin.startsWith('$2b$')) {
+      // Only hash if it's 6 digits (raw PIN)
+      if (/^\d{6}$/.test(this.transactionPin)) {
+        console.log(`DEBUG (User Model Pre-Save): Hashing transaction PIN for user ${this.email}`);
+        const salt = await bcrypt.genSalt(10);
+        this.transactionPin = await bcrypt.hash(this.transactionPin, salt);
+      }
+    }
   }
   next();
 });
