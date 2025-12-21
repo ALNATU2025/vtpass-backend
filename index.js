@@ -1641,7 +1641,7 @@ app.post('/api/users/reset-password', [
 // @access  Private
 app.post('/api/users/set-transaction-pin', protect, [
   body('pin')
-    .isLength({ min: 6, max: 6 }) // ← CHANGE TO EXACTLY 6
+    .isLength({ min: 6, max: 6 })
     .withMessage('PIN must be exactly 6 digits')
     .matches(/^\d+$/)
     .withMessage('PIN must contain only digits')
@@ -1679,16 +1679,13 @@ app.post('/api/users/set-transaction-pin', protect, [
       });
     }
 
-    // Hash the PIN
-    const salt = await bcrypt.genSalt(12);
-    const hashedPin = await bcrypt.hash(pin, salt);
-
-    // Update user with hashed PIN AND transactionPinSet flag
-    user.transactionPin = hashedPin;
-    user.transactionPinSet = true; // ← CRITICAL: Set the flag
+    // ✅ FIX: Save the RAW PIN, let Mongoose pre-save hook hash it
+    user.transactionPin = pin; // Save raw 6-digit PIN
+    user.transactionPinSet = true;
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     
+    // This will trigger the pre-save hook in User model
     await user.save();
 
     console.log(`✅ 6-digit PIN set successfully for user: ${userId}`);
@@ -1709,6 +1706,276 @@ app.post('/api/users/set-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
+
+// @desc    Request PIN reset token via email
+// @route   POST /api/users/request-pin-reset
+// @access  Private
+app.post('/api/users/request-pin-reset', protect, async (req, res) => {
+  try {
+    const { email } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if PIN is set
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction PIN is not set. Use set PIN endpoint instead.' 
+      });
+    }
+
+    // Generate 6-digit reset token
+    const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+    const tokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store token in user document
+    user.pinResetToken = resetToken;
+    user.pinResetTokenExpires = tokenExpires;
+    await user.save();
+
+    // Send email (using your existing email service)
+    try {
+      await sendVerificationEmail(email, resetToken);
+      
+      console.log(`✅ PIN reset token sent to ${email}: ${resetToken}`);
+      
+      res.json({
+        success: true,
+        message: 'PIN reset code sent to your email',
+        expiresIn: '10 minutes',
+        email: email
+      });
+    } catch (emailError) {
+      console.error('Email sending error:', emailError);
+      
+      // In development, return token for testing
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'For development: PIN reset token is ' + resetToken,
+          token: resetToken,
+          expiresIn: '10 minutes',
+          email: email
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send email. Please try again.'
+      });
+    }
+
+  } catch (error) {
+    console.error('Request PIN reset error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Verify PIN reset token
+// @route   POST /api/users/verify-pin-reset-token
+// @access  Private
+app.post('/api/users/verify-pin-reset-token', protect, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('token').isLength({ min: 6, max: 6 }).withMessage('Token must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, token } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if token exists and is valid
+    if (!user.pinResetToken || !user.pinResetTokenExpires) {
+      return res.status(400).json({ success: false, message: 'No reset token requested' });
+    }
+
+    if (user.pinResetToken !== token) {
+      // Increment failed attempts
+      user.pinResetTokenAttempts = (user.pinResetTokenAttempts || 0) + 1;
+      
+      if (user.pinResetTokenAttempts >= 3) {
+        user.pinResetToken = null;
+        user.pinResetTokenExpires = null;
+        user.pinResetTokenAttempts = 0;
+        await user.save();
+        
+        return res.status(429).json({
+          success: false,
+          message: 'Too many failed attempts. Please request a new reset token.'
+        });
+      }
+      
+      await user.save();
+      
+      const remainingAttempts = 3 - user.pinResetTokenAttempts;
+      return res.status(400).json({
+        success: false,
+        message: `Invalid token. ${remainingAttempts} attempts remaining.`
+      });
+    }
+
+    if (new Date() > user.pinResetTokenExpires) {
+      user.pinResetToken = null;
+      user.pinResetTokenExpires = null;
+      user.pinResetTokenAttempts = 0;
+      await user.save();
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Token has expired. Please request a new one.'
+      });
+    }
+
+    // Token is valid - mark as verified
+    user.pinResetTokenVerified = true;
+    user.pinResetTokenAttempts = 0;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Reset token verified successfully',
+      verified: true,
+      email: email
+    });
+
+  } catch (error) {
+    console.error('Verify PIN reset token error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Reset PIN using verified token (no old PIN required)
+// @route   POST /api/users/reset-pin-with-token
+// @access  Private
+app.post('/api/users/reset-pin-with-token', protect, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('newPin')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('New PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, newPin } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if token is verified
+    if (!user.pinResetTokenVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please verify your reset token first.'
+      });
+    }
+
+    // Check for common PINs
+    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333'];
+    if (commonPins.includes(newPin)) {
+      return res.status(400).json({
+        success: false,
+        message: 'New PIN is too common. Please choose a more secure PIN.'
+      });
+    }
+
+    // Check if new PIN is same as old (if we could check)
+    if (user.transactionPin) {
+      try {
+        const isSamePin = await bcrypt.compare(newPin, user.transactionPin);
+        if (isSamePin) {
+          return res.status(400).json({
+            success: false,
+            message: 'New PIN cannot be the same as your old PIN.'
+          });
+        }
+      } catch (compareError) {
+        // If comparison fails, continue
+        console.log('Could not compare with old PIN:', compareError.message);
+      }
+    }
+
+    // Save new PIN (will be hashed by pre-save hook)
+    user.transactionPin = newPin;
+    user.transactionPinSet = true;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    // Clear reset token data
+    user.pinResetToken = null;
+    user.pinResetTokenExpires = null;
+    user.pinResetTokenVerified = false;
+    user.pinResetTokenAttempts = 0;
+    
+    await user.save();
+
+    console.log(`✅ PIN reset via token for user: ${user.email}`);
+
+    // Create notification
+    try {
+      await Notification.create({
+        recipientId: userId,
+        title: "Transaction PIN Reset Successfully 🔐",
+        message: "Your transaction PIN has been reset successfully using email verification.",
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Error creating notification:', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Transaction PIN reset successfully!',
+      transactionPinSet: true
+    });
+
+  } catch (error) {
+    console.error('Reset PIN with token error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
 
 
 // @desc    Change transaction PIN
