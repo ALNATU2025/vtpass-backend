@@ -1860,6 +1860,9 @@ app.post('/api/users/toggle-biometric', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
 // Enhanced PIN verification that works for all users
 app.post('/api/users/verify-transaction-pin', protect, [
   body('userId').notEmpty().withMessage('User ID is required'),
@@ -1935,6 +1938,213 @@ app.post('/api/users/verify-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
+
+// @desc    Admin: Check user's PIN status
+// @route   POST /api/admin/check-pin-status
+// @access  Private (Admin only)
+app.post('/api/admin/check-pin-status', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId)
+      .select('email fullName phone transactionPin transactionPinSet failedPinAttempts pinLockedUntil createdAt')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Determine PIN status
+    const now = getLagosTime();
+    const isPinLocked = user.pinLockedUntil && user.pinLockedUntil > now;
+    const isPinSet = user.transactionPinSet || !!user.transactionPin;
+    const lockRemaining = isPinLocked 
+      ? Math.ceil((user.pinLockedUntil - now) / 60000) // minutes remaining
+      : 0;
+
+    // Security: Don't send hashed PIN, but provide status
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        phone: user.phone,
+        createdAt: user.createdAt
+      },
+      pinStatus: {
+        isPinSet: isPinSet,
+        isPinLocked: isPinLocked,
+        failedAttempts: user.failedPinAttempts || 0,
+        lockRemainingMinutes: lockRemaining,
+        pinLockedUntil: user.pinLockedUntil,
+        transactionPinSet: user.transactionPinSet || false,
+        hasHashedPin: !!user.transactionPin
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN check error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+// @desc    Admin: Unlock user's PIN
+// @route   POST /api/admin/unlock-pin
+// @access  Private (Admin only)
+app.post('/api/admin/unlock-pin', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Reset PIN lock
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    await user.save();
+
+    console.log(`✅ Admin unlocked PIN for user: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: 'PIN unlocked successfully',
+      user: {
+        email: user.email,
+        fullName: user.fullName
+      },
+      pinStatus: {
+        failedAttempts: 0,
+        isPinLocked: false,
+        pinLockedUntil: null
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN unlock error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+// @desc    Admin: Reset user's PIN (set to default)
+// @route   POST /api/admin/reset-pin
+// @access  Private (Admin only)
+app.post('/api/admin/reset-pin', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Generate default PIN: 123456
+    const defaultPin = '123456';
+    const salt = await bcrypt.genSalt(12);
+    const hashedPin = await bcrypt.hash(defaultPin, salt);
+
+    // Update user PIN
+    user.transactionPin = hashedPin;
+    user.transactionPinSet = true;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    await user.save();
+
+    console.log(`✅ Admin reset PIN for user: ${user.email} to: ${defaultPin}`);
+
+    res.json({
+      success: true,
+      message: `PIN reset to default (${defaultPin}). User must change it on next login.`,
+      user: {
+        email: user.email,
+        fullName: user.fullName
+      },
+      defaultPin: defaultPin, // Only send in admin response
+      resetAt: new Date()
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+
+
+
 // @desc    Get user's security settings
 // @route   GET /api/users/security-settings
 // @access  Private
