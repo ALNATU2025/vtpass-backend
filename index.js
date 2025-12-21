@@ -1867,20 +1867,17 @@ app.post('/api/users/toggle-biometric', protect, [
 // @route   POST /api/users/verify-transaction-pin
 // @access  Private
 app.post('/api/users/verify-transaction-pin', protect, [
-  body('userId').notEmpty().withMessage('User ID is required'),
-  body('pin')
-    .isLength({ min: 6, max: 6 })
-    .withMessage('PIN must be exactly 6 digits')
-    .matches(/^\d+$/)
-    .withMessage('PIN must contain only digits')
+  body('userId').notEmpty().withMessage('User ID is required')
 ], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-
   try {
-    const { userId, pin } = req.body;
+    const { userId } = req.body;
+    // Accept either key
+    const pin = req.body.pin || req.body.transactionPin;
+
+    // Validate PIN
+    if (!pin || !/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ success: false, message: 'PIN must be exactly 6 digits' });
+    }
 
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
@@ -1901,19 +1898,16 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
     const now = new Date();
 
-    // 🔒 Lock check (UTC-safe)
+    // 🔒 Lock check
     if (user.pinLockedUntil && user.pinLockedUntil > now) {
-      const minutesRemaining = Math.ceil(
-        (user.pinLockedUntil - now) / 60000
-      );
-
+      const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
       return res.status(429).json({
         success: false,
         message: `Too many failed attempts. Account locked for ${minutesRemaining} minutes.`
       });
     }
 
-    // 🔐 Verify PIN (CORRECT FIELD)
+    // 🔐 Verify PIN
     const isPinMatch = await bcrypt.compare(pin, user.transactionPin);
 
     if (!isPinMatch) {
