@@ -5425,11 +5425,15 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     // === 4. Check if user has sufficient balance FIRST ===
     const isUsingCommission = req.headers['x-commission-usage'] === 'true';
     console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
-    
-    if (amount && parseFloat(amount) > 0) {
+
+    // Parse amount safely
+    const transactionAmount = amount ? parseFloat(amount) : 0;
+
+    // Only check balance if there's an actual amount to deduct
+    if (transactionAmount > 0) {
       if (isUsingCommission) {
         // Check commission balance
-        if (user.commissionBalance < parseFloat(amount)) {
+        if (user.commissionBalance < transactionAmount) {
           await session.abortTransaction();
           return res.status(400).json({ 
             success: false, 
@@ -5438,7 +5442,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         }
       } else {
         // Check wallet balance
-        if (user.walletBalance < parseFloat(amount)) {
+        if (user.walletBalance < transactionAmount) {
           await session.abortTransaction();
           return res.status(400).json({ 
             success: false, 
@@ -5466,7 +5470,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
 
       // Check if balance is sufficient
-      if (vtpassBalance < parseFloat(amount)) {
+      if (vtpassBalance < transactionAmount) {
         // 🔥 SEND ADMIN ALERT
         await sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance);
         
@@ -5510,13 +5514,13 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       // SUCCESS: Process the transaction
       
       // Deduct from correct balance
-      if (amount && parseFloat(amount) > 0) {
+      if (transactionAmount > 0) {
         if (isUsingCommission) {
-          user.commissionBalance -= parseFloat(amount);
-          console.log(`💰 Deducted ₦${amount} from COMMISSION`);
+          user.commissionBalance -= transactionAmount;
+          console.log(`💰 Deducted ₦${transactionAmount.toFixed(2)} from COMMISSION`);
         } else {
-          user.walletBalance -= parseFloat(amount);
-          console.log(`💰 Deducted ₦${amount} from WALLET`);
+          user.walletBalance -= transactionAmount;
+          console.log(`💰 Deducted ₦${transactionAmount.toFixed(2)} from WALLET`);
         }
       }
 
@@ -5583,14 +5587,17 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       }
 
       // Record transaction
+      const balanceBefore = isUsingCommission ? user.commissionBalance + transactionAmount : user.walletBalance + transactionAmount;
+      const balanceAfter = isUsingCommission ? user.commissionBalance : user.walletBalance;
+
       await createTransaction(
         userId,
-        parseFloat(amount),
+        transactionAmount,
         displayType,
         'Successful',
-        `${serviceID.toUpperCase()} purchase ${isUsingCommission ? '(Paid with Commission)' : ''}`,
-        isUsingCommission ? user.commissionBalance + parseFloat(amount) : user.walletBalance + parseFloat(amount),
-        isUsingCommission ? user.commissionBalance : user.walletBalance,
+        `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'} ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+        balanceBefore,
+        balanceAfter,
         session,
         isUsingCommission,
         'pin',
@@ -5598,22 +5605,24 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         transactionMetadata
       );
 
-      // Calculate commission
-      let commissionType = '';
-      if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
-        commissionType = 'airtime';
-      } else if (serviceID.includes('data')) {
-        commissionType = 'data';
-      } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
-        commissionType = 'tv';
-      } else if (serviceID.includes('electric')) {
-        commissionType = serviceID;
-      } else {
-        commissionType = serviceID.split('-')[0];
+      // Calculate commission - only if there's an actual purchase
+      if (transactionAmount > 0) {
+        let commissionType = '';
+        if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
+          commissionType = 'airtime';
+        } else if (serviceID.includes('data')) {
+          commissionType = 'data';
+        } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
+          commissionType = 'tv';
+        } else if (serviceID.includes('electric')) {
+          commissionType = serviceID;
+        } else {
+          commissionType = serviceID.split('-')[0];
+        }
+        
+        await calculateAndAddCommission(userId, amount, commissionType, session)
+          .catch(err => console.log('⚠️ Commission calculation failed:', err));
       }
-      
-      await calculateAndAddCommission(userId, amount, session, commissionType)
-        .catch(err => console.log('⚠️ Commission calculation failed:', err));
 
       // Save user and commit
       await user.save({ session });
