@@ -5295,10 +5295,8 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
     console.log(`   Available Balance: ₦${vtpassBalance}`);
     console.log(`   Time: ${new Date().toISOString()}`);
     
-    // Create Alert document (you need to create Alert model first)
+    // Create Alert document
     try {
-      const Alert = require('../models/Alert'); // Adjust path as needed
-      
       const alert = new Alert({
         type: 'VTPASS_LOW_BALANCE',
         title: 'VTpass Wallet Low Balance Alert',
@@ -5308,31 +5306,49 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
           serviceID,
           requiredAmount: amount,
           availableBalance: vtpassBalance,
-          timestamp: new Date()
+          timestamp: new Date(),
+          isCritical: vtpassBalance === 0
         },
         acknowledged: false
       });
       
       await alert.save();
       console.log('✅ Admin alert saved to database');
+      
+      // Also try to find and notify admin users
+      try {
+        const adminUsers = await User.find({ role: 'admin' }).select('email phone');
+        console.log(`📧 Notifying ${adminUsers.length} admin user(s)`);
+        
+        // You can add email/SMS notification logic here
+        for (const admin of adminUsers) {
+          console.log(`   - Admin: ${admin.email || admin.phone}`);
+          // await sendEmailToAdmin(admin.email, alert);
+        }
+      } catch (adminError) {
+        console.log('⚠️ Could not notify admin users:', adminError.message);
+      }
+      
     } catch (dbError) {
       console.error('Could not save alert to database:', dbError.message);
+      
+      // Fallback: Log to file
+      const fs = require('fs').promises;
+      try {
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          type: 'VTPASS_LOW_BALANCE_ALERT',
+          serviceID,
+          amount,
+          vtpassBalance,
+          alert: 'Admin notification failed to save to database'
+        };
+        await fs.appendFile('alerts_fallback.log', JSON.stringify(logEntry) + '\n');
+        console.log('✅ Alert logged to fallback file');
+      } catch (fileError) {
+        console.error('Could not log to file:', fileError.message);
+      }
     }
-    
-    // Send email notification (configure your email service)
-    // await sendEmailNotification({
-    //   to: 'admin@yourdomain.com',
-    //   subject: `🚨 VTpass Wallet Low Balance Alert - ₦${vtpassBalance}`,
-    //   html: `
-    //     <h2>VTpass Wallet Low Balance Alert</h2>
-    //     <p><strong>Current Balance:</strong> ₦${vtpassBalance}</p>
-    //     <p><strong>Required Amount:</strong> ₦${amount}</p>
-    //     <p><strong>Service:</strong> ${serviceID}</p>
-    //     <p><strong>Time:</strong> ${new Date()}</p>
-    //     <p><strong>Action Required:</strong> Please add funds to VTpass merchant wallet immediately!</p>
-    //     <p>Login to <a href="https://vtpass.com">vtpass.com</a> to credit your wallet.</p>
-    //   `
-    // });
     
   } catch (error) {
     console.error('Failed to send admin alert:', error);
@@ -5459,41 +5475,41 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     }
 
     // === 5. Check VTpass Wallet Balance BEFORE calling VTpass ===
-    console.log('💰 Checking VTpass wallet balance before transaction...');
-    try {
-      const vtpassApiKey = process.env.VTPASS_API_KEY;
-      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-      
-      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-        auth: {
-          username: vtpassApiKey,
-          password: vtpassSecretKey
-        },
-        timeout: 10000
-      });
+console.log('💰 Checking VTpass wallet balance before transaction...');
+try {
+  const vtpassApiKey = process.env.VTPASS_API_KEY;
+  const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+  
+  const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+    auth: {
+      username: vtpassApiKey,
+      password: vtpassSecretKey
+    },
+    timeout: 10000
+  });
 
-      const vtpassBalance = balanceResponse.data.contents?.balance || 0;
-      console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
+  const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+  console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
 
-      // Check if balance is sufficient
-      if (vtpassBalance < transactionAmount) {
-        // 🔥 SEND ADMIN ALERT
-        await sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance);
-        
-        await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: 'Service temporarily unavailable due to insufficient provider funds. Our team has been notified.',
-          code: 'VTPASS_INSUFFICIENT_FUNDS',
-          vtpassBalance: vtpassBalance,
-          requiredAmount: amount,
-          adminAlerted: true
-        });
-      }
-    } catch (balanceError) {
-      console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
-      // Continue with transaction but log warning
-    }
+  // Check if balance is sufficient - use transactionAmount not amount
+  if (vtpassBalance < transactionAmount) {
+    // 🔥 SEND ADMIN ALERT - pass transactionAmount, not amount
+    await sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance);
+    
+    await session.abortTransaction();
+    return res.status(400).json({
+      success: false,
+      message: 'Service temporarily unavailable due to insufficient provider funds. Our team has been notified.',
+      code: 'VTPASS_INSUFFICIENT_FUNDS',
+      vtpassBalance: vtpassBalance,
+      requiredAmount: transactionAmount, // Use transactionAmount here too
+      adminAlerted: true
+    });
+  }
+} catch (balanceError) {
+  console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
+  // Continue with transaction but log warning
+}
 
     // === 6. Build VTpass payload ===
     const payload = {
@@ -5654,21 +5670,20 @@ if (transactionAmount > 0) {
     const msg = vtpassResult.data?.response_description || 'Transaction failed';
     const errorCode = vtpassResult.data?.code || 'UNKNOWN';
 
-    // Handle LOW WALLET BALANCE error
-    if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
-      // 🔥 SEND ADMIN ALERT
-      await sendAdminLowBalanceAlert(serviceID, amount, 0);
-      
-      return res.status(400).json({
-        success: false,
-        message: 'Service temporarily unavailable due to provider wallet issues. Our team has been notified and will fix this shortly.',
-        code: 'VTPASS_WALLET_EMPTY',
-        retryable: false,
-        adminAlerted: true,
-        vtpassResponse: vtpassResult.data
-      });
-    }
-
+   // Handle LOW WALLET BALANCE error
+if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
+  // 🔥 SEND ADMIN ALERT - use transactionAmount, not amount
+  await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
+  
+  return res.status(400).json({
+    success: false,
+    message: 'Service temporarily unavailable due to provider wallet issues. Our team has been notified and will fix this shortly.',
+    code: 'VTPASS_WALLET_EMPTY',
+    retryable: false,
+    adminAlerted: true,
+    vtpassResponse: vtpassResult.data
+  });
+}
     if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
       return res.status(400).json({
         success: false,
