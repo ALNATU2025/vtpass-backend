@@ -1863,81 +1863,92 @@ app.post('/api/users/toggle-biometric', protect, [
 
 
 
-// Enhanced PIN verification that works for all users
+// @desc    Verify transaction PIN
+// @route   POST /api/users/verify-transaction-pin
+// @access  Private
 app.post('/api/users/verify-transaction-pin', protect, [
   body('userId').notEmpty().withMessage('User ID is required'),
-  body('transactionPin').isLength({ min: 6, max: 6 }).withMessage('PIN must be exactly 6 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+  body('pin')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+
   try {
-    const { userId, transactionPin } = req.body;
-    
+    const { userId, pin } = req.body;
+
     if (req.user._id.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
-    
+
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // AUTO-MIGRATION: If user has PIN but no flag, set it
-    if (user.transactionPin && !user.transactionPinSet) {
-      console.log(`🔄 Auto-migrating PIN flag for user: ${user.email}`);
-      user.transactionPinSet = true;
-      await user.save();
-    }
-    
-    // Check if PIN is locked
-    if (user.pinLockedUntil && user.pinLockedUntil > getLagosTime()) {
-      const remainingTime = Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000);
-      return res.status(429).json({ 
-        success: false, 
-        message: `Too many failed attempts. Account locked for ${remainingTime} minutes.` 
+    // PIN not set check
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction PIN not set'
       });
     }
-    
-    // Verify PIN
-    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
-    
-    if (isPinMatch) {
-      // Reset failed attempts on successful PIN
-      user.failedPinAttempts = 0;
-      user.pinLockedUntil = null;
-      await user.save();
-      
-      return res.json({ success: true, message: 'PIN verified successfully' });
-    } else {
-      // Increment failed attempts
-      user.failedPinAttempts += 1;
-      
-      // Lock account if too many failed attempts
-      if (user.failedPinAttempts >= 3) {
-        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000);
-        await user.save();
-        
-        return res.status(429).json({ 
-          success: false, 
-          message: 'Too many failed attempts. Account locked for 15 minutes.' 
-        });
-      } else {
-        await user.save();
-        
-        const remainingAttempts = 3 - user.failedPinAttempts;
-        return res.status(400).json({ 
-          success: false, 
-          message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.` 
-        });
-      }
+
+    const now = new Date();
+
+    // 🔒 Lock check (UTC-safe)
+    if (user.pinLockedUntil && user.pinLockedUntil > now) {
+      const minutesRemaining = Math.ceil(
+        (user.pinLockedUntil - now) / 60000
+      );
+
+      return res.status(429).json({
+        success: false,
+        message: `Too many failed attempts. Account locked for ${minutesRemaining} minutes.`
+      });
     }
+
+    // 🔐 Verify PIN (CORRECT FIELD)
+    const isPinMatch = await bcrypt.compare(pin, user.transactionPin);
+
+    if (!isPinMatch) {
+      user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+      }
+
+      await user.save();
+
+      const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`
+      });
+    }
+
+    // ✅ SUCCESS
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: 'PIN verified successfully'
+    });
+
   } catch (error) {
     console.error('Error verifying transaction PIN:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
 
 
 
