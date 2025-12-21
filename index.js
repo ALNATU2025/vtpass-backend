@@ -14,7 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
-const brevo = require('@getbrevo/brevo');
+const { sendVerificationEmail } = require('./emailService');
 
 
 const User = require('./models/User');
@@ -8821,7 +8821,7 @@ app.get('/api/debug/transaction-status', protect, [
 });
 
 
-// @desc    Send OTP for email verification using Brevo
+// @desc    Send OTP for email verification using Nodemailer
 // @route   POST /api/auth/send-verification-otp
 // @access  Public
 app.post('/api/auth/send-verification-otp', [
@@ -8869,99 +8869,37 @@ app.post('/api/auth/send-verification-otp', [
       attempts: 0
     });
 
-    console.log(`📧 OTP generated for ${normalizedEmail}: ${otp} (expires at ${new Date(expiresAt).toLocaleTimeString()})`);
+    console.log(`📧 OTP generated for ${normalizedEmail}: ${otp}`);
 
-    // ====== BREVO EMAIL SEND ======
-    if (!process.env.BREVO_API_KEY) {
-      console.warn('⚠️ BREVO_API_KEY not set in environment variables');
-      // For testing/demo - return OTP in response (REMOVE IN PRODUCTION!)
-      return res.json({
-        success: true,
-        message: 'OTP generated successfully',
-        email: normalizedEmail,
-        otp: otp, // Remove this line in production!
-        note: 'Email not sent - Brevo not configured'
-      });
-    }
-
-    try {
-      // Destructure required classes from the SDK
-      let { TransactionalEmailsApi, SendSmtpEmail, TransactionalEmailsApiApiKeys } = brevo;
-
-      // Create the API instance
-      let apiInstance = new TransactionalEmailsApi();
-
-      // Set the API key using the correct enum
-      apiInstance.setApiKey(TransactionalEmailsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
-
-      // Create the email payload
-      let sendSmtpEmail = new SendSmtpEmail();
-
-      sendSmtpEmail.subject = "Your Dalabapay email Verification Code";
-      sendSmtpEmail.sender = { 
-        name: "DalabaPay", 
-        email: "DalabaPay<alusinebarrie578@gmail.com>"
-      };
-      sendSmtpEmail.to = [{ email: normalizedEmail }];
-      sendSmtpEmail.htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <body style="font-family: Arial, sans-serif; background:#f8f9fa; padding:20px;">
-          <div style="max-width:600px; margin:auto; background:white; border-radius:12px; overflow:hidden; box-shadow:0 4px 20px rgba(0,0,0,0.1);">
-            <div style="background:linear-gradient(135deg, #001F99 0%, #4F46E5 100%); padding:30px; text-align:center; color:white;">
-              <h1 style="margin:0; font-size:28px;">Dala Finance</h1>
-              <p style="margin:10px 0 0; opacity:0.9;">Secure Your Account</p>
-            </div>
-            <div style="padding:40px; text-align:center;">
-              <h2>Verify Your Email Address</h2>
-              <p>Use this code to complete your registration:</p>
-              <div style="background:#f8f9ff; border:2px dashed #4F46E5; padding:20px; font-size:32px; font-weight:bold; letter-spacing:8px; margin:30px 0; color:#001F99; border-radius:8px;">
-                ${otp}
-              </div>
-              <p>This code expires in <strong>10 minutes</strong>.</p>
-              <p style="color:#ff6b6b; margin-top:20px; padding:10px; background:#fff5f5; border-radius:6px;">
-                ⚠️ Never share this code. Dala Finance will never ask for it.
-              </p>
-            </div>
-            <div style="background:#f8f9fa; padding:20px; text-align:center; color:#666; font-size:12px;">
-              <p>© 2025 Dala Finance. All rights reserved.</p>
-              <p>Email sent to: ${normalizedEmail}</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
-
-      // Plain text fallback
-      sendSmtpEmail.textContent = `Your Dala Finance verification code is: ${otp}. This code expires in 10 minutes. Do not share it with anyone.`;
-
-      // Send the email
-      await apiInstance.sendTransacEmail(sendSmtpEmail);
-
-      console.log(`✅ OTP email sent successfully via Brevo to ${normalizedEmail}`);
-
-      return res.json({
-        success: true,
-        message: 'Verification code sent successfully! Check your email.',
-        email: normalizedEmail
-      });
-
-    } catch (error) {
-      console.error('❌ Brevo email error:', error.message || error);
+    // Send email using Nodemailer
+    const emailResult = await sendVerificationEmail(normalizedEmail, otp);
+    
+    if (!emailResult.success) {
+      console.log('⚠️ Email sending failed, but OTP is:', otp);
       
-      let errorMessage = 'Failed to send verification email. Please try again.';
-      if (error.message && error.message.includes('Invalid API key')) {
-        errorMessage = 'Email service configuration error. Please contact support.';
-      } else if (error.message && error.message.includes('sender')) {
-        errorMessage = 'Sender email not verified. Please try again later.';
+      // In development, return OTP for testing
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'Email service unavailable. For development, OTP is: ' + otp,
+          email: normalizedEmail,
+          otp: otp
+        });
       }
-
+      
       return res.status(500).json({ 
         success: false, 
-        message: errorMessage,
-        debug: process.env.NODE_ENV === 'development' ? error.message : undefined
+        message: 'Failed to send verification email. Please try again.' 
       });
     }
+
+    console.log(`✅ OTP email sent successfully to ${normalizedEmail}`);
+    
+    return res.json({
+      success: true,
+      message: 'Verification code sent successfully! Check your email.',
+      email: normalizedEmail
+    });
 
   } catch (error) {
     console.error('❌ Send OTP error:', error);
@@ -8971,7 +8909,6 @@ app.post('/api/auth/send-verification-otp', [
     });
   }
 });
-
 
 
 
