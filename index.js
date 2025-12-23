@@ -15,7 +15,7 @@ const fs = require('fs');
 const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
 const { sendVerificationEmail } = require('./emailService');
-
+const referralRoutes = require('./routes/referralRoutes');
 
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
@@ -184,6 +184,7 @@ app.use("/", virtualAccountSyncRoutes);
 
 const transactionRoutes = require('./routes/transactionRoutes');
 app.use('/api/transactions', transactionRoutes);
+app.use('/api/referral', referralRoutes);
 
 
 const commissionRoutes = require('./routes/commissionRoutes');
@@ -6752,6 +6753,71 @@ if (transactionAmount > 0) {
   
   await calculateAndAddCommission(userId, transactionAmount, commissionType, session)
     .catch(err => console.log('⚠️ Commission calculation failed:', err));
+  // ✅ ADD REFERRAL COMMISSION AWARDING HERE:
+  // Check if user was referred and award commission to referrer
+  if (user.referrerId) {
+    try {
+      // 0.005% commission = 0.00005
+      const referralCommissionRate = 0.00005; // 0.005%
+      const referralCommissionAmount = transactionAmount * referralCommissionRate;
+      
+      if (referralCommissionAmount > 0) {
+        // Find the referrer
+        const referrer = await User.findById(user.referrerId).session(session);
+        if (referrer) {
+          // Award commission to referrer
+          referrer.commissionBalance += referralCommissionAmount;
+          referrer.totalReferralEarnings += referralCommissionAmount;
+          
+          // Create commission transaction for referrer
+          const referralCommissionTransaction = new Transaction({
+            userId: referrer._id,
+            type: 'Commission Credit',
+            amount: referralCommissionAmount,
+            status: 'Successful',
+            description: `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
+            balanceBefore: referrer.commissionBalance - referralCommissionAmount,
+            balanceAfter: referrer.commissionBalance,
+            isCommission: true,
+            service: 'referral_commission',
+            metadata: {
+              commissionSource: 'referral',
+              referredUserId: userId,
+              referredUserName: user.fullName,
+              purchaseTransactionId: transactionId, // You need to get this from your transaction
+              purchaseAmount: transactionAmount,
+              purchaseService: serviceID,
+              commissionRate: referralCommissionRate,
+              commissionAmount: referralCommissionAmount
+            }
+          });
+          
+          await referrer.save({ session });
+          await referralCommissionTransaction.save({ session });
+          
+          console.log(`🎯 Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission to ${referrer.email}`);
+          
+          // Create notification for referrer
+          await Notification.create({
+            recipient: referrer._id,
+            title: "Referral Commission Earned! 💰",
+            message: `You earned ₦${referralCommissionAmount.toFixed(4)} from ${user.fullName}'s purchase.`,
+            type: 'commission',
+            isRead: false,
+            metadata: {
+              event: 'referral_commission',
+              referredUserId: userId,
+              commissionAmount: referralCommissionAmount,
+              purchaseAmount: transactionAmount
+            }
+          });
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error awarding referral commission:', error);
+      // Don't fail the transaction if referral commission fails
+    }
+  }
 }
 
       // Save user and commit
