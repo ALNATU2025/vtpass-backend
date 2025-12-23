@@ -4600,6 +4600,16 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ [NOTIFICATIONS] Error marking as read:', error);
+    
+    // Handle validation errors specifically
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid notification data',
+        error: error.message 
+      });
+    }
+    
     res.status(500).json({ 
       success: false, 
       message: 'Failed to mark notification as read' 
