@@ -1160,6 +1160,7 @@ app.get('/health', (req, res) => {
 });
 
 
+
 // @desc    Register a new user with email verification
 // @route   POST /api/users/register
 // @access  Public
@@ -1287,10 +1288,10 @@ app.post('/api/users/register', [
     newUser.refreshToken = refreshToken;
     await newUser.save({ session });
 
-    // 8. Create PERSONAL welcome notification (FIXED: recipient not recipientId)
+    // 8. Create PERSONAL welcome notification
     try {
       await Notification.create([{
-        recipient: newUser._id, // CORRECT: recipient (singular)
+        recipient: newUser._id,
         title: "Welcome to DalabaPay! 🎉",
         message: `Hi ${newUser.fullName}, welcome to DalabaPay! Your account has been created successfully.`,
         type: 'account',
@@ -1303,7 +1304,6 @@ app.post('/api/users/register', [
       console.log(`📨 [REGISTER] Personal welcome notification created for ${newUser.email}`);
     } catch (notificationError) {
       console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
-      // Don't fail registration if notification fails
     }
 
     // 9. Update referrer's stats if applicable
@@ -1339,110 +1339,7 @@ app.post('/api/users/register', [
 
     console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
     
-    // 11. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY (after response is sent)
-    // Define the function here so it's available in setTimeout
-    const createVirtualAccountForUser = async (userId, fullName, email, phone) => {
-      try {
-        console.log(`🔄 [VIRTUAL-ACCOUNT] Creating for user: ${userId}`);
-        
-        // This would call your actual virtual account service
-        // For now, we'll simulate with mock data
-        const mockVirtualAccount = {
-          bankName: 'WEMA BANK',
-          accountNumber: '7' + Math.random().toString().substr(2, 9),
-          accountName: fullName.toUpperCase().replace(/\s+/g, ' ').trim(),
-          reference: 'DALABA' + Date.now().toString().slice(-8),
-          assigned: true
-        };
-
-        // Simulate API call delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        console.log(`✅ [VIRTUAL-ACCOUNT] Created for ${email}:`, {
-          accountNumber: mockVirtualAccount.accountNumber,
-          bankName: mockVirtualAccount.bankName
-        });
-
-        return {
-          success: true,
-          data: mockVirtualAccount
-        };
-      } catch (error) {
-        console.error(`❌ [VIRTUAL-ACCOUNT] Error for ${email}:`, error);
-        return {
-          success: false,
-          message: 'Virtual account creation failed'
-        };
-      }
-    };
-
-    // Run virtual account creation in background
-    setTimeout(async () => {
-      try {
-        console.log(`🔄 [REGISTER] Creating virtual account for: ${newUser.email}`);
-        
-        const virtualAccountResult = await createVirtualAccountForUser(
-          newUser._id, 
-          newUser.fullName, 
-          newUser.email, 
-          newUser.phone
-        );
-        
-        if (virtualAccountResult.success) {
-          console.log(`✅ [REGISTER] Virtual account created for ${newUser.email}`);
-          
-          // Update user with virtual account details
-          await User.findByIdAndUpdate(newUser._id, {
-            'virtualAccount.assigned': true,
-            'virtualAccount.bankName': virtualAccountResult.data.bankName,
-            'virtualAccount.accountNumber': virtualAccountResult.data.accountNumber,
-            'virtualAccount.accountName': virtualAccountResult.data.accountName,
-            'virtualAccount.reference': virtualAccountResult.data.reference || ''
-          });
-          
-          // Create notification for user about virtual account
-          try {
-            await Notification.create({
-              recipient: newUser._id,
-              title: "Virtual Account Created! 🏦",
-              message: `Your WEMA Bank virtual account has been created: ${virtualAccountResult.data.accountNumber}`,
-              type: 'account',
-              isRead: false,
-              metadata: {
-                event: 'virtual_account_created',
-                accountNumber: virtualAccountResult.data.accountNumber,
-                bankName: virtualAccountResult.data.bankName
-              }
-            });
-          } catch (notificationError) {
-            console.error('Error creating virtual account notification:', notificationError);
-          }
-        } else {
-          console.log(`⚠️ [REGISTER] Virtual account creation failed for ${newUser.email}`);
-          
-          // Create notification about failure
-          try {
-            await Notification.create({
-              recipient: newUser._id,
-              title: "Virtual Account Update",
-              message: "We're setting up your virtual account. This may take a few minutes.",
-              type: 'account',
-              isRead: false,
-              metadata: {
-                event: 'virtual_account_pending',
-                retry: true
-              }
-            });
-          } catch (notificationError) {
-            console.error('Error creating pending notification:', notificationError);
-          }
-        }
-      } catch (vaError) {
-        console.error(`❌ [REGISTER] Virtual account error for ${newUser.email}:`, vaError);
-      }
-    }, 2000); // Delay 2 seconds after registration
-    
-    // 12. Return success response
+    // 11. Return success response FIRST
     res.status(201).json({
       success: true,
       message: 'Registration successful! Welcome to DalabaPay.',
@@ -1458,11 +1355,160 @@ app.post('/api/users/register', [
         transactionPinSet: !!newUser.transactionPin,
         biometricEnabled: newUser.biometricEnabled,
         emailVerified: newUser.emailVerified,
-        hasVirtualAccount: false // Will be updated later
+        hasVirtualAccount: false // Will be updated asynchronously
       },
       token,
       refreshToken
     });
+
+    // 12. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY (AFTER sending response)
+    setTimeout(async () => {
+      try {
+        console.log(`🔄 [REGISTER-BG] Creating virtual account for: ${newUser.email}`);
+        
+        // Your virtual account service URL
+        const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
+        
+        // Prepare name for virtual account
+        const nameParts = newUser.fullName.trim().split(' ');
+        const firstName = nameParts[0];
+        const lastName = nameParts.slice(1).join(' ') || firstName;
+        
+        console.log(`📞 [REGISTER-BG] Calling virtual account service: ${virtualAccountServiceUrl}`);
+        console.log(`👤 [REGISTER-BG] User details:`, {
+          userId: newUser._id.toString(),
+          email: newUser.email,
+          firstName: firstName,
+          lastName: lastName,
+          phone: newUser.phone
+        });
+        
+        const response = await axios.post(
+          `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
+          {
+            userId: newUser._id.toString(),
+            email: newUser.email,
+            firstName: firstName,
+            lastName: lastName,
+            phone: newUser.phone,
+            preferredBank: 'wema-bank'
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            timeout: 30000 // 30 second timeout for Render free tier
+          }
+        );
+        
+        console.log(`📡 [REGISTER-BG] Virtual account service response:`, {
+          success: response.data.success,
+          message: response.data.message,
+          accountNumber: response.data.accountNumber
+        });
+        
+        if (response.data.success) {
+          console.log(`✅ [REGISTER-BG] Virtual account created successfully for ${newUser.email}`);
+          console.log(`🏦 Account details:`, {
+            accountNumber: response.data.accountNumber,
+            bankName: response.data.bankName,
+            accountName: response.data.accountName,
+            customerCode: response.data.customerCode
+          });
+          
+          // Update user in database
+          await User.findByIdAndUpdate(newUser._id, {
+            'virtualAccount.assigned': true,
+            'virtualAccount.bankName': response.data.bankName,
+            'virtualAccount.accountNumber': response.data.accountNumber,
+            'virtualAccount.accountName': response.data.accountName,
+            'virtualAccount.reference': response.data.customerCode || `REF_${Date.now()}`
+          });
+          
+          console.log(`💾 [REGISTER-BG] Updated user ${newUser.email} with virtual account details`);
+          
+          // Create success notification
+          try {
+            await Notification.create({
+              recipient: newUser._id,
+              title: "Virtual Account Created! 🏦",
+              message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
+              type: 'account',
+              isRead: false,
+              metadata: {
+                event: 'virtual_account_created',
+                accountNumber: response.data.accountNumber,
+                bankName: response.data.bankName,
+                timestamp: new Date()
+              }
+            });
+            console.log(`📨 [REGISTER-BG] Success notification created for ${newUser.email}`);
+          } catch (notificationError) {
+            console.error('❌ Error creating virtual account notification:', notificationError);
+          }
+          
+        } else {
+          console.warn(`⚠️ [REGISTER-BG] Virtual account service returned error for ${newUser.email}:`, response.data.message);
+          
+          // Create pending notification
+          try {
+            await Notification.create({
+              recipient: newUser._id,
+              title: "Virtual Account Pending",
+              message: "We're setting up your virtual account. This may take a few moments.",
+              type: 'account',
+              isRead: false,
+              metadata: {
+                event: 'virtual_account_pending',
+                retry: true,
+                timestamp: new Date()
+              }
+            });
+          } catch (notificationError) {
+            console.error('Error creating pending notification:', notificationError);
+          }
+        }
+        
+      } catch (error) {
+        console.error(`❌ [REGISTER-BG] Failed to create virtual account for ${newUser.email}:`, error.message);
+        
+        // Log detailed error
+        if (error.response) {
+          console.error('Virtual account service error details:', {
+            status: error.response.status,
+            statusText: error.response.statusText,
+            data: error.response.data
+          });
+        } else if (error.request) {
+          console.error('No response received from virtual account service. Request details:', {
+            url: error.config?.url,
+            method: error.config?.method,
+            data: error.config?.data
+          });
+        } else {
+          console.error('Error setting up virtual account request:', error.message);
+        }
+        
+        // Create error notification
+        try {
+          await Notification.create({
+            recipient: newUser._id,
+            title: "Account Update",
+            message: "Your account is ready! Virtual account setup may take a bit longer.",
+            type: 'account',
+            isRead: false,
+            metadata: {
+              event: 'virtual_account_delayed',
+              timestamp: new Date()
+            }
+          });
+        } catch (notificationError) {
+          console.error('Error creating delayed notification:', notificationError);
+        }
+      }
+    }, 5000); // Delay 5 seconds after registration to ensure user is saved
+    
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
