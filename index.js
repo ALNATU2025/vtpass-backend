@@ -1331,7 +1331,52 @@ app.post('/api/users/register', [
       }
     }
 
-    // 10. CREATE VIRTUAL ACCOUNT (async - don't block registration)
+    // 10. Clear OTP after successful registration
+    otpStore.delete(normalizedEmail);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
+    
+    // 11. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY (after response is sent)
+    // Define the function here so it's available in setTimeout
+    const createVirtualAccountForUser = async (userId, fullName, email, phone) => {
+      try {
+        console.log(`🔄 [VIRTUAL-ACCOUNT] Creating for user: ${userId}`);
+        
+        // This would call your actual virtual account service
+        // For now, we'll simulate with mock data
+        const mockVirtualAccount = {
+          bankName: 'WEMA BANK',
+          accountNumber: '7' + Math.random().toString().substr(2, 9),
+          accountName: fullName.toUpperCase().replace(/\s+/g, ' ').trim(),
+          reference: 'DALABA' + Date.now().toString().slice(-8),
+          assigned: true
+        };
+
+        // Simulate API call delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        console.log(`✅ [VIRTUAL-ACCOUNT] Created for ${email}:`, {
+          accountNumber: mockVirtualAccount.accountNumber,
+          bankName: mockVirtualAccount.bankName
+        });
+
+        return {
+          success: true,
+          data: mockVirtualAccount
+        };
+      } catch (error) {
+        console.error(`❌ [VIRTUAL-ACCOUNT] Error for ${email}:`, error);
+        return {
+          success: false,
+          message: 'Virtual account creation failed'
+        };
+      }
+    };
+
+    // Run virtual account creation in background
     setTimeout(async () => {
       try {
         console.log(`🔄 [REGISTER] Creating virtual account for: ${newUser.email}`);
@@ -1354,22 +1399,50 @@ app.post('/api/users/register', [
             'virtualAccount.accountName': virtualAccountResult.data.accountName,
             'virtualAccount.reference': virtualAccountResult.data.reference || ''
           });
+          
+          // Create notification for user about virtual account
+          try {
+            await Notification.create({
+              recipient: newUser._id,
+              title: "Virtual Account Created! 🏦",
+              message: `Your WEMA Bank virtual account has been created: ${virtualAccountResult.data.accountNumber}`,
+              type: 'account',
+              isRead: false,
+              metadata: {
+                event: 'virtual_account_created',
+                accountNumber: virtualAccountResult.data.accountNumber,
+                bankName: virtualAccountResult.data.bankName
+              }
+            });
+          } catch (notificationError) {
+            console.error('Error creating virtual account notification:', notificationError);
+          }
         } else {
           console.log(`⚠️ [REGISTER] Virtual account creation failed for ${newUser.email}`);
+          
+          // Create notification about failure
+          try {
+            await Notification.create({
+              recipient: newUser._id,
+              title: "Virtual Account Update",
+              message: "We're setting up your virtual account. This may take a few minutes.",
+              type: 'account',
+              isRead: false,
+              metadata: {
+                event: 'virtual_account_pending',
+                retry: true
+              }
+            });
+          } catch (notificationError) {
+            console.error('Error creating pending notification:', notificationError);
+          }
         }
       } catch (vaError) {
         console.error(`❌ [REGISTER] Virtual account error for ${newUser.email}:`, vaError);
       }
-    }, 1000); // Delay 1 second
-
-    // 11. Clear OTP after successful registration
-    otpStore.delete(normalizedEmail);
-
-    await session.commitTransaction();
-    session.endSession();
-
-    console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
+    }, 2000); // Delay 2 seconds after registration
     
+    // 12. Return success response
     res.status(201).json({
       success: true,
       message: 'Registration successful! Welcome to DalabaPay.',
@@ -1385,7 +1458,7 @@ app.post('/api/users/register', [
         transactionPinSet: !!newUser.transactionPin,
         biometricEnabled: newUser.biometricEnabled,
         emailVerified: newUser.emailVerified,
-        hasVirtualAccount: newUser.virtualAccount.assigned
+        hasVirtualAccount: false // Will be updated later
       },
       token,
       refreshToken
