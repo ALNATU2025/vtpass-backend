@@ -28,6 +28,159 @@ const withdrawLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+
+
+
+
+// Add this at the TOP of commissionRoutes.js, after imports
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Commission API is working!',
+    timestamp: new Date().toISOString(),
+    endpoints: [
+      '/balance',
+      '/withdraw',
+      '/transactions',
+      '/use-for-service',
+      '/complete-service-purchase',
+      '/refund'
+    ]
+  });
+});
+
+// Also add a simple stats endpoint for your Flutter app:
+router.get('/stats', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Get total commission earned
+    const totalCommission = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true,
+          type: 'Commission Credit'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Get today's commission
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayCommission = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true,
+          type: 'Commission Credit',
+          createdAt: { $gte: today }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Get this month's commission
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    
+    const monthCommission = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true,
+          type: 'Commission Credit',
+          createdAt: { $gte: firstDayOfMonth }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Get commission by source
+    const bySource = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true,
+          type: 'Commission Credit'
+        }
+      },
+      {
+        $group: {
+          _id: '$metadata.commissionSource',
+          count: { $sum: 1 },
+          total: { $sum: '$amount' }
+        }
+      },
+      {
+        $sort: { total: -1 }
+      }
+    ]);
+    
+    // Get recent commission transactions
+    const recentCommissions = await Transaction.find({
+      userId: userId,
+      isCommission: true
+    })
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .lean();
+    
+    res.json({
+      success: true,
+      data: {
+        currentBalance: user.commissionBalance,
+        totalEarned: totalCommission[0]?.total || 0,
+        todayEarned: todayCommission[0]?.total || 0,
+        monthEarned: monthCommission[0]?.total || 0,
+        bySource: bySource,
+        recentCommissions: recentCommissions,
+        formatted: {
+          currentBalance: formatCurrency(user.commissionBalance),
+          totalEarned: formatCurrency(totalCommission[0]?.total || 0),
+          todayEarned: formatCurrency(todayCommission[0]?.total || 0),
+          monthEarned: formatCurrency(monthCommission[0]?.total || 0)
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Commission stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get commission statistics'
+    });
+  }
+});
+
+
+
+
+
 // @desc    Get commission balance
 // @route   GET /api/commission/balance
 // @access  Private
