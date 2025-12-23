@@ -2,12 +2,10 @@
 const mongoose = require('mongoose');
 
 const notificationSchema = new mongoose.Schema({
-  // If 'recipient' is null, it's a general notification for all users.
-  // If 'recipient' is a user ID, it's a specific notification for that user.
   recipient: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    default: null, // Null means it's a broadcast/general notification
+    default: null,
     index: true,
   },
   title: {
@@ -30,15 +28,15 @@ const notificationSchema = new mongoose.Schema({
     type: Boolean,
     default: function() { return this.recipient === null; }
   },
-  // Optional: Add a read flag for personal notifications
   isRead: {
     type: Boolean,
     default: false
   },
+  // UPDATE THIS: Add 'test' to the enum values
   type: {
     type: String,
-    enum: ['account', 'transaction', 'security', 'promotion', 'system'],
-    default: 'account'
+    enum: ['account', 'transaction', 'security', 'promotion', 'system', 'alert', 'update', 'general', 'test'],
+    default: 'general'
   },
   metadata: {
     type: mongoose.Schema.Types.Mixed,
