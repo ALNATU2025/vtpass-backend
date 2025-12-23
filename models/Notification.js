@@ -8,7 +8,7 @@ const notificationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null, // Null means it's a broadcast/general notification
-    index: true, // Index for faster lookup by recipient
+    index: true,
   },
   title: {
     type: String,
@@ -22,16 +22,30 @@ const notificationSchema = new mongoose.Schema({
     trim: true,
     maxlength: 500,
   },
-  readBy: [{ // Array of user IDs who have read this notification
+  readBy: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   }],
-  isGeneral: { // Convenience flag: true if recipient is null
+  isGeneral: {
     type: Boolean,
     default: function() { return this.recipient === null; }
   },
-  // You can add 'type' (e.g., 'announcement', 'transaction_alert', 'warning')
-  // or 'link' (for deep linking within the app) here if needed.
-}, { timestamps: true }); // createdAt and updatedAt
+  // Optional: Add a read flag for personal notifications
+  isRead: {
+    type: Boolean,
+    default: false
+  },
+  type: {
+    type: String,
+    enum: ['account', 'transaction', 'security', 'promotion', 'system'],
+    default: 'account'
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  }
+}, { 
+  timestamps: true 
+});
 
 module.exports = mongoose.models.Notification || mongoose.model('Notification', notificationSchema);
