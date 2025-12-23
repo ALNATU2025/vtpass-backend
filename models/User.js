@@ -198,15 +198,15 @@ const userSchema = mongoose.Schema(
   }
 );
 
-// ========== NEW METHODS FOR OTP HANDLING ==========
+// ========== FIXED OTP METHODS (Renamed to avoid conflicts) ==========
 
 // Method to check if password reset OTP is locked
-userSchema.methods.isPasswordResetOTPLocked = function () {
+userSchema.methods.isOTPLocked = function () {
   return this.resetPasswordOTPLockedUntil && this.resetPasswordOTPLockedUntil > new Date();
 };
 
 // Method to get remaining OTP lock time
-userSchema.methods.getPasswordResetOTPLockRemaining = function () {
+userSchema.methods.getOTPLockRemaining = function () {
   if (!this.resetPasswordOTPLockedUntil) return 0;
   const now = new Date();
   const diff = this.resetPasswordOTPLockedUntil - now;
@@ -214,7 +214,7 @@ userSchema.methods.getPasswordResetOTPLockRemaining = function () {
 };
 
 // Method to increment failed OTP attempts
-userSchema.methods.incrementResetPasswordOTPAttempts = async function () {
+userSchema.methods.incrementOTPAttempts = async function () {
   this.resetPasswordOTPAttempts += 1;
   
   // Lock OTP verification after 3 failed attempts for 30 minutes
@@ -226,18 +226,18 @@ userSchema.methods.incrementResetPasswordOTPAttempts = async function () {
 };
 
 // Method to reset OTP attempts (on successful verification)
-userSchema.methods.resetPasswordOTPAttempts = async function () {
+userSchema.methods.resetOTPAttempts = async function () {
   this.resetPasswordOTPAttempts = 0;
   this.resetPasswordOTPLockedUntil = null;
   return this.save();
 };
 
 // Method to verify password reset OTP
-userSchema.methods.verifyPasswordResetOTP = async function (otp) {
+userSchema.methods.verifyOTP = async function (otp) {
   try {
     // Check if OTP verification is locked
-    if (this.isPasswordResetOTPLocked()) {
-      const remainingTime = this.getPasswordResetOTPLockRemaining();
+    if (this.isOTPLocked()) {
+      const remainingTime = this.getOTPLockRemaining();
       return {
         success: false,
         locked: true,
@@ -272,14 +272,14 @@ userSchema.methods.verifyPasswordResetOTP = async function (otp) {
     
     if (isMatch) {
       // Reset failed attempts on success
-      await this.resetPasswordOTPAttempts();
+      await this.resetOTPAttempts();
       return {
         success: true,
         message: 'OTP verified successfully'
       };
     } else {
       // Increment failed attempts
-      await this.incrementResetPasswordOTPAttempts();
+      await this.incrementOTPAttempts();
       
       if (this.resetPasswordOTPAttempts >= 3) {
         return {
@@ -305,7 +305,7 @@ userSchema.methods.verifyPasswordResetOTP = async function (otp) {
 };
 
 // Method to set password reset OTP
-userSchema.methods.setPasswordResetOTP = async function (otp) {
+userSchema.methods.setOTP = async function (otp) {
   this.resetPasswordOTP = otp;
   this.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   this.resetPasswordOTPAttempts = 0;
@@ -317,7 +317,7 @@ userSchema.methods.setPasswordResetOTP = async function (otp) {
 };
 
 // Method to clear password reset OTP
-userSchema.methods.clearPasswordResetOTP = async function () {
+userSchema.methods.clearOTP = async function () {
   this.resetPasswordOTP = null;
   this.resetPasswordOTPExpire = null;
   this.resetPasswordOTPAttempts = 0;
@@ -327,7 +327,7 @@ userSchema.methods.clearPasswordResetOTP = async function () {
 };
 
 // Method to generate and set password reset token (after OTP verification)
-userSchema.methods.generatePasswordResetToken = async function () {
+userSchema.methods.generateResetToken = async function () {
   const crypto = require('crypto');
   const resetToken = crypto.randomBytes(32).toString('hex');
   
@@ -346,7 +346,7 @@ userSchema.methods.generatePasswordResetToken = async function () {
 };
 
 // Method to verify password reset token
-userSchema.methods.verifyPasswordResetToken = function (token) {
+userSchema.methods.isResetTokenValid = function (token) {
   if (!this.resetPasswordToken || !this.resetPasswordExpire) {
     return false;
   }
@@ -356,14 +356,14 @@ userSchema.methods.verifyPasswordResetToken = function (token) {
 };
 
 // Method to clear password reset token (after successful reset)
-userSchema.methods.clearPasswordResetToken = async function () {
+userSchema.methods.clearResetToken = async function () {
   this.resetPasswordToken = null;
   this.resetPasswordExpire = null;
   
   return this.save();
 };
 
-// ========== END OF NEW OTP METHODS ==========
+// ========== END OF FIXED OTP METHODS ==========
 
 // Hash transaction PIN before saving if modified
 userSchema.pre('save', async function (next) {
