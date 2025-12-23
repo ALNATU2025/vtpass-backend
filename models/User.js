@@ -1,7 +1,7 @@
 // models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const Transaction = require('./Transaction'); // ADD THIS LINE
+const Transaction = require('./Transaction');
 
 const userSchema = mongoose.Schema(
   {
@@ -34,26 +34,44 @@ const userSchema = mongoose.Schema(
       type: String,
       required: true,
     },
-
-    // Add these fields in the schema (around line 85)
-pinResetToken: {
-  type: String,
-  default: null,
-},
-pinResetTokenExpires: {
-  type: Date,
-  default: null,
-},
-pinResetTokenAttempts: {
-  type: Number,
-  default: 0,
-},
-pinResetTokenVerified: {
-  type: Boolean,
-  default: false,
-},
-
-
+    
+    // ========== PASSWORD RESET OTP FIELDS ==========
+    resetPasswordOTP: {
+      type: String,
+      default: null,
+    },
+    resetPasswordOTPExpire: {
+      type: Date,
+      default: null,
+    },
+    resetPasswordOTPAttempts: {
+      type: Number,
+      default: 0,
+    },
+    resetPasswordOTPLockedUntil: {
+      type: Date,
+      default: null,
+    },
+    // =============================================
+    
+    // ========== PIN RESET OTP FIELDS ==========
+    pinResetToken: {
+      type: String,
+      default: null,
+    },
+    pinResetTokenExpires: {
+      type: Date,
+      default: null,
+    },
+    pinResetTokenAttempts: {
+      type: Number,
+      default: 0,
+    },
+    pinResetTokenVerified: {
+      type: Boolean,
+      default: false,
+    },
+    // ==========================================
     
     walletBalance: {
       type: Number,
@@ -179,6 +197,173 @@ pinResetTokenVerified: {
     timestamps: true,
   }
 );
+
+// ========== NEW METHODS FOR OTP HANDLING ==========
+
+// Method to check if password reset OTP is locked
+userSchema.methods.isPasswordResetOTPLocked = function () {
+  return this.resetPasswordOTPLockedUntil && this.resetPasswordOTPLockedUntil > new Date();
+};
+
+// Method to get remaining OTP lock time
+userSchema.methods.getPasswordResetOTPLockRemaining = function () {
+  if (!this.resetPasswordOTPLockedUntil) return 0;
+  const now = new Date();
+  const diff = this.resetPasswordOTPLockedUntil - now;
+  return Math.ceil(diff / (1000 * 60)); // Convert to minutes
+};
+
+// Method to increment failed OTP attempts
+userSchema.methods.incrementResetPasswordOTPAttempts = async function () {
+  this.resetPasswordOTPAttempts += 1;
+  
+  // Lock OTP verification after 3 failed attempts for 30 minutes
+  if (this.resetPasswordOTPAttempts >= 3) {
+    this.resetPasswordOTPLockedUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+  }
+  
+  return this.save();
+};
+
+// Method to reset OTP attempts (on successful verification)
+userSchema.methods.resetPasswordOTPAttempts = async function () {
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  return this.save();
+};
+
+// Method to verify password reset OTP
+userSchema.methods.verifyPasswordResetOTP = async function (otp) {
+  try {
+    // Check if OTP verification is locked
+    if (this.isPasswordResetOTPLocked()) {
+      const remainingTime = this.getPasswordResetOTPLockRemaining();
+      return {
+        success: false,
+        locked: true,
+        message: `OTP verification locked. Try again in ${remainingTime} minutes.`
+      };
+    }
+
+    // Check if OTP exists
+    if (!this.resetPasswordOTP) {
+      return {
+        success: false,
+        message: 'No OTP requested. Please request a new OTP.'
+      };
+    }
+
+    // Check if OTP has expired
+    if (!this.resetPasswordOTPExpire || this.resetPasswordOTPExpire < new Date()) {
+      // Clear expired OTP
+      this.resetPasswordOTP = null;
+      this.resetPasswordOTPExpire = null;
+      await this.save();
+      
+      return {
+        success: false,
+        expired: true,
+        message: 'OTP has expired. Please request a new one.'
+      };
+    }
+
+    // Verify OTP matches (string comparison)
+    const isMatch = this.resetPasswordOTP === otp;
+    
+    if (isMatch) {
+      // Reset failed attempts on success
+      await this.resetPasswordOTPAttempts();
+      return {
+        success: true,
+        message: 'OTP verified successfully'
+      };
+    } else {
+      // Increment failed attempts
+      await this.incrementResetPasswordOTPAttempts();
+      
+      if (this.resetPasswordOTPAttempts >= 3) {
+        return {
+          success: false,
+          locked: true,
+          message: 'OTP verification locked for 30 minutes due to multiple failed attempts'
+        };
+      }
+      
+      const remainingAttempts = 3 - this.resetPasswordOTPAttempts;
+      return {
+        success: false,
+        message: `Invalid OTP. ${remainingAttempts} attempts remaining`
+      };
+    }
+  } catch (error) {
+    console.error('Error verifying password reset OTP:', error);
+    return {
+      success: false,
+      message: 'Error verifying OTP. Please try again.'
+    };
+  }
+};
+
+// Method to set password reset OTP
+userSchema.methods.setPasswordResetOTP = async function (otp) {
+  this.resetPasswordOTP = otp;
+  this.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  this.resetPasswordToken = null;
+  this.resetPasswordExpire = null;
+  
+  return this.save();
+};
+
+// Method to clear password reset OTP
+userSchema.methods.clearPasswordResetOTP = async function () {
+  this.resetPasswordOTP = null;
+  this.resetPasswordOTPExpire = null;
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  
+  return this.save();
+};
+
+// Method to generate and set password reset token (after OTP verification)
+userSchema.methods.generatePasswordResetToken = async function () {
+  const crypto = require('crypto');
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  
+  this.resetPasswordToken = resetToken;
+  this.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  
+  // Clear OTP
+  this.resetPasswordOTP = null;
+  this.resetPasswordOTPExpire = null;
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  
+  await this.save();
+  
+  return resetToken;
+};
+
+// Method to verify password reset token
+userSchema.methods.verifyPasswordResetToken = function (token) {
+  if (!this.resetPasswordToken || !this.resetPasswordExpire) {
+    return false;
+  }
+  
+  const isValid = this.resetPasswordToken === token && this.resetPasswordExpire > new Date();
+  return isValid;
+};
+
+// Method to clear password reset token (after successful reset)
+userSchema.methods.clearPasswordResetToken = async function () {
+  this.resetPasswordToken = null;
+  this.resetPasswordExpire = null;
+  
+  return this.save();
+};
+
+// ========== END OF NEW OTP METHODS ==========
 
 // Hash transaction PIN before saving if modified
 userSchema.pre('save', async function (next) {
@@ -530,5 +715,7 @@ userSchema.index({ phone: 1 });
 userSchema.index({ referralCode: 1 });
 userSchema.index({ referrerId: 1 });
 userSchema.index({ 'virtualAccount.accountNumber': 1 });
+userSchema.index({ resetPasswordOTP: 1 });
+userSchema.index({ resetPasswordOTPExpire: 1 });
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);
