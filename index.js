@@ -1181,153 +1181,248 @@ app.post('/api/users/register', [
   }
   
   const { fullName, email, phone, password, otp, referralCode } = req.body;
+  const normalizedEmail = email.toLowerCase().trim();
   
   const session = await mongoose.startSession();
   session.startTransaction();
   
   try {
-    // Check if email is verified
-    const otpData = otpStore.get(email);
-    if (!otpData || !otpData.verified) {
+    console.log(`📝 [REGISTER] Starting registration for: ${normalizedEmail}`);
+
+    // 1. Check OTP verification
+    const otpData = otpStore.get(normalizedEmail);
+    if (!otpData || otpData.otp !== otp || otpData.expiresAt < Date.now()) {
       await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
-        message: 'Email not verified. Please verify your email first.' 
+        message: 'Invalid or expired OTP. Please verify your email again.' 
       });
     }
 
-    const userExists = await User.findOne({ email });
-    if (userExists) {
+    // 2. Check if user already exists
+    const existingUser = await User.findOne({ 
+      $or: [{ email: normalizedEmail }, { phone }] 
+    });
+    if (existingUser) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'User already exists' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User with this email or phone already exists' 
+      });
     }
+
+    // 3. Handle referral code
+    let referrerId = null;
+    let referrerCode = null;
     
+    if (referralCode) {
+      const referrer = await User.findOne({ 
+        referralCode: referralCode.toUpperCase().trim() 
+      });
+      if (referrer) {
+        referrerId = referrer._id;
+        referrerCode = referrer.referralCode;
+        console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
+      } else {
+        console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
+      }
+    }
+
+    // 4. Generate UNIQUE referral code for new user
+    const generateUniqueReferralCode = async () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      
+      for (let attempt = 0; attempt < 5; attempt++) {
+        let code = 'DALABA'; // Prefix for DalabaPay
+        for (let i = 0; i < 6; i++) {
+          code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        
+        const existing = await User.findOne({ referralCode: code });
+        if (!existing) {
+          return code;
+        }
+      }
+      
+      // If all attempts fail, use timestamp-based code
+      return 'DALABA' + Date.now().toString().slice(-6);
+    };
+
+    const userReferralCode = await generateUniqueReferralCode();
+    console.log(`🔑 [REGISTER] Generated unique referral code: ${userReferralCode}`);
+
+    // 5. Hash password
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
-    
-    // Create user
-    const user = await User.create([{
-      fullName,
-      email,
-      phone,
+
+    // 6. Create user
+    const user = new User({
+      fullName: fullName.trim(),
+      email: normalizedEmail,
+      phone: phone.trim(),
       password: hashedPassword,
-      referralCode: referralCode || null,
-      emailVerified: true, // Mark as verified
-      isActive: true
-    }], { session });
+      referralCode: userReferralCode, // Use generated unique code
+      referrerId: referrerId,
+      walletBalance: 0.0,
+      commissionBalance: 0.0,
+      isAdmin: false,
+      isActive: true,
+      emailVerified: true,
+      virtualAccount: {
+        assigned: false,
+        bankName: '',
+        accountNumber: '',
+        accountName: '',
+        reference: ''
+      }
+    });
 
-    const newUser = user[0];
+    const newUser = await user.save({ session });
+    console.log(`✅ [REGISTER] User created: ${newUser.email}`);
 
-    if (newUser) {
-      const token = generateToken(newUser._id);
-      const refreshToken = generateRefreshToken(newUser._id);
+    // 7. Generate tokens
+    const token = generateToken(newUser._id);
+    const refreshToken = generateRefreshToken(newUser._id);
+    
+    newUser.refreshToken = refreshToken;
+    await newUser.save({ session });
+
+    // 8. Create PERSONAL welcome notification (FIXED: recipient not recipientId)
+    try {
+      await Notification.create([{
+        recipient: newUser._id, // CORRECT: recipient (singular)
+        title: "Welcome to DalabaPay! 🎉",
+        message: `Hi ${newUser.fullName}, welcome to DalabaPay! Your account has been created successfully.`,
+        type: 'account',
+        isRead: false,
+        metadata: {
+          event: 'registration',
+          userId: newUser._id
+        }
+      }], { session });
+      console.log(`📨 [REGISTER] Personal welcome notification created for ${newUser.email}`);
+    } catch (notificationError) {
+      console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
+      // Don't fail registration if notification fails
+    }
+
+    // 9. Update referrer's stats if applicable
+    if (referrerId) {
+      await User.findByIdAndUpdate(referrerId, {
+        $inc: { referralCount: 1 }
+      }, { session });
+      console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
       
-      // Store refresh token
-      newUser.refreshToken = refreshToken;
-      await newUser.save({ session });
-
-      // AUTO-CREATE WELCOME NOTIFICATION
+      // Create notification for referrer
       try {
         await Notification.create([{
-          recipientId: newUser._id,
-          title: "Welcome to VTPass! 🎉",
-          message: "Thank you for registering with VTPass. Your email has been verified and your account is now active!",
-          isRead: false
+          recipient: referrerId,
+          title: "New Referral! 🎊",
+          message: `${newUser.fullName} joined DalabaPay using your referral code!`,
+          type: 'account',
+          isRead: false,
+          metadata: {
+            event: 'new_referral',
+            referredUserId: newUser._id
+          }
         }], { session });
-      } catch (notificationError) {
-        console.error('Error creating welcome notification:', notificationError);
+      } catch (referrerNotificationError) {
+        console.error('Error creating referrer notification:', referrerNotificationError);
       }
+    }
 
-      // CREATE VIRTUAL ACCOUNT
+    // 10. CREATE VIRTUAL ACCOUNT (async - don't block registration)
+    setTimeout(async () => {
       try {
-        console.log('🔄 Creating virtual account for new user:', newUser._id);
+        console.log(`🔄 [REGISTER] Creating virtual account for: ${newUser.email}`);
         
-        // Call your virtual account creation service
-        const virtualAccountResult = await createVirtualAccountForUser(newUser._id, newUser.fullName, newUser.email, newUser.phone);
+        const virtualAccountResult = await createVirtualAccountForUser(
+          newUser._id, 
+          newUser.fullName, 
+          newUser.email, 
+          newUser.phone
+        );
         
         if (virtualAccountResult.success) {
-          console.log('✅ Virtual account created successfully');
+          console.log(`✅ [REGISTER] Virtual account created for ${newUser.email}`);
           
           // Update user with virtual account details
-          newUser.virtualAccount = {
-            assigned: true,
-            bankName: virtualAccountResult.data.bankName,
-            accountNumber: virtualAccountResult.data.accountNumber,
-            accountName: virtualAccountResult.data.accountName
-          };
-          await newUser.save({ session });
+          await User.findByIdAndUpdate(newUser._id, {
+            'virtualAccount.assigned': true,
+            'virtualAccount.bankName': virtualAccountResult.data.bankName,
+            'virtualAccount.accountNumber': virtualAccountResult.data.accountNumber,
+            'virtualAccount.accountName': virtualAccountResult.data.accountName,
+            'virtualAccount.reference': virtualAccountResult.data.reference || ''
+          });
         } else {
-          console.log('⚠️ Virtual account creation failed, but user registered');
+          console.log(`⚠️ [REGISTER] Virtual account creation failed for ${newUser.email}`);
         }
       } catch (vaError) {
-        console.error('❌ Virtual account creation error:', vaError);
-        // Don't fail registration if virtual account fails
+        console.error(`❌ [REGISTER] Virtual account error for ${newUser.email}:`, vaError);
       }
+    }, 1000); // Delay 1 second
 
-      await session.commitTransaction();
-      
-      // Clear OTP after successful registration
-      otpStore.delete(email);
+    // 11. Clear OTP after successful registration
+    otpStore.delete(normalizedEmail);
 
-      res.status(201).json({
-        success: true,
-        message: 'Registration successful! Email verified and account created.',
-        user: {
-          _id: newUser._id,
-          fullName: newUser.fullName,
-          email: newUser.email,
-          phone: newUser.phone,
-          isAdmin: newUser.isAdmin,
-          walletBalance: newUser.walletBalance,
-          commissionBalance: newUser.commissionBalance,
-          transactionPinSet: !!newUser.transactionPin,
-          biometricEnabled: newUser.biometricEnabled,
-          emailVerified: newUser.emailVerified,
-          virtualAccount: newUser.virtualAccount
-        },
-        token,
-        refreshToken
-      });
-    } else {
-      await session.abortTransaction();
-      res.status(400).json({ success: false, message: 'Invalid user data' });
-    }
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Registration successful! Welcome to DalabaPay.',
+      slogan: 'Smart Life, Fast Pay',
+      user: {
+        _id: newUser._id,
+        fullName: newUser.fullName,
+        email: newUser.email,
+        phone: newUser.phone,
+        referralCode: newUser.referralCode,
+        walletBalance: newUser.walletBalance,
+        commissionBalance: newUser.commissionBalance,
+        transactionPinSet: !!newUser.transactionPin,
+        biometricEnabled: newUser.biometricEnabled,
+        emailVerified: newUser.emailVerified,
+        hasVirtualAccount: newUser.virtualAccount.assigned
+      },
+      token,
+      refreshToken
+    });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Registration error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  } finally {
     session.endSession();
+    
+    console.error('❌ [REGISTER] Error:', error);
+    
+    // Handle MongoDB duplicate key errors
+    if (error.code === 11000) {
+      const field = error.keyPattern;
+      let message = 'Registration failed due to duplicate data.';
+      
+      if (field.email) {
+        message = 'Email already exists. Please use a different email.';
+      } else if (field.phone) {
+        message = 'Phone number already exists. Please use a different phone number.';
+      } else if (field.referralCode) {
+        message = 'System error. Please try again.'; // Shouldn't happen with unique generation
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        message,
+        slogan: 'Smart Life, Fast Pay'
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Registration failed. Please try again.',
+      slogan: 'Smart Life, Fast Pay'
+    });
   }
 });
-
-// Virtual account creation helper function
-async function createVirtualAccountForUser(userId, fullName, email, phone) {
-  try {
-    // This would call your virtual account service
-    // For now, we'll simulate creation with mock data
-    const mockVirtualAccount = {
-      bankName: 'WEMA BANK',
-      accountNumber: '7' + Math.random().toString().substr(2, 9),
-      accountName: fullName.toUpperCase().replace(/\s+/g, ' '),
-      assigned: true
-    };
-
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    return {
-      success: true,
-      data: mockVirtualAccount
-    };
-  } catch (error) {
-    console.error('Virtual account creation error:', error);
-    return {
-      success: false,
-      message: 'Virtual account creation failed'
-    };
-  }
-}
 
 
 
