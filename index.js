@@ -1592,6 +1592,7 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
+
 // @desc    Request password reset with OTP
 // @route   POST /api/users/forgot-password
 // @access  Public
@@ -1602,45 +1603,49 @@ app.post('/api/users/forgot-password', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   try {
     const { email } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
     
-    console.log(`📧 Password reset requested for: ${normalizedEmail}`);
+    console.log(`📧 [FORGOT-PW] Password reset requested for: ${normalizedEmail}`);
     
     const user = await User.findOne({ email: normalizedEmail });
     
-    // For security, don't reveal if user exists or not
-    // But we need to handle differently for testing
-    
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    console.log(`🔑 Generated OTP for ${normalizedEmail}: ${otp}`);
-    
-    if (user) {
-      // Update existing user with OTP
-      user.resetPasswordOTP = otp;
-      user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-      user.resetPasswordToken = null; // Clear any previous token
-      user.resetPasswordExpire = null;
-      
-      await user.save();
-      console.log(`💾 OTP saved to database for ${normalizedEmail}`);
-    } else {
-      // User doesn't exist - still send success message for security
-      console.log(`👤 User not found for ${normalizedEmail}, but returning generic success`);
+    // For security, don't reveal if user exists
+    if (!user) {
+      console.log(`👤 [FORGOT-PW] User not found for: ${normalizedEmail}`);
       return res.json({
         success: true,
-        message: 'If an account exists with this email, an OTP has been sent'
+        message: 'If an account exists with this email, an OTP has been sent',
+        email: normalizedEmail
       });
     }
     
-    // Send OTP email
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log(`🔑 [FORGOT-PW] Generated OTP: ${otp} for ${user._id}`);
+    
+    // Set OTP and expiration
+    user.resetPasswordOTP = otp;
+    user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+    
+    await user.save();
+    console.log(`💾 [FORGOT-PW] OTP saved to database`);
+    
+    // Send OTP email for password reset
     try {
-      const emailResult = await sendVerificationEmail(normalizedEmail, otp, user.fullName || 'User');
+      const emailResult = await sendVerificationEmail(
+        normalizedEmail, 
+        otp, 
+        user.fullName || 'User', 
+        'password_reset'  // Specify this is for password reset
+      );
       
       if (!emailResult.success) {
-        console.log(`⚠️ Email sending failed for ${normalizedEmail}, but OTP is: ${otp}`);
+        console.log(`⚠️ [FORGOT-PW] Email sending failed, OTP: ${otp}`);
         
         // In development, return OTP for testing
         if (process.env.NODE_ENV === 'development') {
@@ -1648,21 +1653,22 @@ app.post('/api/users/forgot-password', [
             success: true,
             message: 'Email service unavailable. For testing, OTP is: ' + otp,
             email: normalizedEmail,
-            otp: otp // Only in development
+            otp: otp
           });
         }
       }
       
-      console.log(`✅ OTP email sent successfully to ${normalizedEmail}`);
+      console.log(`✅ [FORGOT-PW] Password reset OTP email sent to ${normalizedEmail}`);
       
       res.json({
         success: true,
         message: 'OTP sent to your email address',
-        email: normalizedEmail
+        email: normalizedEmail,
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
       
     } catch (emailError) {
-      console.error(`❌ Email sending error: ${emailError.message}`);
+      console.error(`❌ [FORGOT-PW] Email error: ${emailError.message}`);
       
       // If email fails but we're in development, return OTP
       if (process.env.NODE_ENV === 'development') {
@@ -1670,26 +1676,28 @@ app.post('/api/users/forgot-password', [
           success: true,
           message: 'Email service failed. For testing, use OTP: ' + otp,
           email: normalizedEmail,
-          otp: otp
+          otp: otp,
+          slogan: 'Smart Life, Fast Pay'  // Added slogan
         });
       }
       
       return res.json({
         success: true,
         message: 'OTP generated but email sending failed. Please try again.',
-        email: normalizedEmail
+        email: normalizedEmail,
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
     }
     
   } catch (error) {
-    console.error('❌ Forgot password error:', error);
+    console.error('❌ [FORGOT-PW] Server error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Internal Server Error. Please try again.' 
+      message: 'Internal Server Error. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
   }
 });
-
 
 
 // @desc    Verify OTP for password reset
@@ -1701,14 +1709,18 @@ app.post('/api/users/verify-reset-otp', [
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
   }
   
   try {
     const { email, otp } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
     
-    console.log(`🔍 Checking OTP for: ${normalizedEmail}, OTP entered: ${otp}`);
+    console.log(`🔍 [VERIFY-OTP] Checking: ${normalizedEmail}, OTP: ${otp}`);
     
     // Find user with matching OTP and not expired
     const user = await User.findOne({ 
@@ -1718,27 +1730,29 @@ app.post('/api/users/verify-reset-otp', [
     });
     
     if (!user) {
-      console.log(`❌ Invalid OTP for ${normalizedEmail}`);
+      console.log(`❌ [VERIFY-OTP] Invalid OTP for ${normalizedEmail}`);
       
       // Check if user exists but OTP is wrong
       const userExists = await User.findOne({ email: normalizedEmail });
       if (userExists) {
         if (userExists.resetPasswordOTPExpire && userExists.resetPasswordOTPExpire < Date.now()) {
-          console.log(`⏰ OTP expired for ${normalizedEmail}`);
+          console.log(`⏰ [VERIFY-OTP] OTP expired for ${normalizedEmail}`);
           return res.status(400).json({ 
             success: false, 
-            message: 'OTP has expired. Please request a new one.' 
+            message: 'OTP has expired. Please request a new one.',
+            slogan: 'Smart Life, Fast Pay'  // Added slogan
           });
         }
       }
       
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid OTP. Please check and try again.' 
+        message: 'Invalid OTP. Please check and try again.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
     }
     
-    console.log(`✅ OTP verified for ${normalizedEmail}`);
+    console.log(`✅ [VERIFY-OTP] OTP verified for ${normalizedEmail}`);
     
     // Generate a secure reset token
     const crypto = require('crypto');
@@ -1754,21 +1768,25 @@ app.post('/api/users/verify-reset-otp', [
     
     await user.save();
     
-    console.log(`🔐 Reset token generated for ${normalizedEmail}: ${resetToken.substring(0, 10)}...`);
+    console.log(`🔐 [VERIFY-OTP] Reset token generated: ${resetToken.substring(0, 10)}...`);
     
     res.json({
       success: true,
       message: 'OTP verified successfully',
-      resetToken: resetToken
+      resetToken: resetToken,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
   } catch (error) {
-    console.error('❌ Verify OTP error:', error);
+    console.error('❌ [VERIFY-OTP] Server error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Internal Server Error. Please try again.' 
+      message: 'Internal Server Error. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
   }
 });
+
+
 
 // @desc    Reset password with token
 // @route   POST /api/users/reset-password
@@ -1784,7 +1802,11 @@ app.post('/api/users/reset-password', [
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
   }
   
   try {
@@ -1798,7 +1820,8 @@ app.post('/api/users/reset-password', [
     if (!user) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid or expired reset token' 
+        message: 'Invalid or expired reset token',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
     }
     
@@ -1817,11 +1840,16 @@ app.post('/api/users/reset-password', [
     
     res.json({ 
       success: true, 
-      message: 'Password reset successful. You can now login with your new password.' 
+      message: 'Password reset successful. You can now login with your new password.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
   } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ [RESET-PW] Server error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
   }
 });
 
@@ -9500,14 +9528,18 @@ app.post('/api/auth/send-verification-otp', [
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
   }
 
   try {
     const { email } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Rate limiting check
+    // Rate limiting check (your existing code)
     const now = Date.now();
     const window = 60 * 1000; // 1 minute
     const maxAttempts = 5;
@@ -9522,7 +9554,8 @@ app.post('/api/auth/send-verification-otp', [
     if (recent.length >= maxAttempts) {
       return res.status(429).json({ 
         success: false, 
-        message: 'Too many requests. Please wait 1 minute.' 
+        message: 'Too many requests. Please wait 1 minute.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
     }
 
@@ -9540,13 +9573,18 @@ app.post('/api/auth/send-verification-otp', [
       attempts: 0
     });
 
-    console.log(`📧 OTP generated for ${normalizedEmail}: ${otp}`);
+    console.log(`📧 [VERIFICATION] OTP generated for ${normalizedEmail}: ${otp}`);
 
-    // Send email using Nodemailer
-    const emailResult = await sendVerificationEmail(normalizedEmail, otp);
+    // Send email for verification
+    const emailResult = await sendVerificationEmail(
+      normalizedEmail, 
+      otp, 
+      'User',  // Default name since this might be for new signup
+      'verification'  // Specify this is for email verification
+    );
     
     if (!emailResult.success) {
-      console.log('⚠️ Email sending failed, but OTP is:', otp);
+      console.log(`⚠️ [VERIFICATION] Email sending failed, but OTP is: ${otp}`);
       
       // In development, return OTP for testing
       if (process.env.NODE_ENV === 'development') {
@@ -9554,33 +9592,36 @@ app.post('/api/auth/send-verification-otp', [
           success: true,
           message: 'Email service unavailable. For development, OTP is: ' + otp,
           email: normalizedEmail,
-          otp: otp
+          otp: otp,
+          slogan: 'Smart Life, Fast Pay'  // Added slogan
         });
       }
       
       return res.status(500).json({ 
         success: false, 
-        message: 'Failed to send verification email. Please try again.' 
+        message: 'Failed to send verification email. Please try again.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
       });
     }
 
-    console.log(`✅ OTP email sent successfully to ${normalizedEmail}`);
+    console.log(`✅ [VERIFICATION] OTP email sent successfully to ${normalizedEmail}`);
     
     return res.json({
       success: true,
       message: 'Verification code sent successfully! Check your email.',
-      email: normalizedEmail
+      email: normalizedEmail,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
 
   } catch (error) {
-    console.error('❌ Send OTP error:', error);
+    console.error('❌ [VERIFICATION] Send OTP error:', error);
     return res.status(500).json({ 
       success: false, 
-      message: 'Failed to send verification code. Please try again.' 
+      message: 'Failed to send verification code. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
     });
   }
 });
-
 
 
 
