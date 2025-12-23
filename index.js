@@ -1549,7 +1549,7 @@ app.post('/api/users/logout', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Request password reset
+// @desc    Request password reset with OTP
 // @route   POST /api/users/forgot-password
 // @access  Public
 app.post('/api/users/forgot-password', [
@@ -1561,36 +1561,109 @@ app.post('/api/users/forgot-password', [
   }
   try {
     const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
     
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: normalizedEmail });
     
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      // For security, don't reveal if user exists
+      return res.json({
+        success: true,
+        message: 'If an account exists with this email, an OTP has been sent'
+      });
     }
     
-    // Generate reset token
-    const resetToken = uuidv4();
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // Set token and expire time
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpire = new Date(getLagosTime().getTime() + 10 * 60 * 1000); // 10 minutes
+    // Set OTP and expire time (10 minutes)
+    user.resetPasswordOTP = otp;
+    user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000);
+    user.resetPasswordToken = null; // Clear any previous token
+    user.resetPasswordExpire = null;
     
     await user.save();
     
-    // In a real implementation, you would send an email with the reset token
-    // For this example, we'll just return the token in the response
+    // Send OTP email using your email service
+    console.log(`Password reset OTP for ${normalizedEmail}: ${otp}`);
+    
+    // In production, send actual email
+    if (process.env.NODE_ENV === 'production') {
+      try {
+        await sendVerificationEmail(normalizedEmail, otp);
+      } catch (emailError) {
+        console.error('Email sending failed:', emailError);
+      }
+    }
     
     res.json({
       success: true,
-      message: 'Password reset token generated',
-      resetToken
+      message: 'OTP sent to your email address',
+      email: normalizedEmail
     });
   } catch (error) {
     console.error('Forgot password error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Reset password
+
+
+
+// @desc    Verify OTP for password reset
+// @route   POST /api/users/verify-reset-otp
+// @access  Public
+app.post('/api/users/verify-reset-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  try {
+    const { email, otp } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    const user = await User.findOne({ 
+      email: normalizedEmail,
+      resetPasswordOTP: otp,
+      resetPasswordOTPExpire: { $gt: Date.now() }
+    });
+    
+    if (!user) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid or expired OTP' 
+      });
+    }
+    
+    // Generate a secure reset token
+    const resetToken = require('crypto').randomBytes(32).toString('hex');
+    
+    // Set reset token and expire time
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    
+    // Clear OTP
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpire = null;
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      resetToken: resetToken
+    });
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Reset password with token
 // @route   POST /api/users/reset-password
 // @access  Public
 app.post('/api/users/reset-password', [
@@ -1606,30 +1679,39 @@ app.post('/api/users/reset-password', [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   try {
     const { resetToken, newPassword } = req.body;
     
     const user = await User.findOne({
       resetPasswordToken: resetToken,
-      resetPasswordExpire: { $gt: getLagosTime() }
+      resetPasswordExpire: { $gt: Date.now() }
     });
     
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid or expired reset token' 
+      });
     }
     
     // Hash the new password
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
     
-    // Update user password and clear reset token
+    // Update user password and clear reset fields
     user.password = hashedPassword;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpire = null;
     
     await user.save();
     
-    res.json({ success: true, message: 'Password reset successful' });
+    res.json({ 
+      success: true, 
+      message: 'Password reset successful. You can now login with your new password.' 
+    });
   } catch (error) {
     console.error('Reset password error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
