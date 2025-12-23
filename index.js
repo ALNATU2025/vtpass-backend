@@ -4312,6 +4312,73 @@ app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
 });
 
 
+
+
+// @desc    Get notification statistics
+// @route   GET /api/notifications/statistics
+// @access  Private
+app.get('/api/notifications/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📊 [NOTIFICATIONS] Getting statistics for user: ${userId}`);
+    
+    // Personal notifications count
+    const totalPersonal = await Notification.countDocuments({ recipient: userId });
+    const unreadPersonal = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
+    
+    // General notifications count (not read by this user)
+    const unreadGeneral = await Notification.countDocuments({ 
+      recipient: null, 
+      readBy: { $ne: userId } 
+    });
+    
+    // Latest notification
+    const latestNotification = await Notification.findOne({
+      $or: [
+        { recipient: userId },
+        { recipient: null }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .select('title createdAt type')
+    .lean();
+    
+    const statistics = {
+      personal: {
+        total: totalPersonal,
+        unread: unreadPersonal,
+        read: totalPersonal - unreadPersonal
+      },
+      general: {
+        unread: unreadGeneral
+      },
+      total: {
+        unread: unreadPersonal + unreadGeneral,
+        all: totalPersonal + unreadGeneral
+      },
+      latestNotification: latestNotification || null
+    };
+    
+    console.log(`📈 [NOTIFICATIONS] Statistics:`, statistics);
+    
+    res.json({
+      success: true,
+      statistics: statistics
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error getting statistics:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notification statistics' 
+    });
+  }
+});
+
+
 // @desc    Create test notifications for development
 // @route   POST /api/notifications/test
 // @access  Private
@@ -4379,65 +4446,63 @@ app.post('/api/notifications/test', protect, async (req, res) => {
 });
 
 
-// @desc    Mark multiple notifications as read
+// @desc    Mark all notifications as read
 // @route   POST /api/notifications/mark-all-read
 // @access  Private
 app.post('/api/notifications/mark-all-read', protect, async (req, res) => {
   try {
     const userId = req.user._id;
     
-    const result = await Notification.updateMany(
-      { recipientId: userId, isRead: false },
+    console.log(`📌 [NOTIFICATIONS] Marking all as read for user: ${userId}`);
+    
+    // Get all unread personal notifications for this user
+    const personalResult = await Notification.updateMany(
+      { recipient: userId, isRead: false },
       { $set: { isRead: true } }
     );
     
+    // Get all general notifications not read by this user
+    const generalNotifications = await Notification.find({
+      recipient: null,
+      readBy: { $ne: userId }
+    });
+    
+    let generalCount = 0;
+    for (const notification of generalNotifications) {
+      if (!notification.readBy.includes(userId)) {
+        notification.readBy.push(userId);
+        await notification.save();
+        generalCount++;
+      }
+    }
+    
+    const totalMarked = personalResult.modifiedCount + generalCount;
+    
+    console.log(`✅ [NOTIFICATIONS] Marked ${totalMarked} notifications as read`);
+    
     res.json({ 
       success: true, 
-      message: `Marked ${result.modifiedCount} notifications as read`,
-      modifiedCount: result.modifiedCount
-    });
-  } catch (error) {
-    console.error('Error marking all notifications as read:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-});
-
-
-// @desc    Get notification statistics
-// @route   GET /api/notifications/statistics
-// @access  Private
-app.get('/api/notifications/statistics', protect, async (req, res) => {
-  try {
-    const userId = req.user._id;
-    
-    const totalNotifications = await Notification.countDocuments({ recipientId: userId });
-    const unreadNotifications = await Notification.countDocuments({ 
-      recipientId: userId, 
-      isRead: false 
-    });
-    const readNotifications = totalNotifications - unreadNotifications;
-    
-    // Get latest notification date
-    const latestNotification = await Notification.findOne({ recipientId: userId })
-      .sort({ createdAt: -1 })
-      .select('createdAt');
-    
-    res.json({
-      success: true,
+      message: `Marked ${totalMarked} notifications as read`,
       statistics: {
-        total: totalNotifications,
-        unread: unreadNotifications,
-        read: readNotifications,
-        latestNotification: latestNotification?.createdAt || null
+        personalMarked: personalResult.modifiedCount,
+        generalMarked: generalCount,
+        totalMarked: totalMarked
       }
     });
   } catch (error) {
-    console.error('Error fetching notification statistics:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ [NOTIFICATIONS] Error marking all as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notifications as read' 
+    });
   }
 });
 
-// @desc    Get user's notifications (personal + general)
+
+
+
+
+// @desc    Get user's notifications (personal + unread general)
 // @route   GET /api/notifications
 // @access  Private
 app.get('/api/notifications', protect, [
@@ -4454,19 +4519,17 @@ app.get('/api/notifications', protect, [
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
-    console.log('🔔 Fetching notifications for user:', userId);
+    console.log('🔔 [NOTIFICATIONS] Fetching for user:', userId);
     
-    // Query: Get notifications where:
-    // 1. recipient is this user (personal notifications)
-    // 2. recipient is null AND user hasn't read it (general notifications)
-    // 3. User is in readBy array (already read general notifications)
-    
+    // Query to get:
+    // 1. Personal notifications for this user
+    // 2. General notifications NOT read by this user
     const query = {
       $or: [
-        { recipient: userId }, // Personal notifications for this user
+        { recipient: userId }, // Personal notifications
         { 
           recipient: null, // General notifications
-          readBy: { $ne: userId } // Not read by this user yet
+          readBy: { $ne: userId } // Not read by this user
         }
       ]
     };
@@ -4475,25 +4538,33 @@ app.get('/api/notifications', protect, [
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('recipient', 'email fullName'); // Optional: populate recipient details
+      .lean(); // Use lean() for better performance
     
     const total = await Notification.countDocuments(query);
     
-    console.log(`📊 Found ${notifications.length} notifications for user ${userId}`);
+    console.log(`📊 [NOTIFICATIONS] Found ${notifications.length} notifications`);
     
     res.json({
       success: true,
       notifications,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
-      totalItems: total
+      totalItems: total,
+      statistics: {
+        total: total,
+        unread: await Notification.countDocuments({ 
+          $or: [
+            { recipient: userId, isRead: false },
+            { recipient: null, readBy: { $ne: userId } }
+          ]
+        })
+      }
     });
   } catch (error) {
-    console.error('❌ Error fetching notifications:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ [NOTIFICATIONS] Error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
   }
 });
-
 // @desc    Mark notification as read
 // @route   POST /api/notifications/:id/read
 // @access  Private
@@ -4502,34 +4573,58 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     const { id } = req.params;
     const userId = req.user._id;
     
+    console.log(`📌 [NOTIFICATIONS] Marking as read: ${id} for user: ${userId}`);
+    
     const notification = await Notification.findById(id);
     
     if (!notification) {
-      return res.status(404).json({ success: false, message: 'Notification not found' });
+      console.log('❌ [NOTIFICATIONS] Notification not found:', id);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Notification not found' 
+      });
     }
     
-    // For personal notifications, set a read flag or just track in readBy
-    // For general notifications, add user to readBy array
+    // Check if user has access to this notification
+    if (notification.recipient && notification.recipient.toString() !== userId.toString()) {
+      console.log('⛔ [NOTIFICATIONS] Access denied for user:', userId);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied' 
+      });
+    }
+    
+    // Handle marking as read
     if (notification.recipient === null) {
-      // General notification - add user to readBy if not already
+      // General notification - add user to readBy array
       if (!notification.readBy.includes(userId)) {
         notification.readBy.push(userId);
         await notification.save();
+        console.log('✅ [NOTIFICATIONS] General notification marked as read');
       }
     } else {
-      // Personal notification - check if recipient matches
-      if (notification.recipient.toString() !== userId.toString()) {
-        return res.status(403).json({ success: false, message: 'Access denied' });
+      // Personal notification - mark as read
+      if (!notification.isRead) {
+        notification.isRead = true;
+        await notification.save();
+        console.log('✅ [NOTIFICATIONS] Personal notification marked as read');
       }
-      // You could add a read flag here if needed
-      // notification.isRead = true;
-      // await notification.save();
     }
     
-    res.json({ success: true, message: 'Notification marked as read' });
+    res.json({ 
+      success: true, 
+      message: 'Notification marked as read',
+      notification: {
+        id: notification._id,
+        isRead: notification.recipient === null ? notification.readBy.includes(userId) : notification.isRead
+      }
+    });
   } catch (error) {
-    console.error('Error marking notification as read:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ [NOTIFICATIONS] Error marking as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notification as read' 
+    });
   }
 });
 
@@ -4546,11 +4641,17 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
 // @access  Private (Admin)
 app.post('/api/notifications/send', protect, async (req, res) => {
   try {
-    const { title, message, recipientId } = req.body;
+    const { title, message, recipientId, type = 'account', metadata = {} } = req.body;
+    
+    console.log(`📨 [NOTIFICATIONS] Sending notification:`, { title, recipientId });
     
     // Check if user is admin
     if (!req.user.isAdmin) {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
+      console.log('⛔ [NOTIFICATIONS] Non-admin attempted to send notification');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
     }
     
     // Validate input
@@ -4561,18 +4662,36 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       });
     }
     
-    // If recipientId is provided, send to specific user
-    // If recipientId is null or empty, send as general notification
-    let notificationData = {
-      title,
-      message,
-      recipient: recipientId || null
-    };
+    // If recipientId is provided, validate user exists
+    if (recipientId) {
+      const user = await User.findById(recipientId);
+      if (!user) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Recipient user not found' 
+        });
+      }
+    }
     
     // Create notification
-    const notification = new Notification(notificationData);
+    const notificationData = {
+      title: title.trim(),
+      message: message.trim(),
+      recipient: recipientId || null,
+      type: type,
+      metadata: metadata,
+      readBy: recipientId ? [] : [] // Empty for new notifications
+    };
     
+    const notification = new Notification(notificationData);
     await notification.save();
+    
+    console.log(`✅ [NOTIFICATIONS] Notification sent:`, {
+      id: notification._id,
+      title: notification.title,
+      recipient: notification.recipient,
+      isGeneral: notification.isGeneral
+    });
     
     res.json({ 
       success: true, 
@@ -4584,15 +4703,66 @@ app.post('/api/notifications/send', protect, async (req, res) => {
         title: notification.title,
         recipient: notification.recipient,
         isGeneral: notification.isGeneral,
+        type: notification.type,
         createdAt: notification.createdAt
       }
     });
     
   } catch (error) {
-    console.error('Error sending notification:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ [NOTIFICATIONS] Error sending notification:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send notification' 
+    });
   }
 });
+
+
+
+// @desc    Clean up old notifications
+// @route   POST /api/notifications/cleanup
+// @access  Private (Admin)
+app.post('/api/notifications/cleanup', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+    
+    const { days = 90 } = req.body; // Default: clean up notifications older than 90 days
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    
+    console.log(`🧹 [NOTIFICATIONS] Cleaning up notifications older than ${days} days (before ${cutoffDate})`);
+    
+    // Delete old notifications
+    const result = await Notification.deleteMany({
+      createdAt: { $lt: cutoffDate }
+    });
+    
+    console.log(`✅ [NOTIFICATIONS] Cleanup completed: ${result.deletedCount} notifications deleted`);
+    
+    res.json({ 
+      success: true, 
+      message: `Cleaned up ${result.deletedCount} notifications older than ${days} days`,
+      deletedCount: result.deletedCount,
+      cutoffDate: cutoffDate
+    });
+    
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error during cleanup:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to clean up notifications' 
+    });
+  }
+});
+
+
 // @desc    Get app settings
 // @route   GET /api/settings
 // @access  Public
