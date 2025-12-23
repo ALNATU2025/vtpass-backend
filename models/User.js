@@ -111,6 +111,15 @@ const userSchema = mongoose.Schema(
       default: 0.0,
     },
 
+    pendingCommission: {
+  type: Number,
+  default: 0.0,
+},
+lastCommissionAwarded: {
+  type: Date,
+  default: null,
+},
+
     // Authentication fields
     refreshToken: {
       type: String,
