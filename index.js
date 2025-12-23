@@ -1549,6 +1549,49 @@ app.post('/api/users/logout', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+// @desc    Debug - Check user's OTP status
+// @route   GET /api/users/debug-otp/:email
+// @access  Development only
+if (process.env.NODE_ENV === 'development') {
+  app.get('/api/users/debug-otp/:email', async (req, res) => {
+    try {
+      const email = req.params.email.toLowerCase().trim();
+      const user = await User.findOne({ email });
+      
+      if (!user) {
+        return res.json({ 
+          success: false, 
+          message: 'User not found',
+          email: email 
+        });
+      }
+      
+      const now = Date.now();
+      const otpExpired = user.resetPasswordOTPExpire && user.resetPasswordOTPExpire < now;
+      const timeRemaining = user.resetPasswordOTPExpire 
+        ? Math.ceil((user.resetPasswordOTPExpire - now) / 1000 / 60)
+        : 0;
+      
+      return res.json({
+        success: true,
+        email: user.email,
+        otp: user.resetPasswordOTP,
+        otpExpiresAt: user.resetPasswordOTPExpire,
+        otpExpired: otpExpired,
+        minutesRemaining: timeRemaining,
+        hasResetToken: !!user.resetPasswordToken,
+        resetTokenExpiresAt: user.resetPasswordExpire
+      });
+      
+    } catch (error) {
+      console.error('Debug OTP error:', error);
+      res.status(500).json({ success: false, message: 'Debug error' });
+    }
+  });
+}
+
 // @desc    Request password reset with OTP
 // @route   POST /api/users/forgot-password
 // @access  Public
@@ -1563,47 +1606,87 @@ app.post('/api/users/forgot-password', [
     const { email } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
     
+    console.log(`📧 Password reset requested for: ${normalizedEmail}`);
+    
     const user = await User.findOne({ email: normalizedEmail });
     
-    if (!user) {
-      // For security, don't reveal if user exists
+    // For security, don't reveal if user exists or not
+    // But we need to handle differently for testing
+    
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log(`🔑 Generated OTP for ${normalizedEmail}: ${otp}`);
+    
+    if (user) {
+      // Update existing user with OTP
+      user.resetPasswordOTP = otp;
+      user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      user.resetPasswordToken = null; // Clear any previous token
+      user.resetPasswordExpire = null;
+      
+      await user.save();
+      console.log(`💾 OTP saved to database for ${normalizedEmail}`);
+    } else {
+      // User doesn't exist - still send success message for security
+      console.log(`👤 User not found for ${normalizedEmail}, but returning generic success`);
       return res.json({
         success: true,
         message: 'If an account exists with this email, an OTP has been sent'
       });
     }
     
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    // Set OTP and expire time (10 minutes)
-    user.resetPasswordOTP = otp;
-    user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000);
-    user.resetPasswordToken = null; // Clear any previous token
-    user.resetPasswordExpire = null;
-    
-    await user.save();
-    
-    // Send OTP email using your email service
-    console.log(`Password reset OTP for ${normalizedEmail}: ${otp}`);
-    
-    // In production, send actual email
-    if (process.env.NODE_ENV === 'production') {
-      try {
-        await sendVerificationEmail(normalizedEmail, otp);
-      } catch (emailError) {
-        console.error('Email sending failed:', emailError);
+    // Send OTP email
+    try {
+      const emailResult = await sendVerificationEmail(normalizedEmail, otp, user.fullName || 'User');
+      
+      if (!emailResult.success) {
+        console.log(`⚠️ Email sending failed for ${normalizedEmail}, but OTP is: ${otp}`);
+        
+        // In development, return OTP for testing
+        if (process.env.NODE_ENV === 'development') {
+          return res.json({
+            success: true,
+            message: 'Email service unavailable. For testing, OTP is: ' + otp,
+            email: normalizedEmail,
+            otp: otp // Only in development
+          });
+        }
       }
+      
+      console.log(`✅ OTP email sent successfully to ${normalizedEmail}`);
+      
+      res.json({
+        success: true,
+        message: 'OTP sent to your email address',
+        email: normalizedEmail
+      });
+      
+    } catch (emailError) {
+      console.error(`❌ Email sending error: ${emailError.message}`);
+      
+      // If email fails but we're in development, return OTP
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'Email service failed. For testing, use OTP: ' + otp,
+          email: normalizedEmail,
+          otp: otp
+        });
+      }
+      
+      return res.json({
+        success: true,
+        message: 'OTP generated but email sending failed. Please try again.',
+        email: normalizedEmail
+      });
     }
     
-    res.json({
-      success: true,
-      message: 'OTP sent to your email address',
-      email: normalizedEmail
-    });
   } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ Forgot password error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error. Please try again.' 
+    });
   }
 });
 
@@ -1625,6 +1708,9 @@ app.post('/api/users/verify-reset-otp', [
     const { email, otp } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
     
+    console.log(`🔍 Checking OTP for: ${normalizedEmail}, OTP entered: ${otp}`);
+    
+    // Find user with matching OTP and not expired
     const user = await User.findOne({ 
       email: normalizedEmail,
       resetPasswordOTP: otp,
@@ -1632,18 +1718,35 @@ app.post('/api/users/verify-reset-otp', [
     });
     
     if (!user) {
+      console.log(`❌ Invalid OTP for ${normalizedEmail}`);
+      
+      // Check if user exists but OTP is wrong
+      const userExists = await User.findOne({ email: normalizedEmail });
+      if (userExists) {
+        if (userExists.resetPasswordOTPExpire && userExists.resetPasswordOTPExpire < Date.now()) {
+          console.log(`⏰ OTP expired for ${normalizedEmail}`);
+          return res.status(400).json({ 
+            success: false, 
+            message: 'OTP has expired. Please request a new one.' 
+          });
+        }
+      }
+      
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid or expired OTP' 
+        message: 'Invalid OTP. Please check and try again.' 
       });
     }
     
-    // Generate a secure reset token
-    const resetToken = require('crypto').randomBytes(32).toString('hex');
+    console.log(`✅ OTP verified for ${normalizedEmail}`);
     
-    // Set reset token and expire time
+    // Generate a secure reset token
+    const crypto = require('crypto');
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    
+    // Set reset token and expire time (10 minutes)
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    user.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000);
     
     // Clear OTP
     user.resetPasswordOTP = null;
@@ -1651,17 +1754,21 @@ app.post('/api/users/verify-reset-otp', [
     
     await user.save();
     
+    console.log(`🔐 Reset token generated for ${normalizedEmail}: ${resetToken.substring(0, 10)}...`);
+    
     res.json({
       success: true,
       message: 'OTP verified successfully',
       resetToken: resetToken
     });
   } catch (error) {
-    console.error('Verify OTP error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('❌ Verify OTP error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error. Please try again.' 
+    });
   }
 });
-
 
 // @desc    Reset password with token
 // @route   POST /api/users/reset-password
