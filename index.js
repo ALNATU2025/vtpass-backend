@@ -9994,7 +9994,15 @@ app.get('/api/auth/check-verification/:email', async (req, res) => {
 
 
 
-
+// In your index.js, BEFORE the 404 handler, add:
+console.log('✅ Commission routes registered at /api/commission');
+console.log('   Available endpoints:');
+console.log('   - GET /api/commission/balance');
+console.log('   - POST /api/commission/withdraw');
+console.log('   - GET /api/commission/transactions');
+console.log('   - POST /api/commission/use-for-service');
+console.log('   - POST /api/commission/complete-service-purchase');
+console.log('   - POST /api/commission/refund');
 
 
 
