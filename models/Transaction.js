@@ -58,6 +58,32 @@ const transactionSchema = new mongoose.Schema({
         ],
         required: true
     },
+
+
+
+      isFailed: { 
+        type: Boolean, 
+        default: false, 
+        index: true 
+    },
+    shouldShowAsFailed: { 
+        type: Boolean, 
+        default: false 
+    },
+    amountBelowMinimum: {
+        type: Boolean,
+        default: false
+    },
+    minimumAmountViolation: {
+        amount: Number,
+        requiredMinimum: Number,
+        message: String
+    },
+
+
+
+
+    
     amount: { type: Number, required: true, min: 0 },
     status: {
         type: String,
