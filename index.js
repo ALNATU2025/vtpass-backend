@@ -6219,6 +6219,105 @@ console.log('   status:', failedTransaction.status);
 
 
 
+
+// @desc    Save failed electricity transaction (for amount below minimum)
+// @route   POST /api/vtpass/electricity/failed-transaction
+// @access  Private
+app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactionAuth, [
+  body('serviceID').notEmpty().withMessage('Provider required'),
+  body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
+  body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
+  body('amount').isFloat({ min: 1 }).withMessage('Amount required'),
+  body('phone').optional().isMobilePhone('en-NG').withMessage('Valid phone required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
+
+  const { serviceID, billersCode, variation_code, amount, phone, customerName, customerAddress, failureReason } = req.body;
+  const userId = req.user._id;
+
+  try {
+    // Get user to get current balance
+    const user = await User.findById(userId);
+    if (!user) throw new Error('User not found');
+
+    // Create a failed transaction record
+    const failedTransaction = new Transaction({
+      userId: userId,
+      type: 'Electricity Purchase',
+      amount: amount,
+      status: 'Failed', // Capital F to match your Transaction model enum
+      transactionId: `FAILED_AMOUNT_${Date.now()}`,
+      reference: `FAILED_REF_${Date.now()}`,
+      description: `Electricity payment failed: Amount ₦${amount} is below minimum of ₦2000`,
+      balanceBefore: user.walletBalance,
+      balanceAfter: user.walletBalance, // Balance unchanged for failed transactions
+      metadata: {
+        meterNumber: billersCode,
+        provider: serviceID,
+        variation: variation_code,
+        phone: phone || 'N/A',
+        customerName: customerName || 'N/A',
+        customerAddress: customerAddress || 'N/A',
+        failureType: 'AMOUNT_BELOW_MINIMUM'
+      },
+      isFailed: true,
+      shouldShowAsFailed: true,
+      amountBelowMinimum: true,
+      failureReason: failureReason || 'Amount below minimum (₦2000)',
+      gateway: 'DalabaPay App',
+      isCommission: false,
+      service: 'electricity',
+      authenticationMethod: req.authenticationMethod || 'pin'
+    });
+
+    await failedTransaction.save();
+    
+    console.log('✅ FAILED TRANSACTION SAVED TO DATABASE (Amount < ₦2000):');
+    console.log('   Transaction ID:', failedTransaction._id);
+    console.log('   Status:', failedTransaction.status);
+    console.log('   isFailed:', failedTransaction.isFailed);
+    console.log('   amountBelowMinimum:', failedTransaction.amountBelowMinimum);
+    console.log('   Meter:', billersCode);
+    console.log('   Amount:', amount);
+
+    // Return success but with failed transaction data
+    return res.json({
+      success: false, // Still false because transaction failed
+      message: `Amount below minimum. Minimum electricity purchase is ₦2000.`,
+      isFailed: true,
+      shouldShowAsFailed: true,
+      amountBelowMinimum: true,
+      transactionId: failedTransaction._id,
+      transactionData: {
+        _id: failedTransaction._id,
+        transactionId: failedTransaction.transactionId,
+        reference: failedTransaction.reference,
+        amount: amount,
+        status: 'Failed',
+        description: failedTransaction.description,
+        createdAt: failedTransaction.createdAt,
+        metadata: failedTransaction.metadata,
+        isFailed: true,
+        amountBelowMinimum: true,
+        failureReason: failedTransaction.failureReason
+      },
+      savedToDatabase: true
+    });
+
+  } catch (error) {
+    console.error('❌ Error saving failed transaction:', error.message);
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Failed to save transaction record. Please try again.',
+      error: error.message
+    });
+  }
+});
+
+
+
+
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
 // @access  Private
