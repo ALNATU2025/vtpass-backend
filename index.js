@@ -5864,6 +5864,13 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
       });
       
       await failedTransaction.save();
+      console.log('💾 FAILED TRANSACTION SAVED TO DATABASE:');
+console.log('   Transaction ID:', failedTransaction._id);
+console.log('   isFailed:', failedTransaction.isFailed);
+console.log('   amountBelowMinimum:', failedTransaction.amountBelowMinimum);
+console.log('   shouldShowAsFailed:', failedTransaction.shouldShowAsFailed);
+console.log('   status:', failedTransaction.status);
+      
       await session.abortTransaction();
       
       return res.status(400).json({ 
