@@ -984,15 +984,30 @@ const createTransaction = async (
 
 
 
-// CALCULATE COMMISSION - FIXED VERSION
+// CALCULATE COMMISSION - COMPLETE VERSION FOR ALL SERVICES
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
   try {
-    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceType}" | Amount=₦${amount}`);
+    // Handle case where serviceType might be an object
+    let serviceTypeString;
     
-    // Handle case where serviceType might be undefined or an object
-    const serviceTypeString = typeof serviceType === 'string' ? serviceType : 
-                              serviceType && typeof serviceType === 'object' ? 'unknown' : 
-                              'unknown';
+    if (typeof serviceType === 'string') {
+      serviceTypeString = serviceType;
+    } else if (serviceType && typeof serviceType === 'object') {
+      // Try to extract service type from object
+      if (serviceType.serviceID) {
+        serviceTypeString = serviceType.serviceID;
+      } else if (serviceType.serviceType) {
+        serviceTypeString = serviceType.serviceType;
+      } else if (serviceType.network) {
+        serviceTypeString = serviceType.network;
+      } else {
+        serviceTypeString = 'unknown';
+      }
+    } else {
+      serviceTypeString = 'unknown';
+    }
+    
+    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount}`);
     
     // Use session if provided, otherwise query normally
     const settingsQuery = Settings.findOne();
@@ -1044,51 +1059,56 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     let description = '';
     let source = '';
 
-    switch (lowerType) {
-      case 'airtime':
-        description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Airtime';
-        break;
-        
-      case 'data':
+    // ========== DETERMINE COMMISSION TYPE ==========
+    // 1. MOBILE SERVICES (Airtime & Data)
+    if (lowerType.includes('mtn') || lowerType.includes('airtel') || lowerType.includes('glo') || lowerType.includes('etisalat') || lowerType.includes('9mobile')) {
+      if (lowerType.includes('data')) {
         description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
         source = 'Data';
-        break;
-        
-      case 'tv':
-        description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Cable TV';
-        break;
-        
-      case 'education':
-        description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Education';
-        break;
-        
-      case 'insurance':
-        description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Insurance';
-        break;
-        
-      case 'ikeja-electric':
-      case 'eko-electric':
-      case 'ibadan-electric':
-      case 'abuja-electric':
-      case 'enugu-electric':
-      case 'kano-electric':
-      case 'ph-electric':
-        description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Electricity';
-        break;
-        
-      default:
-        if (lowerType.includes('electric')) {
-          description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
-          source = 'Electricity';
-        } else {
-          description = `${serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
-          source = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
-        }
+      } else {
+        description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
+        source = 'Airtime';
+      }
+    }
+    // 2. CABLE TV
+    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || lowerType.includes('startimes') || lowerType === 'tv') {
+      description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Cable TV';
+    }
+    // 3. ELECTRICITY
+    else if (lowerType.includes('electric') || 
+             lowerType.includes('ikeja') || 
+             lowerType.includes('eko') || 
+             lowerType.includes('abuja') || 
+             lowerType.includes('ibadan') || 
+             lowerType.includes('enugu') || 
+             lowerType.includes('kano') || 
+             lowerType.includes('ph')) {
+      description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Electricity';
+    }
+    // 4. EDUCATION
+    else if (lowerType.includes('education') || 
+             lowerType.includes('waec') || 
+             lowerType.includes('jamb') || 
+             lowerType.includes('exam') || 
+             lowerType.includes('result')) {
+      description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Education';
+    }
+    // 5. INSURANCE
+    else if (lowerType.includes('insurance') || 
+             lowerType.includes('insure') || 
+             lowerType.includes('ui-insure') || 
+             lowerType.includes('motor') || 
+             lowerType.includes('vehicle')) {
+      description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Insurance';
+    }
+    // 6. DEFAULT
+    else {
+      description = `${serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
     }
 
     console.log(`✅ Commission determined: ${description} | Source: ${source}`);
@@ -1106,6 +1126,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       true, // isCommission = true
       'none',
       null,
+      {}, // metadata
       { 
         commissionSource: source,
         originalService: lowerType,
@@ -1119,9 +1140,13 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
   } catch (error) {
     console.error('❌ COMMISSION CALCULATION ERROR:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
     return 0;
   }
 };
+
+
 
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
@@ -5328,7 +5353,8 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
       user.walletBalance = newBalance;
       await user.save({ session });
       
-      await calculateAndAddCommission(userId, amount, session, 'tv');
+     await calculateAndAddCommission(userId, amount, 'tv', session)
+  .catch(err => console.log('⚠️ TV commission calculation failed:', err.message));
 
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
@@ -5494,7 +5520,8 @@ app.post('/api/vtpass/airtime/purchase', protect, verifyTransactionAuth, checkSe
       user.walletBalance = newBalance;
       await user.save({ session });
       
-     await calculateAndAddCommission(userId, amount, session, 'airtime');
+     await calculateAndAddCommission(userId, amount, network, session)  // network could be 'mtn', 'airtel', etc.
+  .catch(err => console.log('⚠️ Airtime commission calculation failed:', err.message));
 
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
@@ -5650,8 +5677,10 @@ app.post('/api/vtpass/data/purchase', protect, verifyTransactionAuth, checkServi
         }
       );
 
-      await calculateAndAddCommission(userId, amount, session, 'data').catch(() => {});
+      await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceID is like 'mtn-data'
+  .catch(err => console.log('⚠️ Data commission calculation failed:', err.message));
 
+      
       await session.commitTransaction();
 
       return res.json({
@@ -5820,7 +5849,19 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
         await session.abortTransaction();
         console.log('✅ Transaction already exists and is successful:', requestId);
         
-        // 🔥 FIX 1: Use FRONTEEND vtpassResponse for fresh data (NOT old database data)
+        // Check if commission was already calculated
+        const commissionExists = await Transaction.findOne({
+          userId: userId,
+          isCommission: true,
+          'metadata.originalService': serviceID,
+          'metadata.originalAmount': amount,
+          createdAt: { $gt: new Date(Date.now() - 60000) } // Last 1 minute
+        }).session(session);
+
+        if (commissionExists) {
+          console.log('✅ Commission already calculated for this transaction');
+        }
+        
         const vtpassData = frontendVtpassResponse || {};
         
         // Extract CORRECT data from frontend vtpassResponse
@@ -5845,8 +5886,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
         
         console.log('🔥 USING FRONTEND VTPASS DATA FOR DUPLICATE:');
         console.log('   Token from frontend:', formattedToken);
-        console.log('   Customer Name from frontend:', customerName);
-        console.log('   Customer Address from frontend:', customerAddress);
         
         return res.json({
           success: true,
@@ -5858,7 +5897,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
           customerAddress: customerAddress,
           meterNumber: billersCode,
           newBalance: user.walletBalance,
-          // Return the vtpass data so frontend can use it
           vtpassResponse: vtpassData
         });
       }
@@ -5871,23 +5909,21 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
 
     let vtpassResult;
     
-         // ✅ CRITICAL FIX: SKIP VTpass call entirely - proxy already handled it
-      if (!frontendVtpassResponse || frontendVtpassResponse.code !== '000') {
-        // If we don't have a successful VTpass response from the proxy,
-        // this means something went wrong earlier
-        console.error('❌ No valid VTpass response from proxy');
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Transaction processing error. Please try again.' 
-        });
-      }
-      
-      // Use the VTpass response from the proxy
-      console.log('✅ Using VTpass response from proxy (NO DUPLICATE API CALL)');
-      vtpassResult = {
-        success: true,
-        data: frontendVtpassResponse
-      };
+    // ✅ CRITICAL FIX: SKIP VTpass call entirely - proxy already handled it
+    if (!frontendVtpassResponse || frontendVtpassResponse.code !== '000') {
+      console.error('❌ No valid VTpass response from proxy');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction processing error. Please try again.' 
+      });
+    }
+    
+    // Use the VTpass response from the proxy
+    console.log('✅ Using VTpass response from proxy (NO DUPLICATE API CALL)');
+    vtpassResult = {
+      success: true,
+      data: frontendVtpassResponse
+    };
 
     console.log('📦 Processing VTpass Response:', {
       success: vtpassResult.success,
@@ -5903,7 +5939,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
       console.log('🔁 VTpass says duplicate, but transaction was successful on first call');
       
       // 🔥 CRITICAL: Even if VTpass says "duplicate", the transaction WAS SUCCESSFUL
-      // Extract data from the SUCCESSFUL frontend response
       const vtpassData = frontendVtpassResponse || {};
       const balanceBefore = user.walletBalance;
       user.walletBalance -= amount;
@@ -5969,8 +6004,9 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
 
       await transaction.save({ session });
 
-      // Calculate commission
-      await calculateAndAddCommission(userId, amount, session, serviceID);
+      // 🔥 ADD COMMISSION CALCULATION HERE (ONLY ONCE!)
+      await calculateAndAddCommission(userId, amount, serviceID, session)
+        .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
 
       await session.commitTransaction();
 
@@ -6010,8 +6046,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
 
       console.log('📦 EXTRACTED FROM VTPASS:');
       console.log('   Raw Token:', rawToken);
-      console.log('   Customer Name:', customerName);
-      console.log('   Customer Address:', customerAddress);
 
       // Format token properly
       let formattedToken = null;
@@ -6071,8 +6105,9 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
 
       await transaction.save({ session });
 
-      // Calculate commission
-      await calculateAndAddCommission(userId, amount, session, serviceID);
+      // 🔥 ADD COMMISSION CALCULATION HERE (ONLY ONCE!)
+      await calculateAndAddCommission(userId, amount, serviceID, session)
+        .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
 
       await session.commitTransaction();
 
@@ -6131,7 +6166,6 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
     session.endSession();
   }
 });
-
 
 // @desc    Get VTpass services
 // @route   GET /api/vtpass/services
@@ -7651,8 +7685,8 @@ app.post('/api/education/purchase', protect, verifyTransactionAuth, [
 
       // Credit commission
      
-await calculateAndAddCommission(userId, amount, session, 'education');
-
+await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceID is like 'waec' or 'jamb'
+  .catch(err => console.log('⚠️ Education commission calculation failed:', err.message));
       // AUTO-CREATE TRANSACTION NOTIFICATION
       try {
         await Notification.create({
@@ -8025,7 +8059,8 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth, [
 
       // Credit commission
      
-await calculateAndAddCommission(userId, amount, session, 'insurance');
+await calculateAndAddCommission(userId, amount, 'insurance', session)
+  .catch(err => console.log('⚠️ Insurance commission calculation failed:', err.message));
 
       // Create notification
       try {
