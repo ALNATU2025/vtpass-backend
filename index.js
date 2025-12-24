@@ -10394,36 +10394,90 @@ console.log('   - POST /api/commission/refund');
 
 
 
-// @desc    Save failed electricity transaction (for amount below minimum)
+// @desc    Save failed electricity transaction (for amount below minimum or VTpass low balance)
 // @route   POST /api/vtpass/electricity/failed-transaction
 // @access  Private
 app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactionAuth, [
   body('serviceID').notEmpty().withMessage('Provider required'),
-  body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
-  body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
+  body('billersCode').notEmpty().withMessage('Meter number required'), // Changed from fixed length
+  body('variation_code').notEmpty().withMessage('Meter type required'), // Removed strict validation
   body('amount').isFloat({ min: 1 }).withMessage('Amount required'),
-  body('phone').optional().isMobilePhone('en-NG').withMessage('Valid phone required')
+  body('phone').optional().isMobilePhone('en-NG').withMessage('Valid phone required'),
+  body('failureReason').optional().isString(),
+  body('customerName').optional().isString(),
+  body('customerAddress').optional().isString()
 ], async (req, res) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  if (!errors.isEmpty()) {
+    console.log('❌ Validation errors:', errors.array());
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      errors: errors.array() 
+    });
+  }
 
-  const { serviceID, billersCode, variation_code, amount, phone, customerName, customerAddress, failureReason } = req.body;
+  const { 
+    serviceID, 
+    billersCode, 
+    variation_code, 
+    amount, 
+    phone, 
+    customerName, 
+    customerAddress, 
+    failureReason,
+    vtpassLowBalance,
+    transactionPin,
+    useBiometric 
+  } = req.body;
+  
   const userId = req.user._id;
+  const authenticationMethod = req.authenticationMethod || (transactionPin ? 'pin' : (useBiometric ? 'biometric' : 'unknown'));
 
   try {
     // Get user to get current balance
     const user = await User.findById(userId);
-    if (!user) throw new Error('User not found');
+    if (!user) {
+      console.log('❌ User not found:', userId);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
 
+    // Determine failure type based on parameters
+    let failureType = 'AMOUNT_BELOW_MINIMUM';
+    let adminAlert = false;
+    let userMessage = 'Amount below minimum. Minimum electricity purchase is ₦2000.';
+    
+    if (vtpassLowBalance) {
+      failureType = 'VT_PASS_LOW_BALANCE';
+      adminAlert = true;
+      userMessage = 'Transaction failed. Please try again later.';
+    }
+    
+    if (failureReason && failureReason.includes('insufficient') || failureReason?.toLowerCase().includes('low balance')) {
+      failureType = 'VT_PASS_LOW_BALANCE';
+      adminAlert = true;
+      userMessage = 'Transaction failed. Please try again later.';
+    }
+
+    // Generate unique IDs
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 10).toUpperCase();
+    
     // Create a failed transaction record
     const failedTransaction = new Transaction({
       userId: userId,
+      user: userId, // Also store user reference if your schema requires it
       type: 'Electricity Purchase',
       amount: amount,
-      status: 'Failed', // Capital F to match your Transaction model enum
-      transactionId: `FAILED_AMOUNT_${Date.now()}`,
-      reference: `FAILED_REF_${Date.now()}`,
-      description: `Electricity payment failed: Amount ₦${amount} is below minimum of ₦2000`,
+      status: 'Failed',
+      transactionId: `FAILED_${failureType}_${timestamp}_${randomString}`,
+      reference: `FAILED_REF_${timestamp}_${randomString}`,
+      description: failureReason || (failureType === 'AMOUNT_BELOW_MINIMUM' 
+        ? `Electricity payment failed: Amount ₦${amount} is below minimum of ₦2000`
+        : `Electricity payment failed: ${failureReason || 'Service provider issue'}`),
       balanceBefore: user.walletBalance,
       balanceAfter: user.walletBalance, // Balance unchanged for failed transactions
       metadata: {
@@ -10433,62 +10487,105 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
         phone: phone || 'N/A',
         customerName: customerName || 'N/A',
         customerAddress: customerAddress || 'N/A',
-        failureType: 'AMOUNT_BELOW_MINIMUM'
+        failureType: failureType,
+        adminAlert: adminAlert,
+        serviceID: serviceID,
+        billersCode: billersCode,
+        variation_code: variation_code,
+        amount: amount,
+        phone: phone || 'N/A'
       },
       isFailed: true,
       shouldShowAsFailed: true,
-      amountBelowMinimum: true,
-      failureReason: failureReason || 'Amount below minimum (₦2000)',
+      amountBelowMinimum: failureType === 'AMOUNT_BELOW_MINIMUM',
+      failureReason: failureReason || (failureType === 'AMOUNT_BELOW_MINIMUM' 
+        ? 'Amount below minimum (₦2000)' 
+        : 'Service provider temporarily unavailable'),
       gateway: 'DalabaPay App',
       isCommission: false,
       service: 'electricity',
-      authenticationMethod: req.authenticationMethod || 'pin'
+      authenticationMethod: authenticationMethod,
+      createdAt: new Date(),
+      updatedAt: new Date()
     });
 
     await failedTransaction.save();
     
-    console.log('✅ FAILED TRANSACTION SAVED TO DATABASE (Amount < ₦2000):');
+    console.log('✅ FAILED ELECTRICITY TRANSACTION SAVED TO DATABASE:');
+    console.log('   User ID:', userId);
     console.log('   Transaction ID:', failedTransaction._id);
     console.log('   Status:', failedTransaction.status);
+    console.log('   Failure Type:', failureType);
     console.log('   isFailed:', failedTransaction.isFailed);
     console.log('   amountBelowMinimum:', failedTransaction.amountBelowMinimum);
     console.log('   Meter:', billersCode);
-    console.log('   Amount:', amount);
+    console.log('   Amount: ₦', amount);
+    console.log('   Admin Alert:', adminAlert);
 
-    // Return success but with failed transaction data
+    // If VTpass low balance, log for admin (you can add email/SMS notification here)
+    if (adminAlert) {
+      console.log('🚨 ADMIN ALERT: VTpass low balance detected!');
+      console.log('   Service:', serviceID);
+      console.log('   Meter:', billersCode);
+      console.log('   Amount Attempted: ₦', amount);
+      console.log('   Time:', new Date().toISOString());
+      
+      // Uncomment to send admin notification
+      // await sendAdminAlert({
+      //   type: 'VT_PASS_LOW_BALANCE',
+      //   message: `VTpass wallet low balance detected! Electricity purchase attempted for ₦${amount}`,
+      //   details: {
+      //     serviceID,
+      //     meterNumber: billersCode,
+      //     amount,
+      //     timestamp: new Date()
+      //   }
+      // });
+    }
+
+    // Return response
     return res.json({
-      success: false, // Still false because transaction failed
-      message: `Amount below minimum. Minimum electricity purchase is ₦2000.`,
+      success: false, // Transaction failed
+      message: userMessage,
       isFailed: true,
       shouldShowAsFailed: true,
-      amountBelowMinimum: true,
+      amountBelowMinimum: failureType === 'AMOUNT_BELOW_MINIMUM',
+      adminAlert: adminAlert,
       transactionId: failedTransaction._id,
       transactionData: {
         _id: failedTransaction._id,
+        userId: failedTransaction.userId,
+        type: failedTransaction.type,
+        amount: failedTransaction.amount,
+        status: failedTransaction.status,
         transactionId: failedTransaction.transactionId,
         reference: failedTransaction.reference,
-        amount: amount,
-        status: 'Failed',
         description: failedTransaction.description,
-        createdAt: failedTransaction.createdAt,
+        balanceBefore: failedTransaction.balanceBefore,
+        balanceAfter: failedTransaction.balanceAfter,
         metadata: failedTransaction.metadata,
-        isFailed: true,
-        amountBelowMinimum: true,
-        failureReason: failedTransaction.failureReason
+        isFailed: failedTransaction.isFailed,
+        shouldShowAsFailed: failedTransaction.shouldShowAsFailed,
+        amountBelowMinimum: failedTransaction.amountBelowMinimum,
+        failureReason: failedTransaction.failureReason,
+        service: failedTransaction.service,
+        createdAt: failedTransaction.createdAt,
+        updatedAt: failedTransaction.updatedAt
       },
       savedToDatabase: true
     });
 
   } catch (error) {
-    console.error('❌ Error saving failed transaction:', error.message);
-    return res.status(400).json({ 
+    console.error('❌ Error saving failed transaction:', error);
+    console.error('Error stack:', error.stack);
+    
+    return res.status(500).json({ 
       success: false, 
       message: 'Failed to save transaction record. Please try again.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
-
 
 
 
