@@ -956,6 +956,7 @@ const createTransaction = async (
       description,
       balanceBefore,
       balanceAfter,
+      session,
       reference: txReference, // Single source of truth
       isCommission,
       authenticationMethod,
@@ -983,8 +984,8 @@ const createTransaction = async (
 
 
 
-//CALCULATE COMMISSION 
-const calculateAndAddCommission = async (userId, amount, serviceType, session) => {
+// CALCULATE COMMISSION - FIXED VERSION
+const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
   try {
     console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceType}" | Amount=₦${amount}`);
     
@@ -993,7 +994,12 @@ const calculateAndAddCommission = async (userId, amount, serviceType, session) =
                               serviceType && typeof serviceType === 'object' ? 'unknown' : 
                               'unknown';
     
-    const settings = await Settings.findOne().session(session);
+    // Use session if provided, otherwise query normally
+    const settingsQuery = Settings.findOne();
+    if (mongooseSession) {
+      settingsQuery.session(mongooseSession);
+    }
+    const settings = await settingsQuery;
     const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
 
     const cleanAmount = parseFloat(amount);
@@ -1008,7 +1014,13 @@ const calculateAndAddCommission = async (userId, amount, serviceType, session) =
       return 0;
     }
 
-    const user = await User.findById(userId).session(session);
+    // Get user with session if provided
+    const userQuery = User.findById(userId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    const user = await userQuery;
+    
     if (!user) {
       console.log('❌ User not found for commission');
       return 0;
@@ -1018,7 +1030,13 @@ const calculateAndAddCommission = async (userId, amount, serviceType, session) =
 
     const balanceBefore = user.commissionBalance;
     user.commissionBalance += commissionAmount;
-    await user.save({ session });
+    
+    // Save with session if provided
+    if (mongooseSession) {
+      await user.save({ session: mongooseSession });
+    } else {
+      await user.save();
+    }
 
     const lowerType = serviceTypeString.toLowerCase().trim();
     console.log(`🔍 Processing commission for service type: "${lowerType}"`);
@@ -1084,7 +1102,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, session) =
       description,
       balanceBefore,
       user.commissionBalance,
-      session,
+      mongooseSession, // Pass session to createTransaction
       true, // isCommission = true
       'none',
       null,
@@ -1104,7 +1122,6 @@ const calculateAndAddCommission = async (userId, amount, serviceType, session) =
     return 0;
   }
 };
-
 
 // Helper function to log authentication attempts
 const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
