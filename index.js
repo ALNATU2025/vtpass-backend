@@ -5826,6 +5826,51 @@ app.post('/api/vtpass/electricity/purchase', protect, verifyTransactionAuth, che
   // ✅ USE FRONTEND REQUEST_ID OR GENERATE NEW
   const requestId = request_id || generateVtpassRequestId();
 
+   // ✅ ADD THIS CHECK FOR AMOUNT BELOW MINIMUM:
+    if (amount < 2000) {
+        console.log('❌ PAYMENT BLOCKED: Amount below minimum -', amount);
+
+        // Create a failed transaction record
+        const failedTransaction = new Transaction({
+            userId: userId,
+            type: 'Electricity Purchase',
+            amount: amount,
+            status: 'Failed', // This is the correct status
+            transactionId: `FAILED_AMOUNT_${Date.now()}`,
+            reference: `FAILED_REF_${Date.now()}`,
+            description: `Electricity payment failed: Amount ₦${amount} is below minimum of ₦2000`,
+            balanceBefore: user?.walletBalance || 0,
+            balanceAfter: user?.walletBalance || 0,
+            metadata: {
+                meterNumber: billersCode,
+                provider: serviceID,
+                variation: variation_code,
+                customerName: 'N/A',
+                customerAddress: 'N/A'
+            },
+            isFailed: true, // ADD THIS
+            shouldShowAsFailed: true, // ADD THIS
+            amountBelowMinimum: true, // ADD THIS
+            failureReason: 'Amount below minimum (₦2000)',
+            gateway: 'DalabaPay App'
+        });
+        
+        await failedTransaction.save();
+        
+        return res.status(400).json({ 
+            success: false, 
+            message: `Amount below minimum. Minimum electricity purchase is ₦2000.`,
+            isFailed: true, // Send to frontend
+            shouldShowAsFailed: true // Send to frontend
+        });
+    }
+    
+  
+
+
+
+      
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
