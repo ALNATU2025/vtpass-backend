@@ -983,7 +983,6 @@ const createTransaction = async (
 };
 
 
-
 // CALCULATE COMMISSION - COMPLETE VERSION FOR ALL SERVICES
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
   try {
@@ -1003,6 +1002,10 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       } else {
         serviceTypeString = 'unknown';
       }
+    } else if (serviceType === undefined || serviceType === null) {
+      // If serviceType is not provided at all
+      console.warn('⚠️ Commission called without serviceType parameter');
+      serviceTypeString = 'unknown';
     } else {
       serviceTypeString = 'unknown';
     }
@@ -1015,7 +1018,41 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       settingsQuery.session(mongooseSession);
     }
     const settings = await settingsQuery;
-    const rate = settings?.commissionRate > 0 ? settings.commissionRate : 0.03;
+    
+    // Determine commission rate based on service type
+    let rate = 0.03; // Default 3%
+    
+    // Get specific commission rates from settings
+    if (settings) {
+      // Check for specific service type rates first
+      const lowerType = serviceTypeString.toLowerCase().trim();
+      
+      if (lowerType.includes('transfer') || 
+          lowerType === 'transfer' || 
+          lowerType === 'peer_transfer' ||
+          lowerType.includes('peer')) {
+        rate = settings.transferCommissionRate || 0.03; // 3% for transfers
+      } else if (lowerType.includes('mtn') || lowerType.includes('airtel') || 
+                 lowerType.includes('glo') || lowerType.includes('etisalat') || 
+                 lowerType.includes('9mobile')) {
+        if (lowerType.includes('data')) {
+          rate = settings.dataCommissionRate || 0.07; // 7% for data
+        } else {
+          rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
+        }
+      } else if (lowerType.includes('electric')) {
+        rate = settings.electricityCommissionRate || 0.04; // 4% for electricity
+      } else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
+                 lowerType.includes('startimes') || lowerType === 'tv') {
+        rate = settings.cableTvCommissionRate || 0.06; // 6% for cable TV
+      } else if (lowerType.includes('education')) {
+        rate = settings.educationCommissionRate || 0.05; // 5% for education
+      } else if (lowerType.includes('insurance')) {
+        rate = settings.insuranceCommissionRate || 0.04; // 4% for insurance
+      } else {
+        rate = settings.commissionRate || 0.03; // Default commission rate
+      }
+    }
 
     const cleanAmount = parseFloat(amount);
     if (isNaN(cleanAmount) || cleanAmount <= 0) {
@@ -1058,22 +1095,40 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
     let description = '';
     let source = '';
+    let commissionType = 'Commission Credit'; // Default type
 
     // ========== DETERMINE COMMISSION TYPE ==========
+    // 0. TRANSFERS (Check this first since it's most specific)
+    if (lowerType.includes('transfer') || 
+        lowerType === 'transfer' || 
+        lowerType === 'peer_transfer' ||
+        lowerType.includes('peer') ||
+        lowerType.includes('wallet_transfer') ||
+        lowerType.includes('send_money')) {
+      description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Transfer';
+      commissionType = 'Transfer Commission Credit';
+      console.log('✅ Commission type determined: Transfer');
+    }
     // 1. MOBILE SERVICES (Airtime & Data)
-    if (lowerType.includes('mtn') || lowerType.includes('airtel') || lowerType.includes('glo') || lowerType.includes('etisalat') || lowerType.includes('9mobile')) {
+    else if (lowerType.includes('mtn') || lowerType.includes('airtel') || lowerType.includes('glo') || lowerType.includes('etisalat') || lowerType.includes('9mobile')) {
       if (lowerType.includes('data')) {
         description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
         source = 'Data';
+        commissionType = 'Data Commission Credit';
       } else {
         description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
         source = 'Airtime';
+        commissionType = 'Airtime Commission Credit';
       }
+      console.log(`✅ Commission type determined: ${source}`);
     }
     // 2. CABLE TV
     else if (lowerType.includes('dstv') || lowerType.includes('gotv') || lowerType.includes('startimes') || lowerType === 'tv') {
       description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Cable TV';
+      commissionType = 'Cable TV Commission Credit';
+      console.log('✅ Commission type determined: Cable TV');
     }
     // 3. ELECTRICITY
     else if (lowerType.includes('electric') || 
@@ -1086,6 +1141,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
              lowerType.includes('ph')) {
       description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Electricity';
+      commissionType = 'Electricity Commission Credit';
+      console.log('✅ Commission type determined: Electricity');
     }
     // 4. EDUCATION
     else if (lowerType.includes('education') || 
@@ -1095,6 +1152,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
              lowerType.includes('result')) {
       description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Education';
+      commissionType = 'Education Commission Credit';
+      console.log('✅ Commission type determined: Education');
     }
     // 5. INSURANCE
     else if (lowerType.includes('insurance') || 
@@ -1104,20 +1163,36 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
              lowerType.includes('vehicle')) {
       description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Insurance';
+      commissionType = 'Insurance Commission Credit';
+      console.log('✅ Commission type determined: Insurance');
     }
-    // 6. DEFAULT
+    // 6. WALLET FUNDING (Added for completeness)
+    else if (lowerType.includes('funding') || 
+             lowerType.includes('deposit') || 
+             lowerType.includes('topup') ||
+             lowerType.includes('wallet_funding')) {
+      description = `Wallet Funding Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Wallet Funding';
+      commissionType = 'Wallet Funding Commission Credit';
+      console.log('✅ Commission type determined: Wallet Funding');
+    }
+    // 7. DEFAULT
     else {
-      description = `${serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1)} Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
+      // Don't use "Unknown" - use the actual serviceTypeString
+      const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
+      description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = formattedType;
+      commissionType = `${formattedType} Commission Credit`;
+      console.log(`⚠️ Default commission type used: ${formattedType}`);
     }
 
-    console.log(`✅ Commission determined: ${description} | Source: ${source}`);
+    console.log(`✅ Commission determined: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
 
     // Create commission transaction
     await createTransaction(
       userId,
       commissionAmount,
-      'Commission Credit',
+      commissionType, // Use the specific commission type
       'Successful',
       description,
       balanceBefore,
@@ -1131,11 +1206,32 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
         commissionSource: source,
         originalService: lowerType,
         commissionRate: rate,
-        originalAmount: cleanAmount
+        commissionPercentage: (rate * 100).toFixed(2) + '%',
+        originalAmount: cleanAmount,
+        commissionAmount: commissionAmount
       }
     );
 
-    console.log(`💰 COMMISSION ADDED: ${description} → Source: ${source}`);
+    // Also create a notification for the user about commission earned
+    try {
+      await Notification.create({
+        recipient: userId,
+        title: "Commission Earned 💰",
+        message: `You earned ₦${commissionAmount.toFixed(2)} commission from ${source} service`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          commissionAmount: commissionAmount,
+          source: source,
+          originalAmount: cleanAmount,
+          ratePercentage: (rate * 100).toFixed(2)
+        }
+      });
+    } catch (notifError) {
+      console.error('Commission notification error:', notifError);
+    }
+
+    console.log(`💰 COMMISSION ADDED: ${description} → Source: ${source} (₦${commissionAmount.toFixed(2)})`);
     return commissionAmount;
 
   } catch (error) {
@@ -1145,62 +1241,6 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     return 0;
   }
 };
-
-
-
-// Helper function to log authentication attempts
-const logAuthAttempt = async (userId, action, ipAddress, userAgent, success, details) => {
-  try {
-    await AuthLog.create({
-      userId,
-      action,
-      ipAddress,
-      userAgent,
-      success,
-      details
-    });
-  } catch (error) {
-    console.error('Error logging auth attempt:', error);
-  }
-};
-
-
-// Create default settings if they don't exist
-const initializeSettings = async () => {
-  try {
-    const settingsCount = await Settings.countDocuments();
-    if (settingsCount === 0) {
-      await Settings.create({});
-      console.log('Default settings created');
-    }
-  } catch (error) {
-    console.error('Error initializing settings:', error);
-  }
-};
-initializeSettings();
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  
-  if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ success: false, message: 'File size is too large. Maximum size is 2MB.' });
-    }
-    return res.status(400).json({ success: false, message: err.message });
-  } else if (err) {
-    return res.status(400).json({ success: false, message: err.message });
-  }
-  
-  res.status(500).json({ success: false, message: 'Internal Server Error' });
-});
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
 
 
 
@@ -4015,15 +4055,15 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       const receiverBalanceBefore = receiver.walletBalance - amount;
       const receiverBalanceAfter = receiver.walletBalance;
       
-      // Create sender transaction - FIX: Use 'Successful' instead of 'completed'
+      // Create sender transaction
       await Transaction.create([{
         userId: sender._id,
         amount: amount,
-        type: 'Transfer Sent', // Use your enum value from schema
-        service: 'peer_transfer',
+        type: 'Transfer Sent',
+        service: 'transfer',
         description: `Transfer to ${receiver.email}`,
         reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        status: 'Successful', // CHANGED: Use 'Successful' instead of 'completed'
+        status: 'Successful',
         balanceBefore: senderBalanceBefore,
         balanceAfter: senderBalanceAfter,
         authenticationMethod: req.authenticationMethod || 'pin',
@@ -4033,15 +4073,15 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         }
       }], { session });
       
-      // Create receiver transaction - FIX: Use 'Successful' instead of 'completed'
+      // Create receiver transaction
       await Transaction.create([{
         userId: receiver._id,
         amount: amount,
-        type: 'Transfer Received', // Use your enum value from schema
-        service: 'peer_transfer',
+        type: 'Transfer Received',
+        service: 'transfer', // Changed from 'peer_transfer' to 'transfer' for consistency
         description: `Transfer from ${sender.email}`,
         reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        status: 'Successful', // CHANGED: Use 'Successful' instead of 'completed'
+        status: 'Successful',
         balanceBefore: receiverBalanceBefore,
         balanceAfter: receiverBalanceAfter,
         authenticationMethod: req.authenticationMethod || 'pin',
@@ -4054,10 +4094,12 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       await session.commitTransaction();
       await session.endSession();
       
-      // Calculate commission (outside transaction)
+      // Calculate commission (outside transaction) - FIXED: Added 'transfer' parameter
       try {
         if (sender._id.toString() !== receiver._id.toString()) {
-          await calculateAndAddCommission(receiver._id, amount);
+          // Pass 'transfer' as service type
+          await calculateAndAddCommission(receiver._id, amount, 'transfer');
+          console.log(`✅ Commission calculated for transfer of ₦${amount}`);
         }
       } catch (commissionError) {
         console.error('Commission calculation error:', commissionError);
