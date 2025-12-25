@@ -5295,6 +5295,34 @@ app.post('/api/vtpass/validate-smartcard', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+// Add the normalizeStatus function right BEFORE the route handler:
+
+// ==================== ADD THIS FUNCTION HERE ====================
+function normalizeTransactionStatus(status) {
+    if (!status || typeof status !== 'string') return 'Pending';
+    
+    const lowercaseStatus = status.toLowerCase().trim();
+    
+    const statusMapping = {
+        'successful': 'Successful',
+        'delivered': 'Successful',
+        'completed': 'Successful',
+        'approved': 'Successful',
+        'success': 'Successful',
+        'failed': 'Failed',
+        'failure': 'Failed',
+        'declined': 'Failed',
+        'rejected': 'Failed',
+        'pending': 'Pending',
+        'processing': 'Processing',
+        'in-progress': 'Processing',
+        'refunded': 'Refunded',
+        'reversed': 'Refunded'
+    };
+    
+    return statusMapping[lowercaseStatus] || 'Pending';
+}
+// ==================== END OF FUNCTION ADDITION ====================
 
 // @desc    Pay for Cable TV subscription
 // @route   POST /api/vtpass/tv/purchase
@@ -5348,14 +5376,16 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
     let newBalance = balanceBefore;
     
     if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
-      transactionStatus = 'successful';
+      // ==================== USE THE NORMALIZE FUNCTION HERE ====================
+      transactionStatus = normalizeTransactionStatus(vtpassResult.data.content?.transactions?.status || 'delivered');
+      // ==================== END OF CHANGE ====================
+      
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
       
-     await calculateAndAddCommission(userId, amount, 'tv', session)
-  .catch(err => console.log('⚠️ TV commission calculation failed:', err.message));
-
+      await calculateAndAddCommission(userId, amount, 'tv', session)
+        .catch(err => console.log('⚠️ TV commission calculation failed:', err.message));
       
       // AUTO-CREATE TRANSACTION NOTIFICATION
       try {
@@ -5381,7 +5411,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
       userId,
       amount,
       'Cable TV Subscription',
-      transactionStatus,
+      transactionStatus, // This will now be "Successful" instead of "successful"
       `${serviceID.toUpperCase()} subscription for ${billersCode}`,
       balanceBefore,
       newBalance,
