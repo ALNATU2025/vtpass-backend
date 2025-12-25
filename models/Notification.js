@@ -32,10 +32,26 @@ const notificationSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  // UPDATE THIS: Add 'test' to the enum values
+  // UPDATED: Added transfer-related notification types
   type: {
     type: String,
-    enum: ['account', 'transaction', 'security', 'promotion', 'system', 'alert', 'update', 'general', 'test'],
+    enum: [
+      'account', 
+      'transaction', 
+      'security', 
+      'promotion', 
+      'system', 
+      'alert', 
+      'update', 
+      'general', 
+      'test',
+      'transfer_sent',      // Added
+      'transfer_received',  // Added
+      'payment_success',
+      'payment_failed',
+      'commission_earned',
+      'wallet_funded'
+    ],
     default: 'general'
   },
   metadata: {
@@ -45,5 +61,11 @@ const notificationSchema = new mongoose.Schema({
 }, { 
   timestamps: true 
 });
+
+// Indexes for better query performance
+notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ type: 1, createdAt: -1 });
+notificationSchema.index({ isGeneral: 1, createdAt: -1 });
+notificationSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.models.Notification || mongoose.model('Notification', notificationSchema);
