@@ -3923,13 +3923,10 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   
-  const { receiverEmail, amount, senderId } = req.body; // Accept senderId from body for backward compatibility
-  const userId = req.user._id; // Use req.user._id as primary source
-  
-  // Use senderId from body if provided, otherwise use logged-in user
+  const { receiverEmail, amount, senderId } = req.body;
+  const userId = req.user._id;
   const actualSenderId = senderId || userId;
   
-  // Add retry logic for write conflicts
   const maxRetries = 3;
   let retryCount = 0;
   
@@ -3943,7 +3940,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         readPreference: "primary"
       });
       
-      // Use findOneAndUpdate with session for atomic operations
       const sender = await User.findOneAndUpdate(
         { _id: actualSenderId, walletBalance: { $gte: amount } },
         { $inc: { walletBalance: -amount } },
@@ -3958,7 +3954,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         await session.abortTransaction();
         await session.endSession();
         
-        // Check if user exists
         const userExists = await User.findById(actualSenderId);
         if (!userExists) {
           return res.status(404).json({ success: false, message: 'Sender not found' });
@@ -3984,7 +3979,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       }
       
       if (sender._id.toString() === receiver._id.toString()) {
-        // Rollback sender's balance
         await User.findByIdAndUpdate(
           sender._id,
           { $inc: { walletBalance: amount } },
@@ -3995,13 +3989,11 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
       }
       
-      // Get settings
       const settings = await Settings.findOne().session(session);
       const minAmount = settings ? settings.minTransactionAmount : 100;
       const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
       
       if (amount < minAmount) {
-        // Rollback
         await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
         await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
         await session.abortTransaction();
@@ -4010,7 +4002,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       }
       
       if (amount > maxAmount) {
-        // Rollback
         await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
         await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
         await session.abortTransaction();
@@ -4018,50 +4009,48 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         return res.status(400).json({ success: false, message: `Transfer amount cannot exceed ${maxAmount}` });
       }
       
-      // Create transactions
-      const senderBalanceBefore = sender.walletBalance + amount; // Since we already deducted
+      const senderBalanceBefore = sender.walletBalance + amount;
       const senderBalanceAfter = sender.walletBalance;
       
-      const receiverBalanceBefore = receiver.walletBalance - amount; // Since we already added
+      const receiverBalanceBefore = receiver.walletBalance - amount;
       const receiverBalanceAfter = receiver.walletBalance;
       
-      // Create sender transaction
+      // Create sender transaction - FIX: Use 'Successful' instead of 'completed'
       await Transaction.create([{
         userId: sender._id,
         amount: amount,
-        type: 'debit',
+        type: 'Transfer Sent', // Use your enum value from schema
         service: 'peer_transfer',
         description: `Transfer to ${receiver.email}`,
         reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        status: 'completed',
+        status: 'Successful', // CHANGED: Use 'Successful' instead of 'completed'
         balanceBefore: senderBalanceBefore,
         balanceAfter: senderBalanceAfter,
+        authenticationMethod: req.authenticationMethod || 'pin',
         metadata: {
           recipientId: receiver._id,
-          recipientEmail: receiver.email,
-          authenticationMethod: req.authenticationMethod || 'pin'
+          recipientEmail: receiver.email
         }
       }], { session });
       
-      // Create receiver transaction
+      // Create receiver transaction - FIX: Use 'Successful' instead of 'completed'
       await Transaction.create([{
         userId: receiver._id,
         amount: amount,
-        type: 'credit',
+        type: 'Transfer Received', // Use your enum value from schema
         service: 'peer_transfer',
         description: `Transfer from ${sender.email}`,
         reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        status: 'completed',
+        status: 'Successful', // CHANGED: Use 'Successful' instead of 'completed'
         balanceBefore: receiverBalanceBefore,
         balanceAfter: receiverBalanceAfter,
+        authenticationMethod: req.authenticationMethod || 'pin',
         metadata: {
           senderId: sender._id,
-          senderEmail: sender.email,
-          authenticationMethod: req.authenticationMethod || 'pin'
+          senderEmail: sender.email
         }
       }], { session });
       
-      // Commit transaction
       await session.commitTransaction();
       await session.endSession();
       
@@ -4105,7 +4094,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       });
       
     } catch (error) {
-      // Clean up session
       if (session.inTransaction()) {
         try {
           await session.abortTransaction();
@@ -4120,16 +4108,14 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
         console.error('Error ending session:', endError);
       }
       
-      // Check if it's a write conflict that we should retry
       if (error.code === 112 || error.name === 'MongoTransactionError') {
         retryCount++;
         console.log(`Write conflict detected. Retry ${retryCount}/${maxRetries}`);
         
         if (retryCount < maxRetries) {
-          // Wait before retrying (exponential backoff)
           const delay = Math.pow(2, retryCount) * 100;
           await new Promise(resolve => setTimeout(resolve, delay));
-          continue; // Retry
+          continue;
         }
       }
       
