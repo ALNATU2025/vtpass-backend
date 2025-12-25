@@ -3923,157 +3923,224 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   
-  // Accept both senderId from request body OR use authenticated user
-  const { receiverEmail, amount, senderId: requestSenderId } = req.body;
-  const authenticatedUserId = req.user._id;
+  const { receiverEmail, amount, senderId } = req.body; // Accept senderId from body for backward compatibility
+  const userId = req.user._id; // Use req.user._id as primary source
   
-  // Use authenticated user ID if no senderId provided, otherwise verify they match
-  const senderId = requestSenderId || authenticatedUserId;
+  // Use senderId from body if provided, otherwise use logged-in user
+  const actualSenderId = senderId || userId;
   
-  // Security check: ensure the authenticated user is the same as senderId
-  if (requestSenderId && requestSenderId.toString() !== authenticatedUserId.toString()) {
-    return res.status(403).json({ 
-      success: false, 
-      message: 'Unauthorized: You can only transfer from your own account' 
-    });
-  }
+  // Add retry logic for write conflicts
+  const maxRetries = 3;
+  let retryCount = 0;
   
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const sender = await User.findById(senderId).session(session);
-    if (!sender) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'Sender not found' });
-    }
-    
-    if (sender.walletBalance < amount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
-    }
-    
-    const receiver = await User.findOne({ email: receiverEmail }).session(session);
-    if (!receiver) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'Receiver not found' });
-    }
-    
-    if (sender._id.toString() === receiver._id.toString()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
-    }
-    
-    const settings = await Settings.findOne().session(session);
-    const minAmount = settings ? settings.minTransactionAmount : 100;
-    const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
-    
-    if (amount < minAmount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: `Transfer amount must be at least ${minAmount}` });
-    }
-    
-    if (amount > maxAmount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: `Transfer amount cannot exceed ${maxAmount}` });
-    }
-    
-    const senderBalanceBefore = sender.walletBalance;
-    sender.walletBalance -= amount;
-    const senderBalanceAfter = sender.walletBalance;
-    await sender.save({ session });
-    
-    const receiverBalanceBefore = receiver.walletBalance;
-    receiver.walletBalance += amount;
-    const receiverBalanceAfter = receiver.walletBalance;
-    await receiver.save({ session });
-    
-    // Create sender transaction
-    await createTransaction(
-      senderId,
-      amount,
-      'Transfer Sent',
-      'Successful',
-      `Transfer to ${receiverEmail}`,
-      senderBalanceBefore,
-      senderBalanceAfter,
-      session,
-      false,
-      req.authenticationMethod
-    );
-    
-    // Create receiver transaction
-    await createTransaction(
-      receiver._id,
-      amount,
-      'Transfer Received',
-      'Successful',
-      `Transfer from ${sender.email}`,
-      receiverBalanceBefore,
-      receiverBalanceAfter,
-      session,
-      false,
-      req.authenticationMethod
-    );
-    
-    // Calculate commission if applicable
-    if (sender._id.toString() !== receiver._id.toString()) {
-      await calculateAndAddCommission(receiver._id, amount, session);
-    }
-    
-    await session.commitTransaction();
-    
-    // Create notifications
-    try {
-      await Notification.create({
-        recipientId: senderId,
-        title: "Transfer Successful 💸",
-        message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
-        isRead: false
-      });
-    } catch (notificationError) {
-      console.error('Error creating transfer notification:', notificationError);
-    }
+  while (retryCount < maxRetries) {
+    const session = await mongoose.startSession();
     
     try {
-      await Notification.create({
-        recipientId: receiver._id,
-        title: "Money Received 💰",
-        message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
-        isRead: false
+      session.startTransaction({
+        readConcern: { level: "snapshot" },
+        writeConcern: { w: "majority" },
+        readPreference: "primary"
       });
-    } catch (notificationError) {
-      console.error('Error creating received notification:', notificationError);
-    }
-    
-    res.json({ 
-      success: true, 
-      message: `Transfer of ₦${amount} to ${receiver.email} successful`,
-      newBalance: senderBalanceAfter,
-      newSenderBalance: senderBalanceAfter, // Add this for compatibility
-      receiverName: receiver.fullName || receiver.email,
-      transactionId: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-    });
-    
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Error in transfer:', error);
-    
-    // More specific error messages
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ 
+      
+      // Use findOneAndUpdate with session for atomic operations
+      const sender = await User.findOneAndUpdate(
+        { _id: actualSenderId, walletBalance: { $gte: amount } },
+        { $inc: { walletBalance: -amount } },
+        { 
+          new: true,
+          session: session,
+          runValidators: true 
+        }
+      );
+      
+      if (!sender) {
+        await session.abortTransaction();
+        await session.endSession();
+        
+        // Check if user exists
+        const userExists = await User.findById(actualSenderId);
+        if (!userExists) {
+          return res.status(404).json({ success: false, message: 'Sender not found' });
+        }
+        
+        return res.status(400).json({ success: false, message: 'Insufficient balance' });
+      }
+      
+      const receiver = await User.findOneAndUpdate(
+        { email: receiverEmail },
+        { $inc: { walletBalance: amount } },
+        { 
+          new: true,
+          session: session,
+          runValidators: true 
+        }
+      );
+      
+      if (!receiver) {
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(404).json({ success: false, message: 'Receiver not found' });
+      }
+      
+      if (sender._id.toString() === receiver._id.toString()) {
+        // Rollback sender's balance
+        await User.findByIdAndUpdate(
+          sender._id,
+          { $inc: { walletBalance: amount } },
+          { session: session }
+        );
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
+      }
+      
+      // Get settings
+      const settings = await Settings.findOne().session(session);
+      const minAmount = settings ? settings.minTransactionAmount : 100;
+      const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
+      
+      if (amount < minAmount) {
+        // Rollback
+        await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
+        await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: `Transfer amount must be at least ${minAmount}` });
+      }
+      
+      if (amount > maxAmount) {
+        // Rollback
+        await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
+        await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: `Transfer amount cannot exceed ${maxAmount}` });
+      }
+      
+      // Create transactions
+      const senderBalanceBefore = sender.walletBalance + amount; // Since we already deducted
+      const senderBalanceAfter = sender.walletBalance;
+      
+      const receiverBalanceBefore = receiver.walletBalance - amount; // Since we already added
+      const receiverBalanceAfter = receiver.walletBalance;
+      
+      // Create sender transaction
+      await Transaction.create([{
+        userId: sender._id,
+        amount: amount,
+        type: 'debit',
+        service: 'peer_transfer',
+        description: `Transfer to ${receiver.email}`,
+        reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        status: 'completed',
+        balanceBefore: senderBalanceBefore,
+        balanceAfter: senderBalanceAfter,
+        metadata: {
+          recipientId: receiver._id,
+          recipientEmail: receiver.email,
+          authenticationMethod: req.authenticationMethod || 'pin'
+        }
+      }], { session });
+      
+      // Create receiver transaction
+      await Transaction.create([{
+        userId: receiver._id,
+        amount: amount,
+        type: 'credit',
+        service: 'peer_transfer',
+        description: `Transfer from ${sender.email}`,
+        reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        status: 'completed',
+        balanceBefore: receiverBalanceBefore,
+        balanceAfter: receiverBalanceAfter,
+        metadata: {
+          senderId: sender._id,
+          senderEmail: sender.email,
+          authenticationMethod: req.authenticationMethod || 'pin'
+        }
+      }], { session });
+      
+      // Commit transaction
+      await session.commitTransaction();
+      await session.endSession();
+      
+      // Calculate commission (outside transaction)
+      try {
+        if (sender._id.toString() !== receiver._id.toString()) {
+          await calculateAndAddCommission(receiver._id, amount);
+        }
+      } catch (commissionError) {
+        console.error('Commission calculation error:', commissionError);
+      }
+      
+      // Create notifications (outside transaction)
+      try {
+        await Notification.create({
+          recipientId: sender._id,
+          title: "Transfer Successful 💸",
+          message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
+          type: 'transfer_sent',
+          isRead: false
+        });
+        
+        await Notification.create({
+          recipientId: receiver._id,
+          title: "Money Received 💰",
+          message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
+          type: 'transfer_received',
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating notifications:', notificationError);
+      }
+      
+      return res.json({ 
+        success: true, 
+        message: `Transfer of ₦${amount} to ${receiver.email} successful`,
+        newBalance: senderBalanceAfter,
+        newSenderBalance: senderBalanceAfter,
+        receiverName: receiver.fullName || receiver.email,
+        transactionId: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      });
+      
+    } catch (error) {
+      // Clean up session
+      if (session.inTransaction()) {
+        try {
+          await session.abortTransaction();
+        } catch (abortError) {
+          console.error('Error aborting transaction:', abortError);
+        }
+      }
+      
+      try {
+        await session.endSession();
+      } catch (endError) {
+        console.error('Error ending session:', endError);
+      }
+      
+      // Check if it's a write conflict that we should retry
+      if (error.code === 112 || error.name === 'MongoTransactionError') {
+        retryCount++;
+        console.log(`Write conflict detected. Retry ${retryCount}/${maxRetries}`);
+        
+        if (retryCount < maxRetries) {
+          // Wait before retrying (exponential backoff)
+          const delay = Math.pow(2, retryCount) * 100;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue; // Retry
+        }
+      }
+      
+      console.error('Error in transfer after retries:', error);
+      
+      return res.status(500).json({ 
         success: false, 
-        message: 'Transaction validation failed. Please check the transaction details.' 
+        message: 'Transfer failed. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal Server Error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  } finally {
-    session.endSession();
   }
 });
 // @desc    Get user's transactions
