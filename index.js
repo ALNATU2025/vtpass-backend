@@ -3922,8 +3922,21 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
-  const { receiverEmail, amount } = req.body;
-  const senderId = req.user._id;
+  
+  // Accept both senderId from request body OR use authenticated user
+  const { receiverEmail, amount, senderId: requestSenderId } = req.body;
+  const authenticatedUserId = req.user._id;
+  
+  // Use authenticated user ID if no senderId provided, otherwise verify they match
+  const senderId = requestSenderId || authenticatedUserId;
+  
+  // Security check: ensure the authenticated user is the same as senderId
+  if (requestSenderId && requestSenderId.toString() !== authenticatedUserId.toString()) {
+    return res.status(403).json({ 
+      success: false, 
+      message: 'Unauthorized: You can only transfer from your own account' 
+    });
+  }
   
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -3975,12 +3988,12 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     const receiverBalanceAfter = receiver.walletBalance;
     await receiver.save({ session });
     
-    // FIXED: Use 'Successful' instead of 'successful'
+    // Create sender transaction
     await createTransaction(
       senderId,
       amount,
-      'debit',
-      'Successful', // Changed from 'successful' to 'Successful'
+      'Transfer Sent',
+      'Successful',
       `Transfer to ${receiverEmail}`,
       senderBalanceBefore,
       senderBalanceAfter,
@@ -3989,12 +4002,12 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       req.authenticationMethod
     );
     
-    // FIXED: Use 'Successful' instead of 'successful'
+    // Create receiver transaction
     await createTransaction(
       receiver._id,
       amount,
-      'credit',
-      'Successful', // Changed from 'successful' to 'Successful'
+      'Transfer Received',
+      'Successful',
       `Transfer from ${sender.email}`,
       receiverBalanceBefore,
       receiverBalanceAfter,
@@ -4003,25 +4016,25 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       req.authenticationMethod
     );
     
+    // Calculate commission if applicable
     if (sender._id.toString() !== receiver._id.toString()) {
       await calculateAndAddCommission(receiver._id, amount, session);
     }
     
     await session.commitTransaction();
     
-    // AUTO-CREATE TRANSFER NOTIFICATION FOR SENDER
+    // Create notifications
     try {
       await Notification.create({
         recipientId: senderId,
         title: "Transfer Successful 💸",
-        message: `You successfully transferred ₦${amount} to ${receiverEmail}. New balance: ₦${senderBalanceAfter}`,
+        message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
         isRead: false
       });
     } catch (notificationError) {
       console.error('Error creating transfer notification:', notificationError);
     }
     
-    // AUTO-CREATE TRANSFER NOTIFICATION FOR RECEIVER
     try {
       await Notification.create({
         recipientId: receiver._id,
@@ -4035,13 +4048,30 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     
     res.json({ 
       success: true, 
-      message: `Transfer of ${amount} to ${receiverEmail} successful`,
-      newSenderBalance: senderBalanceAfter
+      message: `Transfer of ₦${amount} to ${receiver.email} successful`,
+      newBalance: senderBalanceAfter,
+      newSenderBalance: senderBalanceAfter, // Add this for compatibility
+      receiverName: receiver.fullName || receiver.email,
+      transactionId: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     });
+    
   } catch (error) {
     await session.abortTransaction();
     console.error('Error in transfer:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    
+    // More specific error messages
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction validation failed. Please check the transaction details.' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   } finally {
     session.endSession();
   }
