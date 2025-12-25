@@ -3975,11 +3975,12 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     const receiverBalanceAfter = receiver.walletBalance;
     await receiver.save({ session });
     
+    // FIXED: Use 'Successful' instead of 'successful'
     await createTransaction(
       senderId,
       amount,
       'debit',
-      'successful',
+      'Successful', // Changed from 'successful' to 'Successful'
       `Transfer to ${receiverEmail}`,
       senderBalanceBefore,
       senderBalanceAfter,
@@ -3988,11 +3989,12 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       req.authenticationMethod
     );
     
+    // FIXED: Use 'Successful' instead of 'successful'
     await createTransaction(
       receiver._id,
       amount,
       'credit',
-      'successful',
+      'Successful', // Changed from 'successful' to 'Successful'
       `Transfer from ${sender.email}`,
       receiverBalanceBefore,
       receiverBalanceAfter,
