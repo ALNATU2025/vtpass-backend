@@ -5295,6 +5295,11 @@ app.post('/api/vtpass/validate-smartcard', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
+
 // Add the normalizeStatus function right BEFORE the route handler:
 
 // ==================== ADD THIS FUNCTION HERE ====================
@@ -5433,20 +5438,51 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
     );
     
     await session.commitTransaction();
-    
-    res.json({
+
+    console.log('📺 CABLE TV TRANSACTION SAVED:');
+    console.log(`🔢 Smartcard: ${billersCode}`);
+    console.log(`📞 Phone: ${phone}`);
+    console.log(`📦 Package: ${packageName}`);
+    console.log(`🆔 Reference: ${reference}`);
+
+    // Extract VTPass details
+    const vtpassCode = vtpassResult.data?.code || '000';
+    const vtpassDesc = vtpassResult.data?.response_description || 'TRANSACTION SUCCESSFUL';
+
+    // Return EXACTLY what frontend expects
+    const response = {
       success: true,
-      message: `TV subscription successful!`,
-      transactionId: newTransaction._id,
+      transactionId: newTransaction._id.toString(),
+      status: newTransaction.status, // Should be "Successful"
+      vtpassResponse: vtpassResult.data,
+      backendResponse: {
+        success: true,
+        transactionId: newTransaction._id.toString(),
+        newBalance: newBalance,
+        status: newTransaction.status,
+        variation_code: variationCode,
+        packageName: packageName,
+        message: `TV subscription successful!`,
+        code: vtpassCode,
+        response_description: vtpassDesc
+      },
       newBalance: newBalance,
-      status: newTransaction.status,
-      variation_code: variationCode,
-      packageName: packageName
-    });
+      message: `TV subscription successful!`,
+      forceSuccessDialog: true,
+      isDuplicateSuccess: false
+    };
+
+    console.log('📤 Sending response to frontend:', JSON.stringify(response, null, 2));
+    res.json(response);
+    
   } catch (error) {
     await session.abortTransaction();
     console.error('❌ Error in TV payment:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      error: error.message // Add error details for debugging
+    });
   } finally {
     session.endSession();
   }
@@ -5494,7 +5530,6 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
-
 
 // @desc    Purchase airtime
 // @route   POST /api/vtpass/airtime/purchase
