@@ -1244,6 +1244,33 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
 
 
+
+// ==================== AUTH LOGGING FUNCTION ====================
+
+// @desc    Log authentication attempts
+// @access  Private
+const logAuthAttempt = async (userId, attemptType, ipAddress, userAgent, success, details) => {
+  try {
+    const authLog = new AuthLog({
+      userId,
+      attemptType,
+      ipAddress,
+      userAgent,
+      success,
+      details,
+      timestamp: new Date()
+    });
+    
+    await authLog.save();
+    console.log(`📝 Auth attempt logged: ${attemptType} - ${success ? 'SUCCESS' : 'FAILED'} for user ${userId || 'unknown'}`);
+  } catch (error) {
+    console.error('❌ Error logging auth attempt:', error);
+    // Don't throw, just log the error - we don't want auth logging to break login
+  }
+};
+
+
+
 // @desc    Register a new user with email verification
 // @route   POST /api/users/register
 // @access  Public
@@ -10778,6 +10805,9 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
     });
   }
 });
+
+
+
 
 
 
