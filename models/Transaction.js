@@ -37,6 +37,7 @@ const transactionSchema = new mongoose.Schema({
     type: {
         type: String,
         enum: [
+            // Service transactions
             'Airtime Purchase',
             'Data Purchase',
             'Cable TV Subscription',
@@ -48,9 +49,21 @@ const transactionSchema = new mongoose.Schema({
             'Wallet Funding',
             'Transfer Sent',
             'Transfer Received',
-            'Commission Credit',
+            
+            // Commission transactions
+            'Commission Credit',                  // Generic commission
+            'Transfer Commission Credit',
+            'Airtime Commission Credit',
+            'Data Commission Credit',
+            'Cable TV Commission Credit',
+            'Electricity Commission Credit',
+            'Education Commission Credit',
+            'Insurance Commission Credit',
+            'Wallet Funding Commission Credit',
             'Commission Withdrawal',
             'Commission Debit',
+            
+            // Other types
             'debit',
             'credit',
             'wallet_funding',
