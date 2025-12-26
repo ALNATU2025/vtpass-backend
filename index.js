@@ -10789,6 +10789,199 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
 
 
 
+// ==================== HEALTH CHECK ENDPOINT ====================
+
+// @desc    Health check endpoint
+// @route   GET /health
+// @access  Public
+app.get('/health', async (req, res) => {
+  try {
+    const healthReport = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {}
+    };
+
+    // Check MongoDB connection
+    try {
+      const mongoStatus = mongoose.connection.readyState;
+      healthReport.services.mongodb = {
+        status: mongoStatus === 1 ? 'connected' : 'disconnected',
+        readyState: mongoStatus,
+        message: mongoStatus === 1 ? 'Connected to MongoDB' : 'MongoDB not connected'
+      };
+    } catch (mongoError) {
+      healthReport.services.mongodb = {
+        status: 'error',
+        message: mongoError.message
+      };
+    }
+
+    // Check VTPass API connectivity (optional)
+    try {
+      // Simple test to see if we can reach VTPass
+      const testResponse = await axios.get('https://vtpass.com', { timeout: 5000 });
+      healthReport.services.vtpass = {
+        status: 'reachable',
+        statusCode: testResponse.status
+      };
+    } catch (vtpassError) {
+      healthReport.services.vtpass = {
+        status: 'unreachable',
+        message: vtpassError.message
+      };
+    }
+
+    // Check environment variables
+    const requiredEnvVars = [
+      'MONGO_URI',
+      'JWT_SECRET',
+      'VTPASS_API_KEY',
+      'VTPASS_SECRET_KEY',
+      'PAYSTACK_SECRET_KEY'
+    ];
+    
+    healthReport.environment = {};
+    const missingEnvVars = [];
+    
+    requiredEnvVars.forEach(envVar => {
+      if (process.env[envVar]) {
+        healthReport.environment[envVar] = 'present';
+      } else {
+        healthReport.environment[envVar] = 'missing';
+        missingEnvVars.push(envVar);
+      }
+    });
+
+    // Check cache
+    healthReport.cache = {
+      status: 'active',
+      keys: cache.keys().length,
+      stats: cache.getStats()
+    };
+
+    // Check file system (uploads directory)
+    try {
+      const uploadsPath = path.join(__dirname, 'uploads');
+      const uploadsExists = fs.existsSync(uploadsPath);
+      healthReport.filesystem = {
+        uploadsDirectory: uploadsExists ? 'exists' : 'missing',
+        path: uploadsPath
+      };
+    } catch (fsError) {
+      healthReport.filesystem = {
+        status: 'error',
+        message: fsError.message
+      };
+    }
+
+    // Determine overall status
+    const mongoConnected = mongoose.connection.readyState === 1;
+    const allEnvVarsPresent = missingEnvVars.length === 0;
+    
+    if (!mongoConnected || !allEnvVarsPresent) {
+      healthReport.status = 'unhealthy';
+      healthReport.issues = [];
+      
+      if (!mongoConnected) {
+        healthReport.issues.push('MongoDB not connected');
+      }
+      if (!allEnvVarsPresent) {
+        healthReport.issues.push(`Missing env vars: ${missingEnvVars.join(', ')}`);
+      }
+    }
+
+    // Set HTTP status code
+    const statusCode = healthReport.status === 'healthy' ? 200 : 503;
+    
+    res.status(statusCode).json({
+      success: healthReport.status === 'healthy',
+      ...healthReport,
+      app: 'DalabaPay Backend',
+      version: process.env.npm_package_version || '1.0.0',
+      node: process.version,
+      platform: process.platform,
+      memory: {
+        rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB`,
+        heapTotal: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)} MB`,
+        heapUsed: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB`
+      }
+    });
+
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({
+      success: false,
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      message: 'Health check failed',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Simple ping endpoint
+// @route   GET /ping
+// @access  Public
+app.get('/ping', (req, res) => {
+  res.json({
+    success: true,
+    message: 'pong',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// @desc    Detailed system status
+// @route   GET /api/status
+// @access  Private
+app.get('/api/status', protect, async (req, res) => {
+  try {
+    // Count users and transactions
+    const userCount = await User.countDocuments();
+    const transactionCount = await Transaction.countDocuments();
+    const activeUsers = await User.countDocuments({ isActive: true });
+    
+    // Get recent transactions
+    const recentTransactions = await Transaction.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate('userId', 'email fullName')
+      .lean();
+
+    res.json({
+      success: true,
+      system: {
+        status: 'operational',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+      },
+      database: {
+        status: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        users: userCount,
+        activeUsers: activeUsers,
+        transactions: transactionCount
+      },
+      recentActivity: {
+        recentTransactions: recentTransactions
+      },
+      user: req.user ? {
+        id: req.user._id,
+        email: req.user.email,
+        isAdmin: req.user.isAdmin
+      } : null
+    });
+  } catch (error) {
+    console.error('Status endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get system status'
+    });
+  }
+});
+// ==================== END HEALTH CHECK ENDPOINT ====================
+
 
 
 
