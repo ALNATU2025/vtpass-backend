@@ -1245,7 +1245,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
 
 
-// ==================== AUTH LOGGING FUNCTION ====================
+// ==================== AUTH LOGGING FUNCTION - FIXED ====================
 
 // @desc    Log authentication attempts
 // @access  Private
@@ -1253,7 +1253,7 @@ const logAuthAttempt = async (userId, attemptType, ipAddress, userAgent, success
   try {
     const authLog = new AuthLog({
       userId,
-      attemptType,
+      action: attemptType, // ← CHANGE THIS: use 'action' instead of 'attemptType'
       ipAddress,
       userAgent,
       success,
@@ -1268,6 +1268,8 @@ const logAuthAttempt = async (userId, attemptType, ipAddress, userAgent, success
     // Don't throw, just log the error - we don't want auth logging to break login
   }
 };
+
+
 
 
 
