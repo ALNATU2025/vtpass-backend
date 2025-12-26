@@ -9,21 +9,24 @@ const authLogSchema = mongoose.Schema(
     },
     action: { 
       type: String, 
-      required: true 
+      required: true,
+      enum: ['login', 'pin_attempt', 'biometric_attempt', 'password_reset', 'logout', 'token_refresh', 'other']
     },
     ipAddress: { 
       type: String, 
       required: true 
     },
     userAgent: { 
-      type: String 
+      type: String,
+      default: 'Unknown'
     },
     success: { 
       type: Boolean, 
       required: true 
     },
     details: { 
-      type: String 
+      type: String,
+      default: 'No details'
     },
     timestamp: { 
       type: Date, 
