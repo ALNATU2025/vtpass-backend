@@ -1,4 +1,3 @@
-
 // --- File: index.js ---
 const express = require('express');
 const fetch = require("node-fetch");
@@ -983,34 +982,32 @@ const createTransaction = async (
 };
 
 
-// CALCULATE COMMISSION - COMPLETE VERSION FOR ALL SERVICES
+// CALCULATE COMMISSION - FIXED VERSION
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
   try {
     // Handle case where serviceType might be an object
-    let serviceTypeString;
+    let serviceTypeString = 'unknown';
     
     if (typeof serviceType === 'string') {
       serviceTypeString = serviceType;
     } else if (serviceType && typeof serviceType === 'object') {
-      // Try to extract service type from object
-      if (serviceType.serviceID) {
-        serviceTypeString = serviceType.serviceID;
-      } else if (serviceType.serviceType) {
-        serviceTypeString = serviceType.serviceType;
+      // Check for specific data service properties
+      if (serviceType.serviceType === 'data' || serviceType.serviceType === 'data_purchase') {
+        serviceTypeString = 'data';
+      } else if (serviceType.serviceID && serviceType.serviceID.includes('data')) {
+        serviceTypeString = 'data';
       } else if (serviceType.network) {
-        serviceTypeString = serviceType.network;
+        serviceTypeString = serviceType.network + '-data';
       } else {
-        serviceTypeString = 'unknown';
+        // Try to extract from various properties
+        serviceTypeString = serviceType.serviceID || 
+                           serviceType.serviceType || 
+                           serviceType.network || 
+                           'unknown';
       }
-    } else if (serviceType === undefined || serviceType === null) {
-      // If serviceType is not provided at all
-      console.warn('⚠️ Commission called without serviceType parameter');
-      serviceTypeString = 'unknown';
-    } else {
-      serviceTypeString = 'unknown';
     }
     
-    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount}`);
+    console.log(`🎯 COMMISSION CALCULATION: serviceType="${serviceTypeString}" | Amount=₦${amount}`);
     
     // Use session if provided, otherwise query normally
     const settingsQuery = Settings.findOne();
@@ -1021,36 +1018,95 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     
     // Determine commission rate based on service type
     let rate = 0.03; // Default 3%
+    let commissionType = 'Commission Credit';
+    let source = 'Service';
     
     // Get specific commission rates from settings
     if (settings) {
-      // Check for specific service type rates first
       const lowerType = serviceTypeString.toLowerCase().trim();
       
-      if (lowerType.includes('transfer') || 
-          lowerType === 'transfer' || 
-          lowerType === 'peer_transfer' ||
-          lowerType.includes('peer')) {
+      console.log(`🔍 Determining commission for: "${lowerType}"`);
+      
+      // FIXED: Better data service detection
+      if (lowerType.includes('data') || 
+          lowerType.includes('-data') || 
+          lowerType === 'data' ||
+          lowerType === 'data_purchase') {
+        // This is a data service
+        rate = settings.dataCommissionRate || 0.07; // 7% for data
+        commissionType = 'Data Commission Credit';
+        source = 'Data';
+        console.log(`✅ Identified as DATA service - Rate: ${(rate * 100).toFixed(2)}%`);
+      }
+      // AIRTIME services
+      else if ((lowerType.includes('mtn') || 
+                lowerType.includes('airtel') || 
+                lowerType.includes('glo') || 
+                lowerType.includes('etisalat') || 
+                lowerType.includes('9mobile')) && 
+               !lowerType.includes('data')) {
+        rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
+        commissionType = 'Airtime Commission Credit';
+        source = 'Airtime';
+      }
+      // TRANSFER services
+      else if (lowerType.includes('transfer') || 
+               lowerType === 'transfer' || 
+               lowerType === 'peer_transfer' ||
+               lowerType.includes('peer') ||
+               lowerType.includes('wallet_transfer') ||
+               lowerType.includes('send_money')) {
         rate = settings.transferCommissionRate || 0.03; // 3% for transfers
-      } else if (lowerType.includes('mtn') || lowerType.includes('airtel') || 
-                 lowerType.includes('glo') || lowerType.includes('etisalat') || 
-                 lowerType.includes('9mobile')) {
-        if (lowerType.includes('data')) {
-          rate = settings.dataCommissionRate || 0.07; // 7% for data
-        } else {
-          rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
-        }
-      } else if (lowerType.includes('electric')) {
+        commissionType = 'Transfer Commission Credit';
+        source = 'Transfer';
+      }
+      // ELECTRICITY
+      else if (lowerType.includes('electric') || 
+               lowerType.includes('ikeja') || 
+               lowerType.includes('eko') || 
+               lowerType.includes('abuja') || 
+               lowerType.includes('ibadan') || 
+               lowerType.includes('enugu') || 
+               lowerType.includes('kano') || 
+               lowerType.includes('ph')) {
         rate = settings.electricityCommissionRate || 0.04; // 4% for electricity
-      } else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
-                 lowerType.includes('startimes') || lowerType === 'tv') {
+        commissionType = 'Electricity Commission Credit';
+        source = 'Electricity';
+      }
+      // CABLE TV
+      else if (lowerType.includes('dstv') || 
+               lowerType.includes('gotv') || 
+               lowerType.includes('startimes') || 
+               lowerType === 'tv') {
         rate = settings.cableTvCommissionRate || 0.06; // 6% for cable TV
-      } else if (lowerType.includes('education')) {
+        commissionType = 'Cable TV Commission Credit';
+        source = 'Cable TV';
+      }
+      // EDUCATION
+      else if (lowerType.includes('education') || 
+               lowerType.includes('waec') || 
+               lowerType.includes('jamb') || 
+               lowerType.includes('exam') || 
+               lowerType.includes('result')) {
         rate = settings.educationCommissionRate || 0.05; // 5% for education
-      } else if (lowerType.includes('insurance')) {
+        commissionType = 'Education Commission Credit';
+        source = 'Education';
+      }
+      // INSURANCE
+      else if (lowerType.includes('insurance') || 
+               lowerType.includes('insure') || 
+               lowerType.includes('ui-insure') || 
+               lowerType.includes('motor') || 
+               lowerType.includes('vehicle')) {
         rate = settings.insuranceCommissionRate || 0.04; // 4% for insurance
-      } else {
+        commissionType = 'Insurance Commission Credit';
+        source = 'Insurance';
+      }
+      // DEFAULT
+      else {
         rate = settings.commissionRate || 0.03; // Default commission rate
+        commissionType = 'General Commission Credit';
+        source = 'General';
       }
     }
 
@@ -1061,10 +1117,19 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     }
 
     const commissionAmount = cleanAmount * rate;
+    
+    // FIX: Ensure commission amount is reasonable (max 20% of amount)
+    if (commissionAmount > cleanAmount * 0.2) {
+      console.log(`⚠️ Commission amount too high (${commissionAmount}), capping at 20%`);
+      commissionAmount = cleanAmount * 0.2;
+    }
+    
     if (commissionAmount <= 0) {
       console.log('⚠️ Commission amount too small');
       return 0;
     }
+
+    console.log(`💰 Commission Calculation: Amount=₦${cleanAmount}, Rate=${(rate * 100).toFixed(2)}%, Commission=₦${commissionAmount.toFixed(2)}`);
 
     // Get user with session if provided
     const userQuery = User.findById(userId);
@@ -1090,121 +1155,27 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       await user.save();
     }
 
-    const lowerType = serviceTypeString.toLowerCase().trim();
-    console.log(`🔍 Processing commission for service type: "${lowerType}"`);
+    const description = `${source} Commission Credit (₦${commissionAmount.toFixed(2)})`;
 
-    let description = '';
-    let source = '';
-    let commissionType = 'Commission Credit'; // Default type
-
-    // ========== DETERMINE COMMISSION TYPE ==========
-    // 0. TRANSFERS (Check this first since it's most specific)
-    if (lowerType.includes('transfer') || 
-        lowerType === 'transfer' || 
-        lowerType === 'peer_transfer' ||
-        lowerType.includes('peer') ||
-        lowerType.includes('wallet_transfer') ||
-        lowerType.includes('send_money')) {
-      description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Transfer';
-      commissionType = 'Transfer Commission Credit';
-      console.log('✅ Commission type determined: Transfer');
-    }
-    // 1. MOBILE SERVICES (Airtime & Data)
-    else if (lowerType.includes('mtn') || lowerType.includes('airtel') || lowerType.includes('glo') || lowerType.includes('etisalat') || lowerType.includes('9mobile')) {
-      if (lowerType.includes('data')) {
-        description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Data';
-        commissionType = 'Data Commission Credit';
-      } else {
-        description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Airtime';
-        commissionType = 'Airtime Commission Credit';
-      }
-      console.log(`✅ Commission type determined: ${source}`);
-    }
-    // 2. CABLE TV
-    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || lowerType.includes('startimes') || lowerType === 'tv') {
-      description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Cable TV';
-      commissionType = 'Cable TV Commission Credit';
-      console.log('✅ Commission type determined: Cable TV');
-    }
-    // 3. ELECTRICITY
-    else if (lowerType.includes('electric') || 
-             lowerType.includes('ikeja') || 
-             lowerType.includes('eko') || 
-             lowerType.includes('abuja') || 
-             lowerType.includes('ibadan') || 
-             lowerType.includes('enugu') || 
-             lowerType.includes('kano') || 
-             lowerType.includes('ph')) {
-      description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Electricity';
-      commissionType = 'Electricity Commission Credit';
-      console.log('✅ Commission type determined: Electricity');
-    }
-    // 4. EDUCATION
-    else if (lowerType.includes('education') || 
-             lowerType.includes('waec') || 
-             lowerType.includes('jamb') || 
-             lowerType.includes('exam') || 
-             lowerType.includes('result')) {
-      description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Education';
-      commissionType = 'Education Commission Credit';
-      console.log('✅ Commission type determined: Education');
-    }
-    // 5. INSURANCE
-    else if (lowerType.includes('insurance') || 
-             lowerType.includes('insure') || 
-             lowerType.includes('ui-insure') || 
-             lowerType.includes('motor') || 
-             lowerType.includes('vehicle')) {
-      description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Insurance';
-      commissionType = 'Insurance Commission Credit';
-      console.log('✅ Commission type determined: Insurance');
-    }
-    // 6. WALLET FUNDING (Added for completeness)
-    else if (lowerType.includes('funding') || 
-             lowerType.includes('deposit') || 
-             lowerType.includes('topup') ||
-             lowerType.includes('wallet_funding')) {
-      description = `Wallet Funding Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Wallet Funding';
-      commissionType = 'Wallet Funding Commission Credit';
-      console.log('✅ Commission type determined: Wallet Funding');
-    }
-    // 7. DEFAULT
-    else {
-      // Don't use "Unknown" - use the actual serviceTypeString
-      const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
-      description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = formattedType;
-      commissionType = `${formattedType} Commission Credit`;
-      console.log(`⚠️ Default commission type used: ${formattedType}`);
-    }
-
-    console.log(`✅ Commission determined: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
+    console.log(`✅ Commission to add: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
 
     // Create commission transaction
     await createTransaction(
       userId,
       commissionAmount,
-      commissionType, // Use the specific commission type
+      commissionType,
       'Successful',
       description,
       balanceBefore,
       user.commissionBalance,
-      mongooseSession, // Pass session to createTransaction
+      mongooseSession,
       true, // isCommission = true
       'none',
       null,
       {}, // metadata
       { 
         commissionSource: source,
-        originalService: lowerType,
+        originalService: serviceTypeString,
         commissionRate: rate,
         commissionPercentage: (rate * 100).toFixed(2) + '%',
         originalAmount: cleanAmount,
