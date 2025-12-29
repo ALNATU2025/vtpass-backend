@@ -511,36 +511,68 @@ userSchema.methods.checkCommissionBalance = function (amount) {
   };
 };
 
-// Method to deduct commission for service purchase
+// Method to deduct commission for service purchase - FIXED VERSION
 userSchema.methods.deductCommissionForService = async function (amount, serviceType, serviceDetails) {
   const session = await mongoose.startSession();
-  session.startTransaction();
   
   try {
-    const balanceCheck = this.checkCommissionBalance(amount);
-    if (!balanceCheck.success) {
-      throw new Error(balanceCheck.message);
+    await session.startTransaction();
+    
+    console.log(`💰 DEDUCTING COMMISSION FOR SERVICE: ${serviceType}, Amount: ₦${amount}`);
+    console.log(`📊 User: ${this.email}, Current commission: ₦${this.commissionBalance}`);
+    
+    // Check if we have enough commission
+    if (this.commissionBalance < amount) {
+      await session.abortTransaction();
+      throw new Error(`Insufficient commission balance. Available: ₦${this.commissionBalance.toFixed(2)}, Required: ₦${amount.toFixed(2)}`);
     }
     
-    const oldCommissionBalance = this.commissionBalance;
+    const balanceBefore = this.commissionBalance;
     this.commissionBalance -= amount;
     
-    // Create commission transaction
+    // ================================================
+    // 🔥 CRITICAL FIX: Create ONLY a COMMISSION DEBIT
+    // NOT a commission credit, and NO commission should be earned
+    // for purchases made with commission
+    // ================================================
+    
+    // Generate unique reference
+    const reference = `COMM_DEBIT_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    
+    // Create commission DEBIT transaction
     const commissionTransaction = new Transaction({
       userId: this._id,
       type: 'Commission Debit',
       amount: amount,
-      status: 'Pending', // Will update after VTPass success
+      status: 'Pending', // Will update after VTpass success
       description: `Commission used for ${serviceType} purchase`,
-      balanceBefore: oldCommissionBalance,
+      balanceBefore: balanceBefore,
       balanceAfter: this.commissionBalance,
       isCommission: true,
       service: serviceType,
+      authenticationMethod: 'pin',
+      gateway: 'DalaBaPay App',
+      reference: reference,
       metadata: {
         ...serviceDetails,
         commissionUsed: true,
+        walletUsed: false,
         serviceType: serviceType,
-        timestamp: new Date()
+        originalService: serviceType,
+        paymentMethod: 'commission',
+        isCommissionPayment: true,
+        commissionAction: 'debit', // NEW: explicitly mark as debit
+        timestamp: new Date(),
+        // IMPORTANT: Add these flags to prevent commission calculation
+        skipCommissionCalculation: true,
+        noCommissionEarned: true,
+        // Service-specific details
+        phone: serviceDetails.phone || '',
+        network: serviceDetails.network || '',
+        meterNumber: serviceDetails.meterNumber || serviceDetails.billersCode || '',
+        smartcardNumber: serviceDetails.smartcardNumber || serviceDetails.billersCode || '',
+        billersCode: serviceDetails.billersCode || '',
+        variation_code: serviceDetails.variation_code || ''
       }
     });
     
@@ -548,16 +580,24 @@ userSchema.methods.deductCommissionForService = async function (amount, serviceT
     await commissionTransaction.save({ session });
     
     await session.commitTransaction();
-
+    
+    console.log(`✅ Commission deducted: ₦${amount.toFixed(2)}`);
+    console.log(`   New commission balance: ₦${this.commissionBalance.toFixed(2)}`);
+    console.log(`   Commission transaction ID: ${commissionTransaction._id}`);
+    console.log(`   Reference: ${reference}`);
+    
     return {
       success: true,
       newCommissionBalance: this.commissionBalance,
       deductedAmount: amount,
       transactionId: commissionTransaction._id,
-      commissionTransaction: commissionTransaction
+      commissionTransaction: commissionTransaction,
+      reference: reference,
+      message: `Commission deducted for ${serviceType} purchase`
     };
     
   } catch (error) {
+    console.error('❌ Commission deduction error:', error);
     await session.abortTransaction();
     throw error;
   } finally {
@@ -660,19 +700,22 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
   }
 };
 
-// Method to refund commission (if VTPass transaction fails)
+// Method to refund commission (if VTPass transaction fails) - FIXED
 userSchema.methods.refundCommission = async function (amount, originalTransactionId) {
   const session = await mongoose.startSession();
-  session.startTransaction();
   
   try {
+    await session.startTransaction();
+    
+    console.log(`🔄 REFUNDING COMMISSION: ₦${amount}, Original TXN: ${originalTransactionId}`);
+    
     const oldCommissionBalance = this.commissionBalance;
     this.commissionBalance += amount;
     
-    // Create refund transaction
+    // Create refund transaction - use 'Commission Refund' type
     const refundTransaction = new Transaction({
       userId: this._id,
-      type: 'Commission Credit', // This is correct for refund
+      type: 'Commission Refund', // Changed from 'Commission Credit'
       amount: amount,
       status: 'Successful',
       description: 'Commission refunded - Service purchase failed',
@@ -680,44 +723,58 @@ userSchema.methods.refundCommission = async function (amount, originalTransactio
       balanceAfter: this.commissionBalance,
       isCommission: true,
       service: 'commission_refund',
+      authenticationMethod: 'system',
+      gateway: 'DalaBaPay App',
+      reference: `COMM_REFUND_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       metadata: {
         refund: true,
         originalTransactionId: originalTransactionId,
         refundReason: 'service_purchase_failed',
-        timestamp: new Date()
+        refundSource: 'commission_payment',
+        timestamp: new Date(),
+        // Mark as refund so frontend can distinguish
+        isRefund: true,
+        originalAmount: amount
       }
     });
     
     // Update original transaction status
-    await Transaction.findByIdAndUpdate(
-      originalTransactionId,
-      {
-        status: 'Failed',
-        'metadata.refunded': true,
-        'metadata.refundTransactionId': refundTransaction._id
-      },
-      { session }
-    );
+    const originalTransaction = await Transaction.findById(originalTransactionId).session(session);
+    if (originalTransaction) {
+      originalTransaction.status = 'Failed';
+      originalTransaction.metadata = {
+        ...originalTransaction.metadata,
+        refunded: true,
+        refundTransactionId: refundTransaction._id,
+        refundedAt: new Date()
+      };
+      await originalTransaction.save({ session });
+    }
     
     await this.save({ session });
     await refundTransaction.save({ session });
     
     await session.commitTransaction();
     
+    console.log(`✅ Commission refunded: ₦${amount.toFixed(2)}`);
+    console.log(`   New commission balance: ₦${this.commissionBalance.toFixed(2)}`);
+    console.log(`   Refund transaction ID: ${refundTransaction._id}`);
+    
     return {
       success: true,
       newCommissionBalance: this.commissionBalance,
-      refundTransactionId: refundTransaction._id
+      refundTransactionId: refundTransaction._id,
+      message: `Commission refunded successfully`
     };
     
   } catch (error) {
+    console.error('❌ Commission refund error:', error);
     await session.abortTransaction();
     throw error;
   } finally {
     session.endSession();
   }
 };
-
 // Index for better performance
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
