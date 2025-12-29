@@ -7087,27 +7087,77 @@ try {
         displayType = 'Electricity Purchase';
       }
 
-    // Record transaction
-const balanceBefore = isUsingCommission ? 
-  (user.commissionBalance + transactionAmount) : 
-  (user.walletBalance + transactionAmount);
-const balanceAfter = isUsingCommission ? user.commissionBalance : user.walletBalance;
+      // === CHECK FOR EXISTING COMMISSION TRANSACTION ===
+    // Check if a commission transaction already exists for this request
+    const existingCommissionTransaction = await Transaction.findOne({
+      reference: uniqueRequestId,
+      isCommission: true,
+      userId: userId
+    }).session(session);
 
-      await createTransaction(
-        userId,
-        transactionAmount,
-        displayType,
-        'Successful',
-        `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'} ${isUsingCommission ? '(Paid with Commission)' : ''}`,
-        balanceBefore,
-        balanceAfter,
-        session,
-        isUsingCommission,
-        'pin',
-        uniqueRequestId,
-        transactionMetadata
-      );
+    if (existingCommissionTransaction && isUsingCommission) {
+      console.log(`✅ Commission transaction already exists, updating metadata only`);
+      // Update the existing commission transaction with VTpass response
+      existingCommissionTransaction.metadata = {
+        ...existingCommissionTransaction.metadata,
+        ...transactionMetadata,
+        vtpassResponse: vtpassResult.data,
+        completedAt: new Date()
+      };
+      await existingCommissionTransaction.save({ session });
+    } else {
+      // ✅ Create appropriate transaction based on payment method
+      if (isUsingCommission) {
+        // When paying with commission, create COMMISSION transaction
+        const commissionBalanceBefore = user.commissionBalance + transactionAmount;
+        const commissionBalanceAfter = user.commissionBalance;
+        
+        await createTransaction(
+          userId,
+          transactionAmount,
+          'Commission used for service purchase',
+          'Successful',
+          `Commission used for ${serviceID.toUpperCase()} purchase`,
+          commissionBalanceBefore,
+          commissionBalanceAfter,
+          session,
+          true, // isCommission = true
+          'pin',
+          uniqueRequestId,
+          {
+            ...transactionMetadata,
+            commissionSource: serviceID.includes('data') ? 'Data' : 
+                            serviceID.includes('electric') ? 'Electricity' :
+                            serviceID.includes('tv') ? 'Cable TV' : 'Airtime',
+            originalService: serviceID,
+            vtpassResponse: vtpassResult.data
+          }
+        );
+        console.log(`✅ Commission payment - Commission transaction recorded`);
+      } else {
+        // When paying with wallet, create regular wallet transaction
+        const balanceBefore = user.walletBalance + transactionAmount;
+        const balanceAfter = user.walletBalance;
+        
+        await createTransaction(
+          userId,
+          transactionAmount,
+          displayType,
+          'Successful',
+          `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'}`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false, // isCommission = false
+          'pin',
+          uniqueRequestId,
+          transactionMetadata
+        );
+        console.log(`✅ Wallet payment - Regular transaction recorded`);
+      }
+    }
 
+      
 // Calculate commission - ONLY if there's an actual purchase AND user is NOT using commission
 // IMPORTANT: When using commission to pay, NO commission should be earned
 if (transactionAmount > 0 && !isUsingCommission) {
