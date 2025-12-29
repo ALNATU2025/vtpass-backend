@@ -356,11 +356,15 @@ router.get('/transactions', protect, async (req, res) => {
   }
 });
 
-// @desc    Use commission for service purchase
+// @desc    Use commission for service purchase - FIXED VERSION (NO DUPLICATE COMMISSION)
 // @route   POST /api/commission/use-for-service
 // @access  Private
 router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res) => {
+  const session = await mongoose.startSession();
+  
   try {
+    await session.startTransaction();
+    
     const {
       serviceType,
       amount,
@@ -371,6 +375,7 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     
     // Validate input
     if (!serviceType || !amount || !serviceDetails) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
         message: 'Missing required fields'
@@ -380,14 +385,16 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     const serviceAmount = parseFloat(amount);
     
     if (serviceAmount <= 0) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
         message: 'Amount must be greater than 0'
       });
     }
     
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).session(session);
     if (!user) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -396,39 +403,87 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     
     // Check if user has enough commission balance
     if (user.commissionBalance < serviceAmount) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
         message: `Insufficient commission balance. Available: ${formatCurrency(user.commissionBalance)}`
       });
     }
     
-    // Deduct commission
-    const commissionResult = await user.deductCommissionForService(
-      serviceAmount,
-      serviceType,
-      serviceDetails
-    );
+    // ================================================
+    // 🔥 CRITICAL FIX: DON'T CREATE COMMISSION CREDIT
+    // When using commission to pay, we only DEDUCT commission
+    // NO commission should be earned for this transaction
+    // ================================================
+    
+    // 1. Deduct commission from user's balance
+    const balanceBefore = user.commissionBalance;
+    user.commissionBalance -= serviceAmount;
+    
+    // 2. Save user
+    await user.save({ session });
+    
+    // 3. Create ONLY the commission debit transaction
+    // This is NOT a commission earning, it's commission spending
+    const commissionTransaction = new Transaction({
+      userId: userId,
+      amount: serviceAmount,
+      type: 'Commission Debit', // NOT 'Commission Credit'
+      status: 'Successful',
+      description: `Commission used for ${serviceType} purchase`,
+      balanceBefore: balanceBefore,
+      balanceAfter: user.commissionBalance,
+      metadata: {
+        serviceType: serviceType,
+        serviceDetails: serviceDetails,
+        paymentMethod: 'commission',
+        commissionUsed: true,
+        walletUsed: false,
+        isCommissionPayment: true // NEW FLAG to identify commission payments
+      },
+      isCommission: true, // This IS a commission transaction
+      commissionAction: 'debit', // NEW: specify it's a debit
+      gateway: 'DalaBaPay App',
+      reference: `COMM_DEBIT_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    });
+    
+    await commissionTransaction.save({ session });
+    
+    // 4. Commit transaction
+    await session.commitTransaction();
+    
+    console.log(`✅ Commission used for ${serviceType}: ₦${serviceAmount.toFixed(2)}`);
+    console.log(`   New commission balance: ₦${user.commissionBalance.toFixed(2)}`);
+    console.log(`   Commission transaction ID: ${commissionTransaction._id}`);
     
     res.json({
       success: true,
       message: `${formatCurrency(serviceAmount)} commission allocated for ${serviceType} purchase`,
       data: {
-        newCommissionBalance: commissionResult.newCommissionBalance,
-        formattedNewCommissionBalance: formatCurrency(commissionResult.newCommissionBalance),
-        transactionId: commissionResult.transactionId,
-        commissionTransaction: commissionResult.commissionTransaction,
-        commissionOnly: true
+        newCommissionBalance: user.commissionBalance,
+        formattedNewCommissionBalance: formatCurrency(user.commissionBalance),
+        transactionId: commissionTransaction._id,
+        commissionTransaction: commissionTransaction,
+        commissionOnly: true,
+        noCommissionEarned: true // NEW: Tell frontend NOT to expect commission
       }
     });
     
   } catch (error) {
+    await session.abortTransaction();
     console.error('❌ Commission deduction error:', error);
     res.status(400).json({
       success: false,
       message: error.message || 'Failed to use commission'
     });
+  } finally {
+    session.endSession();
   }
 });
+
+
+
+
 
 // @desc    Complete commission-based service purchase (called after VTPass success)
 // @route   POST /api/commission/complete-service-purchase
