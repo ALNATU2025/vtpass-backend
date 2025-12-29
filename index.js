@@ -982,7 +982,7 @@ const createTransaction = async (
 };
 
 
-// CALCULATE COMMISSION - FIXED VERSION (KEEPING YOUR LOGIC INTACT)
+// CALCULATE COMMISSION - FIXED VERSION FOR ALL SERVICES
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
   try {
     // Handle case where serviceType might be an object
@@ -1026,15 +1026,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       // Check for specific service type rates first
       const lowerType = serviceTypeString.toLowerCase().trim();
       
-      // FIX: Check the settings values directly first
-      console.log('🔍 Settings dataCommissionRate:', settings.dataCommissionRate);
-      console.log('🔍 Settings commissionRate:', settings.commissionRate);
-      console.log('🔍 All settings:', {
-        dataCommissionRate: settings.dataCommissionRate,
-        airtimeCommissionRate: settings.airtimeCommissionRate,
-        transferCommissionRate: settings.transferCommissionRate,
-        commissionRate: settings.commissionRate
-      });
+      console.log('🔍 Commission calculation for service:', lowerType);
       
       if (lowerType.includes('transfer') || 
           lowerType === 'transfer' || 
@@ -1046,24 +1038,35 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
                  lowerType.includes('glo') || lowerType.includes('etisalat') || 
                  lowerType.includes('9mobile')) {
         if (lowerType.includes('data')) {
-          // FIX: Check if dataCommissionRate exists, otherwise use default 7%
+          // Check if dataCommissionRate exists, otherwise use default 7%
           rate = typeof settings.dataCommissionRate !== 'undefined' 
             ? settings.dataCommissionRate 
             : 0.07; // Default 7% for data
-          console.log('✅ Data commission rate:', rate, '(from settings:', settings.dataCommissionRate, ')');
+          console.log('✅ Data commission rate:', rate);
         } else {
           rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
           console.log('✅ Airtime commission rate:', rate);
         }
-      } else if (lowerType.includes('electric')) {
+      } else if (lowerType.includes('electric') || 
+                 lowerType.includes('ikeja') || 
+                 lowerType.includes('eko') || 
+                 lowerType.includes('abuja') || 
+                 lowerType.includes('ibadan') || 
+                 lowerType.includes('enugu') || 
+                 lowerType.includes('kano') || 
+                 lowerType.includes('ph')) {
         rate = settings.electricityCommissionRate || 0.04; // 4% for electricity
+        console.log('✅ Electricity commission rate:', rate);
       } else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
                  lowerType.includes('startimes') || lowerType === 'tv') {
         rate = settings.cableTvCommissionRate || 0.06; // 6% for cable TV
+        console.log('✅ Cable TV commission rate:', rate);
       } else if (lowerType.includes('education')) {
         rate = settings.educationCommissionRate || 0.05; // 5% for education
+        console.log('✅ Education commission rate:', rate);
       } else if (lowerType.includes('insurance')) {
         rate = settings.insuranceCommissionRate || 0.04; // 4% for insurance
+        console.log('✅ Insurance commission rate:', rate);
       } else {
         rate = settings.commissionRate || 0.03; // Default commission rate
         console.log('✅ Default commission rate:', rate);
@@ -1076,25 +1079,16 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       return 0;
     }
 
-    // FIX: Use let instead of const so we can modify it
     let commissionAmount = cleanAmount * rate;
     
-    // FIX: Debug log to see what's happening
     console.log(`💰 Commission calculation: ${cleanAmount} × ${rate} = ${commissionAmount}`);
     console.log(`💰 Rate percentage: ${(rate * 100).toFixed(2)}%`);
     
-    // FIX: Check if commission is 100% (rate = 1)
+    // Check if commission is 100% (rate = 1)
     if (rate === 1 || Math.abs(rate - 1) < 0.00001) {
       console.error('❌ ERROR: Commission rate is 100%! This is wrong.');
-      console.error('❌ Rate value:', rate);
-      console.error('❌ serviceTypeString:', serviceTypeString);
       console.error('❌ Using fallback rate of 7%');
-      
-      // Use fallback rate for data
-      if (serviceTypeString.toLowerCase().includes('data')) {
-        commissionAmount = cleanAmount * 0.07;
-        console.log(`💰 Using fallback 7% commission: ${commissionAmount}`);
-      }
+      commissionAmount = cleanAmount * 0.07;
     }
     
     if (commissionAmount <= 0) {
@@ -1131,42 +1125,35 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
     let description = '';
     let source = '';
-    let commissionType = 'Commission Credit'; // Default type
+    let commissionType = 'Commission Credit';
 
     // ========== DETERMINE COMMISSION TYPE ==========
-    // 0. TRANSFERS (Check this first since it's most specific)
-    if (lowerType.includes('transfer') || 
-        lowerType === 'transfer' || 
-        lowerType === 'peer_transfer' ||
-        lowerType.includes('peer') ||
-        lowerType.includes('wallet_transfer') ||
-        lowerType.includes('send_money')) {
-      description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Transfer';
-      commissionType = 'Transfer Commission Credit';
-      console.log('✅ Commission type determined: Transfer');
+    // 1. AIRTIME COMMISSION
+    if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
+         lowerType.includes('glo') || lowerType.includes('etisalat') || 
+         lowerType.includes('9mobile')) && 
+        !lowerType.includes('data')) {
+      description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Airtime';
+      commissionType = 'Airtime Commission Credit';
+      console.log('✅ Commission type determined: Airtime');
     }
-    // 1. MOBILE SERVICES (Airtime & Data)
-    else if (lowerType.includes('mtn') || lowerType.includes('airtel') || lowerType.includes('glo') || lowerType.includes('etisalat') || lowerType.includes('9mobile')) {
-      if (lowerType.includes('data')) {
-        description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Data';
-        commissionType = 'Data Commission Credit';
-      } else {
-        description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
-        source = 'Airtime';
-        commissionType = 'Airtime Commission Credit';
-      }
-      console.log(`✅ Commission type determined: ${source}`);
+    // 2. DATA COMMISSION
+    else if (lowerType.includes('data')) {
+      description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Data';
+      commissionType = 'Data Commission Credit';
+      console.log('✅ Commission type determined: Data');
     }
-    // 2. CABLE TV
-    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || lowerType.includes('startimes') || lowerType === 'tv') {
+    // 3. CABLE TV COMMISSION
+    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
+             lowerType.includes('startimes') || lowerType === 'tv') {
       description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Cable TV';
       commissionType = 'Cable TV Commission Credit';
       console.log('✅ Commission type determined: Cable TV');
     }
-    // 3. ELECTRICITY
+    // 4. ELECTRICITY COMMISSION
     else if (lowerType.includes('electric') || 
              lowerType.includes('ikeja') || 
              lowerType.includes('eko') || 
@@ -1180,7 +1167,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       commissionType = 'Electricity Commission Credit';
       console.log('✅ Commission type determined: Electricity');
     }
-    // 4. EDUCATION
+    // 5. EDUCATION COMMISSION
     else if (lowerType.includes('education') || 
              lowerType.includes('waec') || 
              lowerType.includes('jamb') || 
@@ -1191,7 +1178,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       commissionType = 'Education Commission Credit';
       console.log('✅ Commission type determined: Education');
     }
-    // 5. INSURANCE
+    // 6. INSURANCE COMMISSION
     else if (lowerType.includes('insurance') || 
              lowerType.includes('insure') || 
              lowerType.includes('ui-insure') || 
@@ -1202,19 +1189,20 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       commissionType = 'Insurance Commission Credit';
       console.log('✅ Commission type determined: Insurance');
     }
-    // 6. WALLET FUNDING (Added for completeness)
-    else if (lowerType.includes('funding') || 
-             lowerType.includes('deposit') || 
-             lowerType.includes('topup') ||
-             lowerType.includes('wallet_funding')) {
-      description = `Wallet Funding Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Wallet Funding';
-      commissionType = 'Wallet Funding Commission Credit';
-      console.log('✅ Commission type determined: Wallet Funding');
+    // 7. TRANSFER COMMISSION
+    else if (lowerType.includes('transfer') || 
+             lowerType === 'transfer' || 
+             lowerType === 'peer_transfer' ||
+             lowerType.includes('peer') ||
+             lowerType.includes('wallet_transfer') ||
+             lowerType.includes('send_money')) {
+      description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Transfer';
+      commissionType = 'Transfer Commission Credit';
+      console.log('✅ Commission type determined: Transfer');
     }
-    // 7. DEFAULT
+    // 8. DEFAULT
     else {
-      // Don't use "Unknown" - use the actual serviceTypeString
       const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
       description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = formattedType;
@@ -1229,12 +1217,12 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     await createTransaction(
       userId,
       commissionAmount,
-      commissionType, // Use the specific commission type
+      commissionType,
       'Successful',
       description,
       balanceBefore,
       user.commissionBalance,
-      mongooseSession, // Pass session to createTransaction
+      mongooseSession,
       true, // isCommission = true
       'none',
       null,
@@ -7161,25 +7149,34 @@ try {
 // Calculate commission - ONLY if there's an actual purchase AND user is NOT using commission
 // IMPORTANT: When using commission to pay, NO commission should be earned
 if (transactionAmount > 0 && !isUsingCommission) {
-  let commissionType = '';
-  if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat') {
-    commissionType = 'airtime';
-  } else if (serviceID.includes('data')) {
-    commissionType = 'data';
-  } else if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
-    commissionType = 'tv';
+  // Determine the correct service type for commission
+  let commissionServiceType = serviceID;
+  if (serviceID.includes('mtn') || serviceID.includes('airtel') || 
+      serviceID.includes('glo') || serviceID.includes('etisalat') || 
+      serviceID.includes('9mobile')) {
+    if (serviceID.includes('data')) {
+      commissionServiceType = 'data';
+    } else {
+      commissionServiceType = 'airtime';
+    }
   } else if (serviceID.includes('electric')) {
-    commissionType = serviceID; // e.g., "ibadan-electric"
-  } else {
-    commissionType = serviceID.split('-')[0];
+    commissionServiceType = serviceID; // e.g., "ibadan-electric"
+  } else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
+    commissionServiceType = 'tv';
+  } else if (serviceID.includes('transfer')) {
+    commissionServiceType = 'transfer';
+  } else if (serviceID.includes('education')) {
+    commissionServiceType = 'education';
+  } else if (serviceID.includes('insurance')) {
+    commissionServiceType = 'insurance';
   }
   
-  console.log(`💰 Commission calculation for ${commissionType} (Amount: ₦${transactionAmount})`);
+  console.log(`💰 Commission calculation for ${commissionServiceType} (Amount: ₦${transactionAmount})`);
   console.log(`💡 Payment method: ${isUsingCommission ? 'COMMISSION - NO COMMISSION EARNED' : 'WALLET - COMMISSION WILL BE EARNED'}`);
   
   // ✅ FIX: Only calculate commission when NOT paying with commission
   if (!isUsingCommission) {
-    const commissionEarned = await calculateAndAddCommission(userId, transactionAmount, commissionType, session)
+    const commissionEarned = await calculateAndAddCommission(userId, transactionAmount, commissionServiceType, session)
       .catch(err => {
         console.log('⚠️ Commission calculation failed:', err.message);
         return 0;
@@ -7192,6 +7189,9 @@ if (transactionAmount > 0 && !isUsingCommission) {
 } else if (isUsingCommission) {
   console.log(`⚠️ User paid with commission - NO commission earned for this purchase`);
 }
+
+
+      
   
 // ✅ REFERRAL COMMISSION - Only award if user paid with wallet (NOT commission)
 if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
