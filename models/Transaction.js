@@ -62,6 +62,7 @@ const transactionSchema = new mongoose.Schema({
             'Wallet Funding Commission Credit',
             'Commission Withdrawal',
             'Commission Debit',
+            'Commission used for service purchase',
             
             // Other types
             'debit',
