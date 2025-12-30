@@ -983,8 +983,14 @@ const createTransaction = async (
 
 
 // CALCULATE COMMISSION - FIXED VERSION FOR ALL SERVICES
-const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null) => {
+const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null, isUsingCommission = false) => {
   try {
+    // 🔥 CRITICAL FIX: Skip commission if user paid with commission
+    if (isUsingCommission) {
+      console.log(`⚠️ SKIPPING COMMISSION: User paid with commission balance`);
+      return 0;
+    }
+
     // Handle case where serviceType might be an object
     let serviceTypeString;
     
@@ -1009,7 +1015,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       serviceTypeString = 'unknown';
     }
     
-    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount}`);
+    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount} | UsingCommission=${isUsingCommission}`);
     
     // Use session if provided, otherwise query normally
     const settingsQuery = Settings.findOne();
@@ -1266,7 +1272,6 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     return 0;
   }
 };
-
 
 
 
@@ -7146,13 +7151,71 @@ try {
     }
 
       
+// ================================================
+// 🔥 CRITICAL FIX: COMMISSION CALCULATION LOGIC
+// ================================================
 // Calculate commission - ONLY if:
 // 1. There's an actual purchase amount
 // 2. User is NOT using commission to pay
-// 3. Transaction doesn't have skipCommissionCalculation flag
+// 3. This is NOT a commission-based payment
+// ================================================
 const shouldCalculateCommission = transactionAmount > 0 && 
                                  !isUsingCommission && 
-                                 !(transactionMetadata && transactionMetadata.skipCommissionCalculation);
+                                 !transactionMetadata?.commissionUsed;
+
+console.log(`💰 COMMISSION CALCULATION CHECK:`);
+console.log(`   Transaction amount: ₦${transactionAmount}`);
+console.log(`   Using commission: ${isUsingCommission}`);
+console.log(`   Commission used flag: ${transactionMetadata?.commissionUsed || false}`);
+console.log(`   Should calculate commission: ${shouldCalculateCommission}`);
+
+if (shouldCalculateCommission) {
+  // Determine the correct service type for commission
+  let commissionServiceType = serviceID;
+  
+  if (serviceID.includes('mtn') || serviceID.includes('airtel') || 
+      serviceID.includes('glo') || serviceID.includes('etisalat') || 
+      serviceID.includes('9mobile')) {
+    if (serviceID.includes('data')) {
+      commissionServiceType = 'data';
+    } else {
+      commissionServiceType = 'airtime';
+    }
+  } else if (serviceID.includes('electric')) {
+    commissionServiceType = serviceID; // e.g., "ibadan-electric"
+  } else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
+    commissionServiceType = 'tv';
+  } else if (serviceID.includes('transfer')) {
+    commissionServiceType = 'transfer';
+  } else if (serviceID.includes('education')) {
+    commissionServiceType = 'education';
+  } else if (serviceID.includes('insurance')) {
+    commissionServiceType = 'insurance';
+  }
+  
+  console.log(`💰 Commission calculation for ${commissionServiceType} (Amount: ₦${transactionAmount})`);
+  
+  // Calculate commission - PASS isUsingCommission parameter
+  const commissionEarned = await calculateAndAddCommission(
+    userId, 
+    transactionAmount, 
+    commissionServiceType, 
+    session,
+    isUsingCommission // 🔥 PASS THIS FLAG
+  ).catch(err => {
+    console.log('⚠️ Commission calculation failed:', err.message);
+    return 0;
+  });
+  
+  console.log(`✅ Commission earned: ₦${commissionEarned}`);
+} else if (isUsingCommission) {
+  console.log(`🚫 User paid with commission - NO commission earned for this purchase`);
+  console.log(`📌 Transaction metadata:`, transactionMetadata);
+} else if (transactionMetadata?.commissionUsed) {
+  console.log(`🚫 Commission used flag set - NO commission earned`);
+} else {
+  console.log(`ℹ️ No commission calculation needed for this transaction`);
+}
 
 console.log(`💰 Commission calculation check:`);
 console.log(`   Transaction amount: ₦${transactionAmount}`);
