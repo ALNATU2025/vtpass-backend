@@ -424,29 +424,33 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     // 2. Save user
     await user.save({ session });
     
-    // 3. Create ONLY the commission debit transaction
-    // This is NOT a commission earning, it's commission spending
-    const commissionTransaction = new Transaction({
-      userId: userId,
-      amount: serviceAmount,
-      type: 'Commission Debit', // NOT 'Commission Credit'
-      status: 'Successful',
-      description: `Commission used for ${serviceType} purchase`,
-      balanceBefore: balanceBefore,
-      balanceAfter: user.commissionBalance,
-      metadata: {
-        serviceType: serviceType,
-        serviceDetails: serviceDetails,
-        paymentMethod: 'commission',
-        commissionUsed: true,
-        walletUsed: false,
-        isCommissionPayment: true // NEW FLAG to identify commission payments
-      },
-      isCommission: true, // This IS a commission transaction
-      commissionAction: 'debit', // NEW: specify it's a debit
-      gateway: 'DalaBaPay App',
-      reference: `COMM_DEBIT_${Date.now()}_${Math.floor(Math.random() * 1000)}`
-    });
+  // Generate tracking ID
+const commissionTrackingId = `COMM_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+// 3. Create ONLY the commission debit transaction
+// This is NOT a commission earning, it's commission spending
+const commissionTransaction = new Transaction({
+  userId: userId,
+  amount: serviceAmount,
+  type: 'Commission Debit', // NOT 'Commission Credit'
+  status: 'Processing', // Start as Processing
+  description: `Commission used for ${serviceType} purchase`,
+  balanceBefore: balanceBefore,
+  balanceAfter: user.commissionBalance,
+  metadata: {
+    serviceType: serviceType,
+    serviceDetails: serviceDetails,
+    paymentMethod: 'commission',
+    commissionUsed: true,
+    walletUsed: false,
+    isCommissionPayment: true,
+    commissionTrackingId: commissionTrackingId // 🔥 ADD THIS
+  },
+  isCommission: true, // This IS a commission transaction
+  commissionAction: 'debit', // NEW: specify it's a debit
+  gateway: 'DalaBaPay App',
+  reference: commissionTrackingId // 🔥 USE tracking ID as reference
+});
     
     await commissionTransaction.save({ session });
     
@@ -458,17 +462,18 @@ router.post('/use-for-service', protect, verifyTransactionAuth, async (req, res)
     console.log(`   Commission transaction ID: ${commissionTransaction._id}`);
     
     res.json({
-      success: true,
-      message: `${formatCurrency(serviceAmount)} commission allocated for ${serviceType} purchase`,
-      data: {
-        newCommissionBalance: user.commissionBalance,
-        formattedNewCommissionBalance: formatCurrency(user.commissionBalance),
-        transactionId: commissionTransaction._id,
-        commissionTransaction: commissionTransaction,
-        commissionOnly: true,
-        noCommissionEarned: true // NEW: Tell frontend NOT to expect commission
-      }
-    });
+  success: true,
+  message: `${formatCurrency(serviceAmount)} commission allocated for ${serviceType} purchase`,
+  data: {
+    newCommissionBalance: user.commissionBalance,
+    formattedNewCommissionBalance: formatCurrency(user.commissionBalance),
+    transactionId: commissionTransaction._id,
+    commissionTransaction: commissionTransaction,
+    commissionTrackingId: commissionTrackingId, // 🔥 ADD THIS
+    commissionOnly: true,
+    noCommissionEarned: true
+  }
+});
     
   } catch (error) {
     await session.abortTransaction();
