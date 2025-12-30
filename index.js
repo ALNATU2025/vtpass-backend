@@ -1044,10 +1044,10 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
                  lowerType.includes('glo') || lowerType.includes('etisalat') || 
                  lowerType.includes('9mobile')) {
         if (lowerType.includes('data')) {
-          // Check if dataCommissionRate exists, otherwise use default 7%
+          // Check if dataCommissionRate exists, otherwise use default 5%
           rate = typeof settings.dataCommissionRate !== 'undefined' 
             ? settings.dataCommissionRate 
-            : 0.07; // Default 7% for data
+            : 0.05; // Default 5% for data
           console.log('✅ Data commission rate:', rate);
         } else {
           rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
@@ -1093,8 +1093,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     // Check if commission is 100% (rate = 1)
     if (rate === 1 || Math.abs(rate - 1) < 0.00001) {
       console.error('❌ ERROR: Commission rate is 100%! This is wrong.');
-      console.error('❌ Using fallback rate of 7%');
-      commissionAmount = cleanAmount * 0.07;
+      console.error('❌ Using fallback rate of 5%');
+      commissionAmount = cleanAmount * 0.05;
     }
     
     if (commissionAmount <= 0) {
