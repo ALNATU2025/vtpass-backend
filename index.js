@@ -6829,7 +6829,6 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
 
 
 
-
 // @desc    VTpass Proxy Endpoint - COMPLETE FIXED VERSION
 // @route   POST /api/vtpass/proxy
 // @access  Private
@@ -6947,41 +6946,41 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     }
 
     // === 5. Check VTpass Wallet Balance BEFORE calling VTpass ===
-console.log('💰 Checking VTpass wallet balance before transaction...');
-try {
-  const vtpassApiKey = process.env.VTPASS_API_KEY;
-  const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-  
-  const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-    auth: {
-      username: vtpassApiKey,
-      password: vtpassSecretKey
-    },
-    timeout: 10000
-  });
+    console.log('💰 Checking VTpass wallet balance before transaction...');
+    try {
+      const vtpassApiKey = process.env.VTPASS_API_KEY;
+      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+      
+      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+        auth: {
+          username: vtpassApiKey,
+          password: vtpassSecretKey
+        },
+        timeout: 10000
+      });
 
-  const vtpassBalance = balanceResponse.data.contents?.balance || 0;
-  console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
+      const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+      console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
 
-  // Check if balance is sufficient - use transactionAmount not amount
-  if (vtpassBalance < transactionAmount) {
-    // 🔥 SEND ADMIN ALERT - pass transactionAmount, not amount
-    await sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance);
-    
-    await session.abortTransaction();
-    return res.status(400).json({
-      success: false,
-      message: 'Service temporarily unavailable due to insufficient provider funds. Our team has been notified.',
-      code: 'VTPASS_INSUFFICIENT_FUNDS',
-      vtpassBalance: vtpassBalance,
-      requiredAmount: transactionAmount, // Use transactionAmount here too
-      adminAlerted: true
-    });
-  }
-} catch (balanceError) {
-  console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
-  // Continue with transaction but log warning
-}
+      // Check if balance is sufficient - use transactionAmount not amount
+      if (vtpassBalance < transactionAmount) {
+        // 🔥 SEND ADMIN ALERT - pass transactionAmount, not amount
+        await sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance);
+        
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: 'Service temporarily unavailable due to insufficient provider funds. Our team has been notified.',
+          code: 'VTPASS_INSUFFICIENT_FUNDS',
+          vtpassBalance: vtpassBalance,
+          requiredAmount: transactionAmount,
+          adminAlerted: true
+        });
+      }
+    } catch (balanceError) {
+      console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
+      // Continue with transaction but log warning
+    }
 
     // === 6. Build VTpass payload ===
     const payload = {
@@ -7080,279 +7079,204 @@ try {
         displayType = 'Electricity Purchase';
       }
 
-    // ================================================
-// 🔥 FIX: ONLY CREATE TRANSACTION IF NOT USING COMMISSION
-// ================================================
-if (!isUsingCommission) {
-  // Only create transaction for WALLET payments
-  const balanceBefore = user.walletBalance + transactionAmount;
-  const balanceAfter = user.walletBalance;
-  
-  await createTransaction(
-    userId,
-    transactionAmount,
-    displayType,
-    'Successful',
-    `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'}`,
-    balanceBefore,
-    balanceAfter,
-    session,
-    false, // isCommission = false
-    'pin',
-    uniqueRequestId,
-    transactionMetadata
-  );
-  console.log(`✅ Wallet payment - Regular transaction recorded`);
-} else {
-  // For COMMISSION payments, transaction was already created in /api/commission/use-for-service
-  console.log(`✅ Commission payment - Transaction already created earlier`);
-}
-
-      
-// ================================================
-// 🔥 CRITICAL FIX: COMMISSION CALCULATION LOGIC
-// ================================================
-// Calculate commission - ONLY if:
-// 1. There's an actual purchase amount
-// 2. User is NOT using commission to pay
-// 3. This is NOT a commission-based payment
-// ================================================
-const shouldCalculateCommission = transactionAmount > 0 && 
-                                 !isUsingCommission && 
-                                 !transactionMetadata?.commissionUsed;
-
-console.log(`💰 COMMISSION CALCULATION CHECK:`);
-console.log(`   Transaction amount: ₦${transactionAmount}`);
-console.log(`   Using commission: ${isUsingCommission}`);
-console.log(`   Commission used flag: ${transactionMetadata?.commissionUsed || false}`);
-console.log(`   Should calculate commission: ${shouldCalculateCommission}`);
-
-if (shouldCalculateCommission) {
-  // Determine the correct service type for commission
-  let commissionServiceType = serviceID;
-  
-  if (serviceID.includes('mtn') || serviceID.includes('airtel') || 
-      serviceID.includes('glo') || serviceID.includes('etisalat') || 
-      serviceID.includes('9mobile')) {
-    if (serviceID.includes('data')) {
-      commissionServiceType = 'data';
-    } else {
-      commissionServiceType = 'airtime';
-    }
-  } else if (serviceID.includes('electric')) {
-    commissionServiceType = serviceID; // e.g., "ibadan-electric"
-  } else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
-    commissionServiceType = 'tv';
-  } else if (serviceID.includes('transfer')) {
-    commissionServiceType = 'transfer';
-  } else if (serviceID.includes('education')) {
-    commissionServiceType = 'education';
-  } else if (serviceID.includes('insurance')) {
-    commissionServiceType = 'insurance';
-  }
-  
-  console.log(`💰 Commission calculation for ${commissionServiceType} (Amount: ₦${transactionAmount})`);
-  
-  // Calculate commission - PASS isUsingCommission parameter
-  const commissionEarned = await calculateAndAddCommission(
-    userId, 
-    transactionAmount, 
-    commissionServiceType, 
-    session,
-    isUsingCommission // 🔥 PASS THIS FLAG
-  ).catch(err => {
-    console.log('⚠️ Commission calculation failed:', err.message);
-    return 0;
-  });
-  
-  console.log(`✅ Commission earned: ₦${commissionEarned}`);
-} else if (isUsingCommission) {
-  console.log(`🚫 User paid with commission - NO commission earned for this purchase`);
-  console.log(`📌 Transaction metadata:`, transactionMetadata);
-} else if (transactionMetadata?.commissionUsed) {
-  console.log(`🚫 Commission used flag set - NO commission earned`);
-} else {
-  console.log(`ℹ️ No commission calculation needed for this transaction`);
-}
-
-console.log(`💰 Commission calculation check:`);
-console.log(`   Transaction amount: ₦${transactionAmount}`);
-console.log(`   Using commission: ${isUsingCommission}`);
-console.log(`   Skip commission flag: ${transactionMetadata?.skipCommissionCalculation || false}`);
-console.log(`   Should calculate commission: ${shouldCalculateCommission}`);
-
-if (shouldCalculateCommission) {
-  // Determine the correct service type for commission
-  let commissionServiceType = serviceID;
-  
-  if (serviceID.includes('mtn') || serviceID.includes('airtel') || 
-      serviceID.includes('glo') || serviceID.includes('etisalat') || 
-      serviceID.includes('9mobile')) {
-    if (serviceID.includes('data')) {
-      commissionServiceType = 'data';
-    } else {
-      commissionServiceType = 'airtime';
-    }
-  } else if (serviceID.includes('electric')) {
-    commissionServiceType = serviceID; // e.g., "ibadan-electric"
-  } else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
-    commissionServiceType = 'tv';
-  } else if (serviceID.includes('transfer')) {
-    commissionServiceType = 'transfer';
-  } else if (serviceID.includes('education')) {
-    commissionServiceType = 'education';
-  } else if (serviceID.includes('insurance')) {
-    commissionServiceType = 'insurance';
-  }
-  
-  console.log(`💰 Commission calculation for ${commissionServiceType} (Amount: ₦${transactionAmount})`);
-  
-  // Calculate commission
-  const commissionEarned = await calculateAndAddCommission(userId, transactionAmount, commissionServiceType, session)
-    .catch(err => {
-      console.log('⚠️ Commission calculation failed:', err.message);
-      return 0;
-    });
-  
-  console.log(`✅ Commission earned: ₦${commissionEarned}`);
-} else if (isUsingCommission) {
-  console.log(`⚠️ User paid with commission - NO commission earned for this purchase`);
-} else if (transactionMetadata?.skipCommissionCalculation) {
-  console.log(`ℹ️ Skip commission calculation flag set - NO commission earned`);
-} else {
-  console.log(`ℹ️ No commission calculation needed for this transaction`);
-}
-
-      
-  
-// ✅ REFERRAL COMMISSION - Only award if user paid with wallet (NOT commission)
-if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
-  try {
-    // 0.005% commission = 0.00005
-    const referralCommissionRate = 0.00005; // 0.005%
-    const referralCommissionAmount = transactionAmount * referralCommissionRate;
-    
-    if (referralCommissionAmount > 0) {
-      // Find the referrer
-      const referrer = await User.findById(user.referrerId).session(session);
-      if (referrer) {
-        // Award commission to referrer
-        const referrerBalanceBefore = referrer.commissionBalance;
-        referrer.commissionBalance += referralCommissionAmount;
-        referrer.totalReferralEarnings += referralCommissionAmount;
+      // ================================================
+      // 🔥 FIX: ONLY CREATE TRANSACTION IF NOT USING COMMISSION
+      // ================================================
+      if (!isUsingCommission) {
+        // Only create transaction for WALLET payments
+        const balanceBefore = user.walletBalance + transactionAmount;
+        const balanceAfter = user.walletBalance;
         
-        // Create commission transaction for referrer
         await createTransaction(
-          referrer._id,
-          referralCommissionAmount,
-          'Referral Commission Credit',
+          userId,
+          transactionAmount,
+          displayType,
           'Successful',
-          `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
-          referrerBalanceBefore,
-          referrer.commissionBalance,
+          `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'}`,
+          balanceBefore,
+          balanceAfter,
           session,
-          true, // isCommission
-          'none',
-          null,
-          {},
-          {
-            commissionSource: 'referral',
-            referredUserId: userId,
-            referredUserName: user.fullName,
-            purchaseTransactionId: uniqueRequestId, // Use the request ID
-            purchaseAmount: transactionAmount,
-            purchaseService: serviceID,
-            commissionRate: referralCommissionRate,
-            commissionAmount: referralCommissionAmount
-          }
+          false, // isCommission = false
+          'pin',
+          uniqueRequestId,
+          transactionMetadata
         );
-        
-        await referrer.save({ session });
-        console.log(`🎯 Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission to ${referrer.email}`);
-        
-        // Create notification for referrer
-        await Notification.create({
-          recipient: referrer._id,
-          title: "Referral Commission Earned! 💰",
-          message: `You earned ₦${referralCommissionAmount.toFixed(4)} from ${user.fullName}'s purchase.`,
-          type: 'commission',
-          isRead: false,
-          metadata: {
-            event: 'referral_commission',
-            referredUserId: userId,
-            commissionAmount: referralCommissionAmount,
-            purchaseAmount: transactionAmount
-          }
-        });
+        console.log(`✅ Wallet payment - Regular transaction recorded`);
+      } else {
+        // For COMMISSION payments, transaction was already created in /api/commission/use-for-service
+        console.log(`✅ Commission payment - Transaction already created earlier`);
       }
-    }
-  } catch (error) {
-    console.error('❌ Error awarding referral commission:', error.message);
-    // Don't fail the transaction if referral commission fails
-  }
-} else if (isUsingCommission && user.referrerId) {
-  console.log(`⚠️ Skipping referral commission - user paid with commission`);
-}
-
-
-// 🔥 UPDATE COMMISSION TRANSACTION WITH VTpass DATA
-if (isUsingCommission) {
-  try {
-    // Find commission transaction using tracking ID
-    const commissionTransaction = await Transaction.findOne({
-      $or: [
-        { _id: commissionTransactionId },
-        { reference: commissionTrackingId },
-        { 'metadata.commissionTrackingId': commissionTrackingId }
-      ],
-      userId: userId,
-      isCommission: true
-    }).session(session);
-    
-    if (commissionTransaction) {
-      // Update it with VTpass data
-      commissionTransaction.status = 'Successful';
-      commissionTransaction.metadata = {
-        ...commissionTransaction.metadata,
-        ...transactionMetadata,
-        vtpassResponse: vtpassResult.data,
-        requestId: uniqueRequestId,
-        completedAt: new Date(),
-        service: serviceID
-      };
       
-      await commissionTransaction.save({ session });
-      console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
-    }
-  } catch (updateError) {
-    console.error(`❌ Error updating commission transaction:`, updateError);
-  }
-}
-    
-    if (commissionTransaction) {
-      // Update it with VTpass data
-      commissionTransaction.metadata = {
-        ...commissionTransaction.metadata,
-        ...transactionMetadata,
-        vtpassResponse: vtpassResult.data,
-        requestId: uniqueRequestId,
-        completedAt: new Date(),
-        service: serviceID
-      };
-      
-      await commissionTransaction.save({ session });
-      console.log(`✅ Updated commission transaction with VTpass data: ${commissionTransaction._id}`);
-    } else {
-      console.log(`⚠️ No commission transaction found to update`);
-    }
-  } catch (updateError) {
-    console.error(`❌ Error updating commission transaction:`, updateError);
-    // Don't fail the main transaction
-  }
-}
+      // ================================================
+      // 🔥 CRITICAL FIX: COMMISSION CALCULATION LOGIC
+      // ================================================
+      // Calculate commission - ONLY if:
+      // 1. There's an actual purchase amount
+      // 2. User is NOT using commission to pay
+      // 3. This is NOT a commission-based payment
+      // ================================================
+      const shouldCalculateCommission = transactionAmount > 0 && 
+                                       !isUsingCommission && 
+                                       !transactionMetadata?.commissionUsed;
 
+      console.log(`💰 COMMISSION CALCULATION CHECK:`);
+      console.log(`   Transaction amount: ₦${transactionAmount}`);
+      console.log(`   Using commission: ${isUsingCommission}`);
+      console.log(`   Commission used flag: ${transactionMetadata?.commissionUsed || false}`);
+      console.log(`   Should calculate commission: ${shouldCalculateCommission}`);
 
-      
+      if (shouldCalculateCommission) {
+        // Determine the correct service type for commission
+        let commissionServiceType = serviceID;
+        
+        if (serviceID.includes('mtn') || serviceID.includes('airtel') || 
+            serviceID.includes('glo') || serviceID.includes('etisalat') || 
+            serviceID.includes('9mobile')) {
+          if (serviceID.includes('data')) {
+            commissionServiceType = 'data';
+          } else {
+            commissionServiceType = 'airtime';
+          }
+        } else if (serviceID.includes('electric')) {
+          commissionServiceType = serviceID; // e.g., "ibadan-electric"
+        } else if (serviceID.includes('dstv') || serviceID.includes('gotv') || serviceID.includes('startimes')) {
+          commissionServiceType = 'tv';
+        } else if (serviceID.includes('transfer')) {
+          commissionServiceType = 'transfer';
+        } else if (serviceID.includes('education')) {
+          commissionServiceType = 'education';
+        } else if (serviceID.includes('insurance')) {
+          commissionServiceType = 'insurance';
+        }
+        
+        console.log(`💰 Commission calculation for ${commissionServiceType} (Amount: ₦${transactionAmount})`);
+        
+        // Calculate commission - PASS isUsingCommission parameter
+        const commissionEarned = await calculateAndAddCommission(
+          userId, 
+          transactionAmount, 
+          commissionServiceType, 
+          session,
+          isUsingCommission // 🔥 PASS THIS FLAG
+        ).catch(err => {
+          console.log('⚠️ Commission calculation failed:', err.message);
+          return 0;
+        });
+        
+        console.log(`✅ Commission earned: ₦${commissionEarned}`);
+      } else if (isUsingCommission) {
+        console.log(`🚫 User paid with commission - NO commission earned for this purchase`);
+        console.log(`📌 Transaction metadata:`, transactionMetadata);
+      } else if (transactionMetadata?.commissionUsed) {
+        console.log(`🚫 Commission used flag set - NO commission earned`);
+      } else {
+        console.log(`ℹ️ No commission calculation needed for this transaction`);
+      }
+
+      // ✅ REFERRAL COMMISSION - Only award if user paid with wallet (NOT commission)
+      if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
+        try {
+          // 0.005% commission = 0.00005
+          const referralCommissionRate = 0.00005; // 0.005%
+          const referralCommissionAmount = transactionAmount * referralCommissionRate;
+          
+          if (referralCommissionAmount > 0) {
+            // Find the referrer
+            const referrer = await User.findById(user.referrerId).session(session);
+            if (referrer) {
+              // Award commission to referrer
+              const referrerBalanceBefore = referrer.commissionBalance;
+              referrer.commissionBalance += referralCommissionAmount;
+              referrer.totalReferralEarnings += referralCommissionAmount;
+              
+              // Create commission transaction for referrer
+              await createTransaction(
+                referrer._id,
+                referralCommissionAmount,
+                'Referral Commission Credit',
+                'Successful',
+                `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
+                referrerBalanceBefore,
+                referrer.commissionBalance,
+                session,
+                true, // isCommission
+                'none',
+                null,
+                {},
+                {
+                  commissionSource: 'referral',
+                  referredUserId: userId,
+                  referredUserName: user.fullName,
+                  purchaseTransactionId: uniqueRequestId,
+                  purchaseAmount: transactionAmount,
+                  purchaseService: serviceID,
+                  commissionRate: referralCommissionRate,
+                  commissionAmount: referralCommissionAmount
+                }
+              );
+              
+              await referrer.save({ session });
+              console.log(`🎯 Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission to ${referrer.email}`);
+              
+              // Create notification for referrer
+              await Notification.create({
+                recipient: referrer._id,
+                title: "Referral Commission Earned! 💰",
+                message: `You earned ₦${referralCommissionAmount.toFixed(4)} from ${user.fullName}'s purchase.`,
+                type: 'commission',
+                isRead: false,
+                metadata: {
+                  event: 'referral_commission',
+                  referredUserId: userId,
+                  commissionAmount: referralCommissionAmount,
+                  purchaseAmount: transactionAmount
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error awarding referral commission:', error.message);
+          // Don't fail the transaction if referral commission fails
+        }
+      } else if (isUsingCommission && user.referrerId) {
+        console.log(`⚠️ Skipping referral commission - user paid with commission`);
+      }
+
+      // 🔥 UPDATE COMMISSION TRANSACTION WITH VTpass DATA
+      if (isUsingCommission) {
+        try {
+          // Find commission transaction using tracking ID
+          const commissionTransaction = await Transaction.findOne({
+            $or: [
+              { _id: commissionTransactionId },
+              { reference: commissionTrackingId },
+              { 'metadata.commissionTrackingId': commissionTrackingId }
+            ],
+            userId: userId,
+            isCommission: true
+          }).session(session);
+          
+          if (commissionTransaction) {
+            // Update it with VTpass data
+            commissionTransaction.status = 'Successful';
+            commissionTransaction.metadata = {
+              ...commissionTransaction.metadata,
+              ...transactionMetadata,
+              vtpassResponse: vtpassResult.data,
+              requestId: uniqueRequestId,
+              completedAt: new Date(),
+              service: serviceID
+            };
+            
+            await commissionTransaction.save({ session });
+            console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
+          }
+        } catch (updateError) {
+          console.error(`❌ Error updating commission transaction:`, updateError);
+          // Don't fail the main transaction
+        }
+      }
+
       // Save user and commit
       await user.save({ session });
       await session.commitTransaction();
@@ -7375,20 +7299,21 @@ if (isUsingCommission) {
     const msg = vtpassResult.data?.response_description || 'Transaction failed';
     const errorCode = vtpassResult.data?.code || 'UNKNOWN';
 
-   // Handle LOW WALLET BALANCE error
-if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
-  // 🔥 SEND ADMIN ALERT - use transactionAmount, not amount
-  await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
-  
-  return res.status(400).json({
-    success: false,
-    message: 'Service temporarily unavailable due to provider wallet issues. Our team has been notified and will fix this shortly.',
-    code: 'VTPASS_WALLET_EMPTY',
-    retryable: false,
-    adminAlerted: true,
-    vtpassResponse: vtpassResult.data
-  });
-}
+    // Handle LOW WALLET BALANCE error
+    if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
+      // 🔥 SEND ADMIN ALERT - use transactionAmount, not amount
+      await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Service temporarily unavailable due to provider wallet issues. Our team has been notified and will fix this shortly.',
+        code: 'VTPASS_WALLET_EMPTY',
+        retryable: false,
+        adminAlerted: true,
+        vtpassResponse: vtpassResult.data
+      });
+    }
+    
     if (msg.includes('REQUEST ID ALREADY EXIST') || msg.includes('DUPLICATE')) {
       return res.status(400).json({
         success: false,
@@ -7416,7 +7341,6 @@ if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
     session.endSession();
   }
 });
-
 
 
 
