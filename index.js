@@ -6884,7 +6884,7 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
   try {
     await session.startTransaction();
 
-    const { request_id, serviceID, amount, phone, variation_code, billersCode, type } = req.body;
+    const { request_id, serviceID, amount, phone, variation_code, billersCode, type, commissionTransactionId, commissionTrackingId } = req.body;
     const userId = req.user._id;
 
     // === 1. Use client request_id ===
@@ -7080,75 +7080,33 @@ try {
         displayType = 'Electricity Purchase';
       }
 
-      // === CHECK FOR EXISTING COMMISSION TRANSACTION ===
-    // Check if a commission transaction already exists for this request
-    const existingCommissionTransaction = await Transaction.findOne({
-      reference: uniqueRequestId,
-      isCommission: true,
-      userId: userId
-    }).session(session);
-
-    if (existingCommissionTransaction && isUsingCommission) {
-      console.log(`✅ Commission transaction already exists, updating metadata only`);
-      // Update the existing commission transaction with VTpass response
-      existingCommissionTransaction.metadata = {
-        ...existingCommissionTransaction.metadata,
-        ...transactionMetadata,
-        vtpassResponse: vtpassResult.data,
-        completedAt: new Date()
-      };
-      await existingCommissionTransaction.save({ session });
-    } else {
-      // ✅ Create appropriate transaction based on payment method
-      if (isUsingCommission) {
-        // When paying with commission, create COMMISSION transaction
-        const commissionBalanceBefore = user.commissionBalance + transactionAmount;
-        const commissionBalanceAfter = user.commissionBalance;
-        
-        await createTransaction(
-          userId,
-          transactionAmount,
-          'Commission used for service purchase',
-          'Successful',
-          `Commission used for ${serviceID.toUpperCase()} purchase`,
-          commissionBalanceBefore,
-          commissionBalanceAfter,
-          session,
-          true, // isCommission = true
-          'pin',
-          uniqueRequestId,
-          {
-            ...transactionMetadata,
-            commissionSource: serviceID.includes('data') ? 'Data' : 
-                            serviceID.includes('electric') ? 'Electricity' :
-                            serviceID.includes('tv') ? 'Cable TV' : 'Airtime',
-            originalService: serviceID,
-            vtpassResponse: vtpassResult.data
-          }
-        );
-        console.log(`✅ Commission payment - Commission transaction recorded`);
-      } else {
-        // When paying with wallet, create regular wallet transaction
-        const balanceBefore = user.walletBalance + transactionAmount;
-        const balanceAfter = user.walletBalance;
-        
-        await createTransaction(
-          userId,
-          transactionAmount,
-          displayType,
-          'Successful',
-          `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'}`,
-          balanceBefore,
-          balanceAfter,
-          session,
-          false, // isCommission = false
-          'pin',
-          uniqueRequestId,
-          transactionMetadata
-        );
-        console.log(`✅ Wallet payment - Regular transaction recorded`);
-      }
-    }
+    // ================================================
+// 🔥 FIX: ONLY CREATE TRANSACTION IF NOT USING COMMISSION
+// ================================================
+if (!isUsingCommission) {
+  // Only create transaction for WALLET payments
+  const balanceBefore = user.walletBalance + transactionAmount;
+  const balanceAfter = user.walletBalance;
+  
+  await createTransaction(
+    userId,
+    transactionAmount,
+    displayType,
+    'Successful',
+    `${serviceID.toUpperCase()} ${transactionAmount > 0 ? 'purchase' : 'verification'}`,
+    balanceBefore,
+    balanceAfter,
+    session,
+    false, // isCommission = false
+    'pin',
+    uniqueRequestId,
+    transactionMetadata
+  );
+  console.log(`✅ Wallet payment - Regular transaction recorded`);
+} else {
+  // For COMMISSION payments, transaction was already created in /api/commission/use-for-service
+  console.log(`✅ Commission payment - Transaction already created earlier`);
+}
 
       
 // ================================================
@@ -7335,6 +7293,66 @@ if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
 } else if (isUsingCommission && user.referrerId) {
   console.log(`⚠️ Skipping referral commission - user paid with commission`);
 }
+
+
+// 🔥 UPDATE COMMISSION TRANSACTION WITH VTpass DATA
+if (isUsingCommission) {
+  try {
+    // Find commission transaction using tracking ID
+    const commissionTransaction = await Transaction.findOne({
+      $or: [
+        { _id: commissionTransactionId },
+        { reference: commissionTrackingId },
+        { 'metadata.commissionTrackingId': commissionTrackingId }
+      ],
+      userId: userId,
+      isCommission: true
+    }).session(session);
+    
+    if (commissionTransaction) {
+      // Update it with VTpass data
+      commissionTransaction.status = 'Successful';
+      commissionTransaction.metadata = {
+        ...commissionTransaction.metadata,
+        ...transactionMetadata,
+        vtpassResponse: vtpassResult.data,
+        requestId: uniqueRequestId,
+        completedAt: new Date(),
+        service: serviceID
+      };
+      
+      await commissionTransaction.save({ session });
+      console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
+    }
+  } catch (updateError) {
+    console.error(`❌ Error updating commission transaction:`, updateError);
+  }
+}
+    
+    if (commissionTransaction) {
+      // Update it with VTpass data
+      commissionTransaction.metadata = {
+        ...commissionTransaction.metadata,
+        ...transactionMetadata,
+        vtpassResponse: vtpassResult.data,
+        requestId: uniqueRequestId,
+        completedAt: new Date(),
+        service: serviceID
+      };
+      
+      await commissionTransaction.save({ session });
+      console.log(`✅ Updated commission transaction with VTpass data: ${commissionTransaction._id}`);
+    } else {
+      console.log(`⚠️ No commission transaction found to update`);
+    }
+  } catch (updateError) {
+    console.error(`❌ Error updating commission transaction:`, updateError);
+    // Don't fail the main transaction
+  }
+}
+
+
+      
       // Save user and commit
       await user.save({ session });
       await session.commitTransaction();
