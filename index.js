@@ -1725,7 +1725,7 @@ app.post('/api/users/register', [
 
 
 
-// @desc    Check for duplicates (phone/email) BEFORE registration
+// @desc    Check for duplicates (phone/email) BEFORE registration - IMPROVED VERSION
 // @route   POST /api/auth/check-duplicates
 // @access  Public
 app.post('/api/auth/check-duplicates', [
@@ -1743,78 +1743,94 @@ app.post('/api/auth/check-duplicates', [
   const { email, phone } = req.body;
   
   try {
-    // Create query object
-    const query = {};
+    // Create query object - check for ANY user with either email OR phone
+    const query = { $or: [] };
     
     // Handle email (if provided)
     if (email) {
-      query.email = email.toLowerCase().trim();
+      query.$or.push({ email: email.toLowerCase().trim() });
     }
     
-    // Handle phone (if provided) - CRITICAL FIX: Trim and standardize
+    // Handle phone (if provided) - CRITICAL FIX: Standardize format
     if (phone) {
       // Remove all non-digit characters and ensure it starts with 0
       const cleanPhone = phone.trim().replace(/\D/g, '');
       
-      // Standardize Nigerian phone format: ensure it starts with 0 and has 11 digits
+      // Standardize Nigerian phone format
+      let standardizedPhone;
       if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
-        query.phone = cleanPhone;
+        standardizedPhone = cleanPhone;
       } else if (cleanPhone.length === 10) {
-        // If user entered without leading 0, add it
-        query.phone = '0' + cleanPhone;
+        standardizedPhone = '0' + cleanPhone;
       } else {
-        query.phone = cleanPhone; // Let it fail in database query
+        standardizedPhone = cleanPhone; // Will fail in query
       }
+      
+      query.$or.push({ phone: standardizedPhone });
     }
     
-    console.log(`🔍 [CHECK-DUPLICATES] Checking:`, {
-      originalEmail: email,
-      originalPhone: phone,
-      queryEmail: query.email,
-      queryPhone: query.phone
-    });
-    
     // If no valid query, return error
-    if (Object.keys(query).length === 0) {
+    if (query.$or.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Email or phone is required'
       });
     }
     
-    // Find existing user
-    const existingUser = await User.findOne(query).select('email phone fullName');
+    console.log(`🔍 [CHECK-DUPLICATES] Checking:`, {
+      originalEmail: email,
+      originalPhone: phone,
+      query: query
+    });
     
-    if (existingUser) {
-      console.log(`⚠️ [CHECK-DUPLICATES] DUPLICATE FOUND:`, {
-        email: existingUser.email,
-        phone: existingUser.phone,
-        fullName: existingUser.fullName
+    // Find ANY existing user matching email OR phone
+    const existingUsers = await User.find(query).select('email phone fullName');
+    
+    if (existingUsers.length > 0) {
+      console.log(`⚠️ [CHECK-DUPLICATES] DUPLICATES FOUND:`, existingUsers);
+      
+      // Check which specific field(s) are duplicate
+      let duplicateFields = [];
+      let duplicateMessages = [];
+      
+      existingUsers.forEach(user => {
+        if (email && user.email === email.toLowerCase().trim()) {
+          duplicateFields.push('email');
+          duplicateMessages.push(`Email is already registered to ${user.fullName || 'another user'}`);
+        }
+        if (phone) {
+          const cleanPhone = phone.trim().replace(/\D/g, '');
+          let standardizedPhone;
+          if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+            standardizedPhone = cleanPhone;
+          } else if (cleanPhone.length === 10) {
+            standardizedPhone = '0' + cleanPhone;
+          }
+          
+          if (standardizedPhone && user.phone === standardizedPhone) {
+            duplicateFields.push('phone');
+            duplicateMessages.push(`Phone number is already registered to ${user.fullName || 'another user'}`);
+          }
+        }
       });
       
-      // Determine which field is duplicate
-      let duplicateField = '';
-      let message = '';
-      
-      if (email && existingUser.email === email.toLowerCase().trim()) {
-        duplicateField = 'email';
-        message = `This email is already registered to ${existingUser.fullName || 'another user'}.`;
-      } else if (phone && existingUser.phone === query.phone) {
-        duplicateField = 'phone';
-        message = `This phone number is already registered to ${existingUser.fullName || 'another user'}.`;
-      }
+      // Remove duplicates
+      duplicateFields = [...new Set(duplicateFields)];
+      duplicateMessages = [...new Set(duplicateMessages)];
       
       return res.status(200).json({
         exists: true,
-        duplicateField: duplicateField,
-        message: message,
-        userFriendlyMessage: duplicateField === 'email' 
+        duplicateFields: duplicateFields, // Now returns array: ['email'], ['phone'], or ['email', 'phone']
+        message: duplicateMessages.join('. '),
+        userFriendlyMessage: duplicateFields.includes('email') 
           ? 'This email is already registered. Try logging in or use a different email.'
-          : 'This phone number is already in use. Try logging in or use a different phone number.'
+          : 'This phone number is already in use. Try logging in or use a different phone number.',
+        hasEmailDuplicate: duplicateFields.includes('email'),
+        hasPhoneDuplicate: duplicateFields.includes('phone')
       });
     }
     
-    console.log(`✅ [CHECK-DUPLICATES] No duplicates found for query:`, query);
+    console.log(`✅ [CHECK-DUPLICATES] No duplicates found`);
     return res.status(200).json({
       exists: false,
       message: 'No duplicates found'
@@ -1828,7 +1844,6 @@ app.post('/api/auth/check-duplicates', [
     });
   }
 });
-
 
 // @desc    Authenticate a user - FIXED VERSION
 // @route   POST /api/users/login
