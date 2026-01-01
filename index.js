@@ -1902,26 +1902,32 @@ app.post('/api/users/login', [
     // Check password
     const isPasswordMatch = await bcrypt.compare(password, user.password);
     
-    if (!isPasswordMatch) {
-      console.log(`❌ PASSWORD MISMATCH for: ${email}`);
-      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Incorrect password');
-      
-      // Get failed attempts count
-      const failedAttempts = await getFailedLoginAttempts(user._id);
-      const remainingAttempts = 3 - failedAttempts;
-      
-      if (remainingAttempts > 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: `Incorrect password. You have ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining.` 
-        });
-      } else {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Too many failed attempts. Account locked for 5 minutes.' 
-        });
-      }
-    }
+ if (!isPasswordMatch) {
+  console.log(`❌ PASSWORD MISMATCH for: ${email}`);
+  
+  // Increment failed attempts for this user
+  await incrementFailedLoginAttempts(user._id);
+  const failedAttempts = await getFailedLoginAttempts(user._id);
+  const remainingAttempts = 3 - failedAttempts;
+  
+  await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, `Incorrect password. Attempt ${failedAttempts} of 3`);
+  
+  if (remainingAttempts > 0) {
+    return res.status(400).json({ 
+      success: false, 
+      message: `Incorrect password. You have ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining.` 
+    });
+  } else {
+    // Lock the account
+    const lockoutUntil = Date.now() + 5 * 60 * 1000; // 5 minutes
+    await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account locked - too many failed attempts');
+    
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Too many failed attempts. Account locked for 5 minutes.' 
+    });
+  }
+}
     
     // Check if account is active
     if (!user.isActive) {
