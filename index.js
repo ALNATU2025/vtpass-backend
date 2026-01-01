@@ -1356,15 +1356,34 @@ app.post('/api/users/register', [
       });
     }
 
-    // 2. Check if user already exists
+      // 2. Check if user already exists - IMPROVED PHONE VALIDATION
+    const normalizedPhone = phone.trim().replace(/\D/g, '');
+    const standardizedPhone = normalizedPhone.length === 11 && normalizedPhone.startsWith('0') 
+      ? normalizedPhone 
+      : '0' + normalizedPhone;
+    
     const existingUser = await User.findOne({ 
-      $or: [{ email: normalizedEmail }, { phone }] 
+      $or: [
+        { email: normalizedEmail },
+        { phone: standardizedPhone }
+      ] 
     });
+    
     if (existingUser) {
       await session.abortTransaction();
+      
+      // Determine which field is duplicate for better error messages
+      let errorMessage = 'User with this email or phone already exists';
+      
+      if (existingUser.email === normalizedEmail) {
+        errorMessage = 'This email address is already registered.';
+      } else if (existingUser.phone === standardizedPhone) {
+        errorMessage = 'This phone number is already registered.';
+      }
+      
       return res.status(400).json({ 
         success: false, 
-        message: 'User with this email or phone already exists' 
+        message: errorMessage 
       });
     }
 
@@ -1702,7 +1721,7 @@ app.post('/api/users/register', [
 
 
 
-// @desc    Check for duplicate email/phone before registration
+// @desc    Check for duplicate email/phone (IMPROVED for phone validation)
 // @route   POST /api/auth/check-duplicates
 // @access  Public
 app.post('/api/auth/check-duplicates', [
@@ -1720,16 +1739,38 @@ app.post('/api/auth/check-duplicates', [
   const { email, phone } = req.body;
   
   try {
+    // Create query object
     const query = {};
     
+    // Handle email (if provided)
     if (email) {
       query.email = email.toLowerCase().trim();
     }
     
+    // Handle phone (if provided) - CRITICAL FIX: Trim and standardize
     if (phone) {
-      query.phone = phone.trim();
+      // Remove all non-digit characters and ensure it starts with 0
+      const cleanPhone = phone.trim().replace(/\D/g, '');
+      
+      // Standardize Nigerian phone format: ensure it starts with 0 and has 11 digits
+      if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+        query.phone = cleanPhone;
+      } else if (cleanPhone.length === 10) {
+        // If user entered without leading 0, add it
+        query.phone = '0' + cleanPhone;
+      } else {
+        query.phone = cleanPhone; // Let it fail in database query
+      }
     }
     
+    console.log(`🔍 [CHECK-DUPLICATES] Checking:`, {
+      originalEmail: email,
+      originalPhone: phone,
+      queryEmail: query.email,
+      queryPhone: query.phone
+    });
+    
+    // If no valid query, return error
     if (Object.keys(query).length === 0) {
       return res.status(400).json({
         success: false,
@@ -1737,24 +1778,36 @@ app.post('/api/auth/check-duplicates', [
       });
     }
     
-    const existingUser = await User.findOne(query).select('email phone');
+    // Find existing user
+    const existingUser = await User.findOne(query).select('email phone fullName');
     
     if (existingUser) {
+      console.log(`⚠️ [CHECK-DUPLICATES] DUPLICATE FOUND:`, {
+        email: existingUser.email,
+        phone: existingUser.phone,
+        fullName: existingUser.fullName
+      });
+      
+      // Determine which field is duplicate
       let duplicateField = '';
+      let message = '';
       
       if (email && existingUser.email === email.toLowerCase().trim()) {
         duplicateField = 'email';
-      } else if (phone && existingUser.phone === phone.trim()) {
+        message = `This email is already registered to ${existingUser.fullName}`;
+      } else if (phone && existingUser.phone === query.phone) {
         duplicateField = 'phone';
+        message = `This phone number is already registered to ${existingUser.fullName}`;
       }
       
       return res.status(200).json({
         exists: true,
         duplicateField: duplicateField,
-        message: `This ${duplicateField} is already registered`
+        message: message
       });
     }
     
+    console.log(`✅ [CHECK-DUPLICATES] No duplicates found for query:`, query);
     return res.status(200).json({
       exists: false,
       message: 'No duplicates found'
@@ -1768,7 +1821,6 @@ app.post('/api/auth/check-duplicates', [
     });
   }
 });
-
 
 
 
