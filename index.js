@@ -1701,6 +1701,77 @@ app.post('/api/users/register', [
 
 
 
+
+// @desc    Check for duplicate email/phone before registration
+// @route   POST /api/auth/check-duplicates
+// @access  Public
+app.post('/api/auth/check-duplicates', [
+  body('email').optional().isEmail().withMessage('Invalid email format'),
+  body('phone').optional().isMobilePhone().withMessage('Invalid phone format')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg 
+    });
+  }
+
+  const { email, phone } = req.body;
+  
+  try {
+    const query = {};
+    
+    if (email) {
+      query.email = email.toLowerCase().trim();
+    }
+    
+    if (phone) {
+      query.phone = phone.trim();
+    }
+    
+    if (Object.keys(query).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone is required'
+      });
+    }
+    
+    const existingUser = await User.findOne(query).select('email phone');
+    
+    if (existingUser) {
+      let duplicateField = '';
+      
+      if (email && existingUser.email === email.toLowerCase().trim()) {
+        duplicateField = 'email';
+      } else if (phone && existingUser.phone === phone.trim()) {
+        duplicateField = 'phone';
+      }
+      
+      return res.status(200).json({
+        exists: true,
+        duplicateField: duplicateField,
+        message: `This ${duplicateField} is already registered`
+      });
+    }
+    
+    return res.status(200).json({
+      exists: false,
+      message: 'No duplicates found'
+    });
+    
+  } catch (error) {
+    console.error('❌ [CHECK-DUPLICATES] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to check duplicates at this time'
+    });
+  }
+});
+
+
+
+
 // @desc    Authenticate a user - FIXED VERSION
 // @route   POST /api/users/login
 // @access  Public
