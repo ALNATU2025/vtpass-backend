@@ -1845,7 +1845,7 @@ app.post('/api/auth/check-duplicates', [
   }
 });
 
-// @desc    Authenticate a user - FIXED VERSION
+// @desc    Authenticate a user - IMPROVED VERSION with detailed validation
 // @route   POST /api/users/login
 // @access  Public
 app.post('/api/users/login', [
@@ -1864,35 +1864,63 @@ app.post('/api/users/login', [
   try {
     console.log(`🔐 LOGIN ATTEMPT: ${email}`);
     
-    // Find user by email (case-insensitive)
+    // First check if user exists by email
     const user = await User.findOne({ 
       email: email.toLowerCase().trim() 
     });
     
     if (!user) {
       console.log(`❌ USER NOT FOUND: ${email}`);
-      await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Invalid email: ${email}`);
-      return res.status(400).json({ success: false, message: 'Invalid credentials' });
+      await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `User not found: ${email}`);
+      
+      // Check if it might be a phone number login attempt
+      const phoneUser = await User.findOne({ phone: email.trim() });
+      if (phoneUser) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Email not found, but this phone number is registered. Please use your registered email to login.' 
+        });
+      }
+      
+      // Check if email format is valid but not registered
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (emailRegex.test(email)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'No account found with this email. Please sign up or check your email.' 
+        });
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid email format. Please enter a valid email address.' 
+        });
+      }
     }
     
     console.log(`✅ USER FOUND: ${user.email} | ID: ${user._id}`);
     
-    // DEBUG: Log password comparison details
-    console.log('🔍 PASSWORD COMPARISON DEBUG:', {
-      inputPasswordLength: password.length,
-      storedHashLength: user.password?.length,
-      hasStoredPassword: !!user.password
-    });
-    
-    // Verify password
+    // Check password
     const isPasswordMatch = await bcrypt.compare(password, user.password);
-    
-    console.log(`🔑 PASSWORD MATCH RESULT: ${isPasswordMatch}`);
     
     if (!isPasswordMatch) {
       console.log(`❌ PASSWORD MISMATCH for: ${email}`);
-      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Invalid password');
-      return res.status(400).json({ success: false, message: 'Invalid credentials' });
+      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Incorrect password');
+      
+      // Get failed attempts count
+      const failedAttempts = await getFailedLoginAttempts(user._id);
+      const remainingAttempts = 3 - failedAttempts;
+      
+      if (remainingAttempts > 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Incorrect password. You have ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining.` 
+        });
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Too many failed attempts. Account locked for 5 minutes.' 
+        });
+      }
     }
     
     // Check if account is active
@@ -1901,11 +1929,14 @@ app.post('/api/users/login', [
       await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
       return res.status(403).json({ 
         success: false, 
-        message: 'Your account has been deactivated. Please contact support.' 
+        message: 'Your account has been deactivated. Please contact support at support@dala.com.' 
       });
     }
     
     console.log(`✅ PASSWORD VERIFIED for: ${email}`);
+    
+    // Reset failed attempts on successful login
+    await resetFailedLoginAttempts(user._id);
     
     // Update last login time
     user.lastLoginAt = getLagosTime();
@@ -1943,12 +1974,13 @@ app.post('/api/users/login', [
     console.error('💥 LOGIN ERROR:', error);
     console.error('Error stack:', error.stack);
     
-    // More specific error messages
-    let errorMessage = 'Internal Server Error';
+    let errorMessage = 'Internal Server Error. Please try again or contact support.';
     if (error.name === 'MongoError') {
-      errorMessage = 'Database connection error';
+      errorMessage = 'Database connection error. Please try again in a moment.';
     } else if (error.name === 'TypeError') {
-      errorMessage = 'Data processing error';
+      errorMessage = 'Data processing error. Please check your input.';
+    } else if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'Unable to connect to server. Please check your internet connection.';
     }
     
     res.status(500).json({ 
@@ -1957,6 +1989,39 @@ app.post('/api/users/login', [
     });
   }
 });
+
+
+
+// Helper function to track failed login attempts
+const failedLoginAttempts = new Map();
+
+async function getFailedLoginAttempts(userId) {
+  if (failedLoginAttempts.has(userId)) {
+    const attempts = failedLoginAttempts.get(userId);
+    // Clear attempts older than 5 minutes
+    if (Date.now() - attempts.timestamp > 5 * 60 * 1000) {
+      failedLoginAttempts.delete(userId);
+      return 0;
+    }
+    return attempts.count;
+  }
+  return 0;
+}
+
+async function incrementFailedLoginAttempts(userId) {
+  const currentAttempts = await getFailedLoginAttempts(userId);
+  failedLoginAttempts.set(userId, {
+    count: currentAttempts + 1,
+    timestamp: Date.now()
+  });
+}
+
+async function resetFailedLoginAttempts(userId) {
+  failedLoginAttempts.delete(userId);
+}
+
+
+
 // @desc    Refresh access token - FINAL BULLETPROOF VERSION
 // @route   POST /api/users/refresh-token
 // @access  Public (MUST be public!)
