@@ -1356,34 +1356,38 @@ app.post('/api/users/register', [
       });
     }
 
-      // 2. Check if user already exists - IMPROVED PHONE VALIDATION
+       // 2. Check if user already exists - IMPROVED DUPLICATE DETECTION
     const normalizedPhone = phone.trim().replace(/\D/g, '');
     const standardizedPhone = normalizedPhone.length === 11 && normalizedPhone.startsWith('0') 
       ? normalizedPhone 
       : '0' + normalizedPhone;
     
-    const existingUser = await User.findOne({ 
-      $or: [
-        { email: normalizedEmail },
-        { phone: standardizedPhone }
-      ] 
-    });
+    // Check both email and phone separately for better error messages
+    const existingEmail = await User.findOne({ email: normalizedEmail });
+    const existingPhone = await User.findOne({ phone: standardizedPhone });
     
-    if (existingUser) {
+    if (existingEmail || existingPhone) {
       await session.abortTransaction();
       
-      // Determine which field is duplicate for better error messages
-      let errorMessage = 'User with this email or phone already exists';
+      let errorMessage = '';
+      let errorCode = '';
       
-      if (existingUser.email === normalizedEmail) {
-        errorMessage = 'This email address is already registered.';
-      } else if (existingUser.phone === standardizedPhone) {
-        errorMessage = 'This phone number is already registered.';
+      if (existingEmail) {
+        errorMessage = `This email is already registered to ${existingEmail.fullName || 'another user'}.`;
+        errorCode = 'EMAIL_EXISTS';
+      } else if (existingPhone) {
+        errorMessage = `This phone number is already registered to ${existingPhone.fullName || 'another user'}.`;
+        errorCode = 'PHONE_EXISTS';
       }
       
-      return res.status(400).json({ 
+      return res.status(409).json({ 
         success: false, 
-        message: errorMessage 
+        message: errorMessage,
+        errorCode: errorCode,
+        duplicateField: existingEmail ? 'email' : 'phone',
+        userFriendlyMessage: existingEmail 
+          ? 'This email is already registered. Try logging in or use a different email.'
+          : 'This phone number is already in use. Try logging in or use a different phone number.'
       });
     }
 
@@ -1721,12 +1725,12 @@ app.post('/api/users/register', [
 
 
 
-// @desc    Check for duplicate email/phone (IMPROVED for phone validation)
+// @desc    Check for duplicates (phone/email) BEFORE registration
 // @route   POST /api/auth/check-duplicates
 // @access  Public
 app.post('/api/auth/check-duplicates', [
   body('email').optional().isEmail().withMessage('Invalid email format'),
-  body('phone').optional().isMobilePhone().withMessage('Invalid phone format')
+  body('phone').optional().isMobilePhone('en-NG').withMessage('Invalid Nigerian phone number')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -1794,16 +1798,19 @@ app.post('/api/auth/check-duplicates', [
       
       if (email && existingUser.email === email.toLowerCase().trim()) {
         duplicateField = 'email';
-        message = `This email is already registered to ${existingUser.fullName}`;
+        message = `This email is already registered to ${existingUser.fullName || 'another user'}.`;
       } else if (phone && existingUser.phone === query.phone) {
         duplicateField = 'phone';
-        message = `This phone number is already registered to ${existingUser.fullName}`;
+        message = `This phone number is already registered to ${existingUser.fullName || 'another user'}.`;
       }
       
       return res.status(200).json({
         exists: true,
         duplicateField: duplicateField,
-        message: message
+        message: message,
+        userFriendlyMessage: duplicateField === 'email' 
+          ? 'This email is already registered. Try logging in or use a different email.'
+          : 'This phone number is already in use. Try logging in or use a different phone number.'
       });
     }
     
@@ -1821,7 +1828,6 @@ app.post('/api/auth/check-duplicates', [
     });
   }
 });
-
 
 
 // @desc    Authenticate a user - FIXED VERSION
