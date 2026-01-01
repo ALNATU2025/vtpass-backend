@@ -982,7 +982,7 @@ const createTransaction = async (
 };
 
 
-// CALCULATE COMMISSION - FIXED VERSION FOR ALL SERVICES
+// CALCULATE COMMISSION - UPDATED RATES PER SERVICE TYPE
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null, isUsingCommission = false) => {
   try {
     // 🔥 CRITICAL FIX: Skip commission if user paid with commission
@@ -1024,8 +1024,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     }
     const settings = await settingsQuery;
     
-    // Determine commission rate based on service type
-    let rate = 0.03; // Default 3%
+    // Determine commission rate based on service type - UPDATED RATES
+    let rate = 0.003; // Default 0.3% for other services
     
     // Get specific commission rates from settings
     if (settings) {
@@ -1034,48 +1034,62 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       
       console.log('🔍 Commission calculation for service:', lowerType);
       
+      // ========== UPDATED COMMISSION RATES ==========
+      
+      // 1. TRANSFER SERVICES - 0.3%
       if (lowerType.includes('transfer') || 
           lowerType === 'transfer' || 
           lowerType === 'peer_transfer' ||
           lowerType.includes('peer')) {
-        rate = settings.transferCommissionRate || 0.03; // 3% for transfers
-        console.log('✅ Transfer commission rate:', rate);
-      } else if (lowerType.includes('mtn') || lowerType.includes('airtel') || 
-                 lowerType.includes('glo') || lowerType.includes('etisalat') || 
-                 lowerType.includes('9mobile')) {
-        if (lowerType.includes('data')) {
-          // Check if dataCommissionRate exists, otherwise use default 5%
-          rate = typeof settings.dataCommissionRate !== 'undefined' 
-            ? settings.dataCommissionRate 
-            : 0.05; // Default 5% for data
-          console.log('✅ Data commission rate:', rate);
-        } else {
-          rate = settings.airtimeCommissionRate || 0.05; // 5% for airtime
-          console.log('✅ Airtime commission rate:', rate);
-        }
-      } else if (lowerType.includes('electric') || 
-                 lowerType.includes('ikeja') || 
-                 lowerType.includes('eko') || 
-                 lowerType.includes('abuja') || 
-                 lowerType.includes('ibadan') || 
-                 lowerType.includes('enugu') || 
-                 lowerType.includes('kano') || 
-                 lowerType.includes('ph')) {
-        rate = settings.electricityCommissionRate || 0.04; // 4% for electricity
-        console.log('✅ Electricity commission rate:', rate);
-      } else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
-                 lowerType.includes('startimes') || lowerType === 'tv') {
-        rate = settings.cableTvCommissionRate || 0.06; // 6% for cable TV
-        console.log('✅ Cable TV commission rate:', rate);
-      } else if (lowerType.includes('education')) {
-        rate = settings.educationCommissionRate || 0.05; // 5% for education
-        console.log('✅ Education commission rate:', rate);
-      } else if (lowerType.includes('insurance')) {
-        rate = settings.insuranceCommissionRate || 0.04; // 4% for insurance
-        console.log('✅ Insurance commission rate:', rate);
-      } else {
-        rate = settings.commissionRate || 0.03; // Default commission rate
-        console.log('✅ Default commission rate:', rate);
+        rate = settings.transferCommissionRate || 0.003; // 0.3% for transfers
+        console.log('✅ Transfer commission rate:', rate, '(0.3%)');
+      } 
+      // 2. AIRTIME SERVICES - 0.5%
+      else if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
+               lowerType.includes('glo') || lowerType.includes('etisalat') || 
+               lowerType.includes('9mobile')) && !lowerType.includes('data')) {
+        rate = settings.airtimeCommissionRate || 0.005; // 0.5% for airtime
+        console.log('✅ Airtime commission rate:', rate, '(0.5%)');
+      } 
+      // 3. DATA SERVICES - 0.5%
+      else if (lowerType.includes('data')) {
+        rate = typeof settings.dataCommissionRate !== 'undefined' 
+          ? settings.dataCommissionRate 
+          : 0.005; // 0.5% for data
+        console.log('✅ Data commission rate:', rate, '(0.5%)');
+      } 
+      // 4. ELECTRICITY SERVICES - 0.4%
+      else if (lowerType.includes('electric') || 
+               lowerType.includes('ikeja') || 
+               lowerType.includes('eko') || 
+               lowerType.includes('abuja') || 
+               lowerType.includes('ibadan') || 
+               lowerType.includes('enugu') || 
+               lowerType.includes('kano') || 
+               lowerType.includes('ph')) {
+        rate = settings.electricityCommissionRate || 0.004; // 0.4% for electricity
+        console.log('✅ Electricity commission rate:', rate, '(0.4%)');
+      } 
+      // 5. CABLE TV SERVICES - 0.5%
+      else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
+               lowerType.includes('startimes') || lowerType === 'tv') {
+        rate = settings.cableTvCommissionRate || 0.005; // 0.5% for cable TV
+        console.log('✅ Cable TV commission rate:', rate, '(0.5%)');
+      } 
+      // 6. EDUCATION SERVICES - 0.5%
+      else if (lowerType.includes('education')) {
+        rate = settings.educationCommissionRate || 0.005; // 0.5% for education
+        console.log('✅ Education commission rate:', rate, '(0.5%)');
+      } 
+      // 7. INSURANCE SERVICES - 0.4%
+      else if (lowerType.includes('insurance')) {
+        rate = settings.insuranceCommissionRate || 0.004; // 0.4% for insurance
+        console.log('✅ Insurance commission rate:', rate, '(0.4%)');
+      } 
+      // 8. DEFAULT - 0.3%
+      else {
+        rate = settings.commissionRate || 0.003; // Default commission rate 0.3%
+        console.log('✅ Default commission rate:', rate, '(0.3%)');
       }
     }
 
@@ -1093,8 +1107,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     // Check if commission is 100% (rate = 1)
     if (rate === 1 || Math.abs(rate - 1) < 0.00001) {
       console.error('❌ ERROR: Commission rate is 100%! This is wrong.');
-      console.error('❌ Using fallback rate of 5%');
-      commissionAmount = cleanAmount * 0.05;
+      console.error('❌ Using fallback rate of 0.5%');
+      commissionAmount = cleanAmount * 0.005;
     }
     
     if (commissionAmount <= 0) {
@@ -1134,7 +1148,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     let commissionType = 'Commission Credit';
 
     // ========== DETERMINE COMMISSION TYPE ==========
-    // 1. AIRTIME COMMISSION
+    // 1. AIRTIME COMMISSION - 0.5%
     if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
          lowerType.includes('glo') || lowerType.includes('etisalat') || 
          lowerType.includes('9mobile')) && 
@@ -1142,24 +1156,24 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Airtime';
       commissionType = 'Airtime Commission Credit';
-      console.log('✅ Commission type determined: Airtime');
+      console.log('✅ Commission type determined: Airtime (0.5%)');
     }
-    // 2. DATA COMMISSION
+    // 2. DATA COMMISSION - 0.5%
     else if (lowerType.includes('data')) {
       description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Data';
       commissionType = 'Data Commission Credit';
-      console.log('✅ Commission type determined: Data');
+      console.log('✅ Commission type determined: Data (0.5%)');
     }
-    // 3. CABLE TV COMMISSION
+    // 3. CABLE TV COMMISSION - 0.5%
     else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
              lowerType.includes('startimes') || lowerType === 'tv') {
       description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Cable TV';
       commissionType = 'Cable TV Commission Credit';
-      console.log('✅ Commission type determined: Cable TV');
+      console.log('✅ Commission type determined: Cable TV (0.5%)');
     }
-    // 4. ELECTRICITY COMMISSION
+    // 4. ELECTRICITY COMMISSION - 0.4%
     else if (lowerType.includes('electric') || 
              lowerType.includes('ikeja') || 
              lowerType.includes('eko') || 
@@ -1171,9 +1185,9 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Electricity';
       commissionType = 'Electricity Commission Credit';
-      console.log('✅ Commission type determined: Electricity');
+      console.log('✅ Commission type determined: Electricity (0.4%)');
     }
-    // 5. EDUCATION COMMISSION
+    // 5. EDUCATION COMMISSION - 0.5%
     else if (lowerType.includes('education') || 
              lowerType.includes('waec') || 
              lowerType.includes('jamb') || 
@@ -1182,9 +1196,9 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Education';
       commissionType = 'Education Commission Credit';
-      console.log('✅ Commission type determined: Education');
+      console.log('✅ Commission type determined: Education (0.5%)');
     }
-    // 6. INSURANCE COMMISSION
+    // 6. INSURANCE COMMISSION - 0.4%
     else if (lowerType.includes('insurance') || 
              lowerType.includes('insure') || 
              lowerType.includes('ui-insure') || 
@@ -1193,9 +1207,9 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Insurance';
       commissionType = 'Insurance Commission Credit';
-      console.log('✅ Commission type determined: Insurance');
+      console.log('✅ Commission type determined: Insurance (0.4%)');
     }
-    // 7. TRANSFER COMMISSION
+    // 7. TRANSFER COMMISSION - 0.3%
     else if (lowerType.includes('transfer') || 
              lowerType === 'transfer' || 
              lowerType === 'peer_transfer' ||
@@ -1205,15 +1219,15 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Transfer';
       commissionType = 'Transfer Commission Credit';
-      console.log('✅ Commission type determined: Transfer');
+      console.log('✅ Commission type determined: Transfer (0.3%)');
     }
-    // 8. DEFAULT
+    // 8. DEFAULT COMMISSION - 0.3%
     else {
       const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
       description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = formattedType;
       commissionType = `${formattedType} Commission Credit`;
-      console.log(`⚠️ Default commission type used: ${formattedType}`);
+      console.log(`⚠️ Default commission type used: ${formattedType} (0.3%)`);
     }
 
     console.log(`✅ Commission determined: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
