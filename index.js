@@ -1017,6 +1017,19 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     
     console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount} | UsingCommission=${isUsingCommission}`);
     
+    // ========== SKIP COMMISSION FOR TRANSFERS ==========
+    // Wallet-to-wallet transfers do not earn commission
+    if (serviceTypeString.toLowerCase().includes('transfer') || 
+        serviceTypeString.toLowerCase() === 'transfer' || 
+        serviceTypeString.toLowerCase() === 'peer_transfer' ||
+        serviceTypeString.toLowerCase().includes('peer') ||
+        serviceTypeString.toLowerCase().includes('wallet_transfer') ||
+        serviceTypeString.toLowerCase().includes('send_money')) {
+      console.log(`⚠️ SKIPPING COMMISSION: Wallet-to-wallet transfers do not earn commission`);
+      return 0;
+    }
+    // ==================================================
+    
     // Use session if provided, otherwise query normally
     const settingsQuery = Settings.findOne();
     if (mongooseSession) {
@@ -1035,30 +1048,23 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       console.log('🔍 Commission calculation for service:', lowerType);
       
       // ========== UPDATED COMMISSION RATES ==========
+      // Note: Transfer rates are commented out since transfers don't earn commission
       
-      // 1. TRANSFER SERVICES - 0.3%
-      if (lowerType.includes('transfer') || 
-          lowerType === 'transfer' || 
-          lowerType === 'peer_transfer' ||
-          lowerType.includes('peer')) {
-        rate = settings.transferCommissionRate || 0.003; // 0.3% for transfers
-        console.log('✅ Transfer commission rate:', rate, '(0.3%)');
-      } 
-      // 2. AIRTIME SERVICES - 0.5%
-      else if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
-               lowerType.includes('glo') || lowerType.includes('etisalat') || 
-               lowerType.includes('9mobile')) && !lowerType.includes('data')) {
+      // 1. AIRTIME SERVICES - 0.5%
+      if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
+           lowerType.includes('glo') || lowerType.includes('etisalat') || 
+           lowerType.includes('9mobile')) && !lowerType.includes('data')) {
         rate = settings.airtimeCommissionRate || 0.005; // 0.5% for airtime
         console.log('✅ Airtime commission rate:', rate, '(0.5%)');
       } 
-      // 3. DATA SERVICES - 0.5%
+      // 2. DATA SERVICES - 0.5%
       else if (lowerType.includes('data')) {
         rate = typeof settings.dataCommissionRate !== 'undefined' 
           ? settings.dataCommissionRate 
           : 0.005; // 0.5% for data
         console.log('✅ Data commission rate:', rate, '(0.5%)');
       } 
-      // 4. ELECTRICITY SERVICES - 0.4%
+      // 3. ELECTRICITY SERVICES - 0.4%
       else if (lowerType.includes('electric') || 
                lowerType.includes('ikeja') || 
                lowerType.includes('eko') || 
@@ -1070,23 +1076,23 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
         rate = settings.electricityCommissionRate || 0.004; // 0.4% for electricity
         console.log('✅ Electricity commission rate:', rate, '(0.4%)');
       } 
-      // 5. CABLE TV SERVICES - 0.5%
+      // 4. CABLE TV SERVICES - 0.5%
       else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
                lowerType.includes('startimes') || lowerType === 'tv') {
         rate = settings.cableTvCommissionRate || 0.005; // 0.5% for cable TV
         console.log('✅ Cable TV commission rate:', rate, '(0.5%)');
       } 
-      // 6. EDUCATION SERVICES - 0.5%
+      // 5. EDUCATION SERVICES - 0.5%
       else if (lowerType.includes('education')) {
         rate = settings.educationCommissionRate || 0.005; // 0.5% for education
         console.log('✅ Education commission rate:', rate, '(0.5%)');
       } 
-      // 7. INSURANCE SERVICES - 0.4%
+      // 6. INSURANCE SERVICES - 0.4%
       else if (lowerType.includes('insurance')) {
         rate = settings.insuranceCommissionRate || 0.004; // 0.4% for insurance
         console.log('✅ Insurance commission rate:', rate, '(0.4%)');
       } 
-      // 8. DEFAULT - 0.3%
+      // 7. DEFAULT - 0.3%
       else {
         rate = settings.commissionRate || 0.003; // Default commission rate 0.3%
         console.log('✅ Default commission rate:', rate, '(0.3%)');
@@ -1148,6 +1154,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     let commissionType = 'Commission Credit';
 
     // ========== DETERMINE COMMISSION TYPE ==========
+    // Note: Transfer commission type is commented out since transfers don't earn commission
+    
     // 1. AIRTIME COMMISSION - 0.5%
     if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
          lowerType.includes('glo') || lowerType.includes('etisalat') || 
@@ -1209,19 +1217,7 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       commissionType = 'Insurance Commission Credit';
       console.log('✅ Commission type determined: Insurance (0.4%)');
     }
-    // 7. TRANSFER COMMISSION - 0.3%
-    else if (lowerType.includes('transfer') || 
-             lowerType === 'transfer' || 
-             lowerType === 'peer_transfer' ||
-             lowerType.includes('peer') ||
-             lowerType.includes('wallet_transfer') ||
-             lowerType.includes('send_money')) {
-      description = `Transfer Commission Credit (₦${commissionAmount.toFixed(2)})`;
-      source = 'Transfer';
-      commissionType = 'Transfer Commission Credit';
-      console.log('✅ Commission type determined: Transfer (0.3%)');
-    }
-    // 8. DEFAULT COMMISSION - 0.3%
+    // 7. DEFAULT COMMISSION - 0.3%
     else {
       const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
       description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
@@ -4385,7 +4381,9 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       await session.commitTransaction();
       await session.endSession();
       
-      // Calculate commission (outside transaction) - FIXED: Added 'transfer' parameter
+      // ========== COMMISSION CALCULATION COMMENTED OUT ==========
+      // Wallet-to-wallet transfers do not earn commission
+      /*
       try {
         if (sender._id.toString() !== receiver._id.toString()) {
           // Pass 'transfer' as service type
@@ -4395,6 +4393,8 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
       } catch (commissionError) {
         console.error('Commission calculation error:', commissionError);
       }
+      */
+      // =========================================================
       
       // Create notifications (outside transaction)
       try {
@@ -4462,7 +4462,6 @@ app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('i
     }
   }
 });
-
 
 
 
