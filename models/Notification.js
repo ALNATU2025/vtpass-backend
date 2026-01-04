@@ -50,7 +50,8 @@ const notificationSchema = new mongoose.Schema({
       'payment_success',
       'payment_failed',
       'commission_earned',
-      'wallet_funded'
+      'wallet_funded',
+      'announcement' 
     ],
     default: 'general'
   },
