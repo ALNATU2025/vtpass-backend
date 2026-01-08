@@ -33,6 +33,81 @@ const withdrawLimiter = rateLimit({
 
 
 
+
+
+
+
+
+
+// @desc    Get referral earnings summary
+// @route   GET /api/commission/referral-earnings
+// @access  Private
+router.get('/referral-earnings', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Get referral transactions
+    const referralTransactions = await Transaction.find({
+      userId: userId,
+      isCommission: true,
+      $or: [
+        { type: 'Direct Referral Bonus' },
+        { type: 'Indirect Referral Bonus' },
+        { type: 'Welcome Bonus' }
+      ]
+    }).sort({ createdAt: -1 });
+    
+    // Calculate totals
+    const totalEarned = referralTransactions.reduce((sum, tx) => sum + tx.amount, 0);
+    const directReferralEarnings = referralTransactions
+      .filter(tx => tx.type === 'Direct Referral Bonus')
+      .reduce((sum, tx) => sum + tx.amount, 0);
+    const indirectReferralEarnings = referralTransactions
+      .filter(tx => tx.type === 'Indirect Referral Bonus')
+      .reduce((sum, tx) => sum + tx.amount, 0);
+    const welcomeBonusEarnings = referralTransactions
+      .filter(tx => tx.type === 'Welcome Bonus')
+      .reduce((sum, tx) => sum + tx.amount, 0);
+    
+    // Get referral stats
+    const user = await User.findById(userId);
+    const directReferrals = await User.countDocuments({ referrerId: userId });
+    
+    res.json({
+      success: true,
+      data: {
+        totalEarned,
+        directReferralEarnings,
+        indirectReferralEarnings,
+        welcomeBonusEarnings,
+        referralStats: {
+          totalReferrals: directReferrals,
+          referralCode: user.referralCode,
+          totalReferralEarnings: user.totalReferralEarnings || 0
+        },
+        transactions: referralTransactions,
+        formatted: {
+          totalEarned: formatCurrency(totalEarned),
+          directReferralEarnings: formatCurrency(directReferralEarnings),
+          indirectReferralEarnings: formatCurrency(indirectReferralEarnings),
+          welcomeBonusEarnings: formatCurrency(welcomeBonusEarnings)
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Referral earnings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get referral earnings'
+    });
+  }
+});
+
+
+
+
+
 // Add this at the TOP of commissionRoutes.js, after imports
 router.get('/test', (req, res) => {
   res.json({
