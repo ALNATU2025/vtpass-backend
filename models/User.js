@@ -89,6 +89,35 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: true,
     },
+
+
+    referralBonusAwarded: {
+  type: Boolean,
+  default: false
+},
+indirectBonusAwardedLevel2: {
+  type: Boolean,
+  default: false
+},
+indirectBonusAwardedLevel3: {
+  type: Boolean,
+  default: false
+},
+totalReferralEarnings: {
+  type: Number,
+  default: 0
+},
+referralTier: {
+  type: String,
+  enum: ['Bronze', 'Silver', 'Gold', 'Platinum'],
+  default: 'Bronze'
+}
+
+
+
+
+
+    
     
     // Referral system fields
     referralCode: {
