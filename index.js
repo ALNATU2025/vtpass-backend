@@ -982,6 +982,347 @@ const createTransaction = async (
 };
 
 
+
+
+
+
+// ==================== REFERRAL BONUS FUNCTIONS ====================
+
+/**
+ * Check if user has made first deposit
+ */
+const checkFirstDeposit = async (userId, mongooseSession = null) => {
+  try {
+    const transactionQuery = Transaction.findOne({
+      userId: userId,
+      type: 'credit',
+      status: 'Successful',
+      'metadata.isDeposit': true
+    });
+    
+    if (mongooseSession) {
+      transactionQuery.session(mongooseSession);
+    }
+    
+    const deposit = await transactionQuery;
+    return !!deposit;
+  } catch (error) {
+    console.error('❌ Error checking first deposit:', error);
+    return false;
+  }
+};
+
+/**
+ * Award direct referral bonus (₦200 to both referrer and referred user)
+ */
+const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Checking direct referral bonus for user: ${referredUserId}, Deposit: ₦${depositAmount}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found or user not found');
+      return false;
+    }
+    
+    // Check if bonus already awarded
+    if (referredUser.referralBonusAwarded) {
+      console.log('⚠️ Direct referral bonus already awarded');
+      return false;
+    }
+    
+    // Check if deposit amount meets minimum for bonus
+    if (depositAmount < 1000) { // Minimum ₦1000 deposit for bonus
+      console.log('⚠️ Deposit amount too small for referral bonus');
+      return false;
+    }
+    
+    const referrerId = referredUser.referrerId;
+    
+    // Award ₦200 to referrer
+    const referrerQuery = User.findById(referrerId);
+    if (mongooseSession) {
+      referrerQuery.session(mongooseSession);
+    }
+    
+    const referrer = await referrerQuery;
+    if (!referrer) {
+      console.log('❌ Referrer not found');
+      return false;
+    }
+    
+    // Add ₦200 to referrer's commission balance
+    const referrerCommissionBefore = referrer.commissionBalance || 0;
+    referrer.commissionBalance = (referrer.commissionBalance || 0) + 200;
+    referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
+    await referrer.save({ session: mongooseSession });
+    
+    // Create transaction for referrer
+    await createTransaction(
+      referrerId,
+      200,
+      'Direct Referral Bonus',
+      'Successful',
+      `Direct referral bonus for referring ${referredUser.fullName}`,
+      referrerCommissionBefore,
+      referrer.commissionBalance,
+      mongooseSession,
+      true, // isCommission
+      'none',
+      null,
+      {},
+      {
+        referralType: 'direct',
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        bonusAmount: 200,
+        depositAmount: depositAmount,
+        bonusFor: 'referrer'
+      }
+    );
+    
+    // Award ₦200 to referred user (welcome bonus)
+    const userCommissionBefore = referredUser.commissionBalance || 0;
+    referredUser.commissionBalance = (referredUser.commissionBalance || 0) + 200;
+    referredUser.referralBonusAwarded = true;
+    await referredUser.save({ session: mongooseSession });
+    
+    // Create transaction for referred user
+    await createTransaction(
+      referredUserId,
+      200,
+      'Welcome Bonus',
+      'Successful',
+      'Welcome bonus for joining with referral code',
+      userCommissionBefore,
+      referredUser.commissionBalance,
+      mongooseSession,
+      true, // isCommission
+      'none',
+      null,
+      {},
+      {
+        referralType: 'welcome_bonus',
+        referrerId: referrerId,
+        referrerName: referrer.fullName,
+        bonusAmount: 200,
+        depositAmount: depositAmount,
+        bonusFor: 'referred_user'
+      }
+    );
+    
+    // Create notifications
+    try {
+      // Notification for referrer
+      await Notification.create([{
+        recipient: referrerId,
+        title: "Referral Bonus Earned! 🎉",
+        message: `You earned ₦200 referral bonus from ${referredUser.fullName}'s first deposit of ₦${depositAmount}!`,
+        type: 'referral_bonus',
+        isRead: false,
+        metadata: {
+          event: 'direct_referral_bonus',
+          referredUserId: referredUserId,
+          bonusAmount: 200,
+          depositAmount: depositAmount
+        }
+      }], { session: mongooseSession });
+      
+      // Notification for referred user
+      await Notification.create([{
+        recipient: referredUserId,
+        title: "Welcome Bonus! 🎁",
+        message: `You received ₦200 welcome bonus for your first deposit with referral code!`,
+        type: 'welcome_bonus',
+        isRead: false,
+        metadata: {
+          event: 'welcome_bonus',
+          bonusAmount: 200,
+          referrerName: referrer.fullName
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ Bonus notification error:', notifError);
+    }
+    
+    console.log(`✅ Direct referral bonus awarded: ₦200 to both referrer ${referrer.email} and referred user ${referredUser.email}`);
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error awarding direct referral bonus:', error);
+    return false;
+  }
+};
+
+/**
+ * Award indirect referral bonus (₦20 to original referrer)
+ */
+const awardIndirectReferralBonus = async (referredUserId, depositAmount, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Checking indirect referral bonus for user: ${referredUserId}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found');
+      return false;
+    }
+    
+    // Get the direct referrer (level 1)
+    const directReferrerId = referredUser.referrerId;
+    
+    // Find the direct referrer's referrer (level 2 - original referrer)
+    const directReferrerQuery = User.findById(directReferrerId);
+    if (mongooseSession) {
+      directReferrerQuery.session(mongooseSession);
+    }
+    
+    const directReferrer = await directReferrerQuery;
+    if (!directReferrer || !directReferrer.referrerId) {
+      console.log('⚠️ No indirect referrer found (level 2)');
+      return false;
+    }
+    
+    const originalReferrerId = directReferrer.referrerId;
+    
+    // Check if indirect bonus already awarded for this user
+    if (referredUser.indirectBonusAwardedLevel2) {
+      console.log(`⚠️ Indirect bonus (level 2) already awarded`);
+      return false;
+    }
+    
+    const originalReferrerQuery = User.findById(originalReferrerId);
+    if (mongooseSession) {
+      originalReferrerQuery.session(mongooseSession);
+    }
+    
+    const originalReferrer = await originalReferrerQuery;
+    if (!originalReferrer) {
+      console.log('❌ Original referrer not found');
+      return false;
+    }
+    
+    const bonusAmount = 20; // ₦20 for indirect referrals
+    
+    // Add bonus to original referrer's commission balance
+    const commissionBefore = originalReferrer.commissionBalance || 0;
+    originalReferrer.commissionBalance = (originalReferrer.commissionBalance || 0) + bonusAmount;
+    originalReferrer.totalReferralEarnings = (originalReferrer.totalReferralEarnings || 0) + bonusAmount;
+    await originalReferrer.save({ session: mongooseSession });
+    
+    // Mark bonus as awarded for this user
+    referredUser.indirectBonusAwardedLevel2 = true;
+    await referredUser.save({ session: mongooseSession });
+    
+    // Create transaction
+    await createTransaction(
+      originalReferrerId,
+      bonusAmount,
+      'Indirect Referral Bonus',
+      'Successful',
+      `Indirect referral bonus from ${referredUser.fullName}'s first deposit`,
+      commissionBefore,
+      originalReferrer.commissionBalance,
+      mongooseSession,
+      true, // isCommission
+      'none',
+      null,
+      {},
+      {
+        referralType: 'indirect',
+        level: 2,
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        directReferrerId: directReferrerId,
+        directReferrerName: directReferrer.fullName,
+        bonusAmount: bonusAmount,
+        depositAmount: depositAmount
+      }
+    );
+    
+    // Create notification
+    try {
+      await Notification.create([{
+        recipient: originalReferrerId,
+        title: "Indirect Referral Bonus! 💰",
+        message: `You earned ₦${bonusAmount} indirect referral bonus from ${directReferrer.fullName}'s referral!`,
+        type: 'referral_bonus',
+        isRead: false,
+        metadata: {
+          event: 'indirect_referral_bonus',
+          level: 2,
+          directReferrerId: directReferrerId,
+          referredUserId: referredUserId,
+          bonusAmount: bonusAmount
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ Indirect bonus notification error:', notifError);
+    }
+    
+    console.log(`✅ Indirect referral bonus (level 2) awarded: ₦${bonusAmount} to ${originalReferrer.email}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ Error awarding indirect referral bonus:`, error);
+    return false;
+  }
+};
+
+/**
+ * Process referral bonuses when user makes first deposit
+ */
+const processReferralBonusesOnFirstDeposit = async (userId, depositAmount, mongooseSession = null) => {
+  try {
+    console.log(`💰 Processing referral bonuses for user ${userId}'s first deposit: ₦${depositAmount}`);
+    
+    // Check if user has a referrer
+    const user = await User.findById(userId);
+    if (!user || !user.referrerId) {
+      console.log('⚠️ User has no referrer, skipping referral bonuses');
+      return { directBonusAwarded: false, message: 'No referrer found' };
+    }
+    
+    // Check if this is the first deposit
+    const isFirstDeposit = await checkFirstDeposit(userId, mongooseSession);
+    if (!isFirstDeposit) {
+      console.log('⚠️ Not first deposit, skipping referral bonuses');
+      return { directBonusAwarded: false, message: 'Not first deposit' };
+    }
+    
+    // Award direct referral bonus (₦200 to both)
+    const directBonusAwarded = await awardDirectReferralBonus(userId, depositAmount, mongooseSession);
+    
+    if (directBonusAwarded) {
+      // Award indirect referral bonus (₦20 to level 2 referrer)
+      await awardIndirectReferralBonus(userId, depositAmount, mongooseSession);
+    }
+    
+    return {
+      directBonusAwarded,
+      message: directBonusAwarded ? 'Referral bonuses processed successfully' : 'No referral bonuses awarded'
+    };
+    
+  } catch (error) {
+    console.error('❌ Error processing referral bonuses:', error);
+    return { directBonusAwarded: false, error: error.message };
+  }
+};
+
+
+
+
+
+
 // CALCULATE COMMISSION - UPDATED RATES PER SERVICE TYPE
 const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null, isUsingCommission = false) => {
   try {
@@ -9072,11 +9413,9 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 
 
 
-// @desc    Top up wallet from virtual account / PayStack webhook - FIXED & ROBUST
+// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES
 // @route   POST /api/wallet/top-up
 // @access  Public (called by virtual-account-backend)
-// ==================== FINAL PRODUCTION WALLET TOP-UP ENDPOINT ====================
-// Called by virtual-account-backend webhook → 100% safe from replay attacks
 app.post('/api/wallet/top-up', async (req, res) => {
   console.log('MAIN BACKEND: Wallet top-up request received', req.body);
 
@@ -9127,6 +9466,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
       user.walletBalance += amountInNaira;
       await user.save({ session });
 
+      // Create main wallet transaction with isDeposit flag
       await Transaction.create([{
         userId,
         type: 'credit',
@@ -9137,17 +9477,62 @@ app.post('/api/wallet/top-up', async (req, res) => {
         balanceBefore,
         balanceAfter: user.walletBalance,
         gateway: 'Dalabapay App',
-        metadata: { source: 'webhook', processedAt: new Date() }
+        metadata: { 
+          source: 'webhook', 
+          processedAt: new Date(),
+          isDeposit: true, // Mark as deposit for referral bonus tracking
+          depositAmount: amountInNaira,
+          reference: reference
+        }
       }], { session });
 
       console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
 
-      // Notification
+      // ================================================
+      // 🔥 REFERRAL BONUS SYSTEM: Check and award bonuses
+      // ================================================
+      try {
+        // Count previous successful deposits
+        const previousDeposits = await Transaction.countDocuments({
+          userId: userId,
+          type: 'credit',
+          status: 'Successful',
+          'metadata.isDeposit': true,
+          reference: { $ne: reference } // Exclude current transaction
+        }).session(session);
+        
+        if (previousDeposits === 0) {
+          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId}, processing referral bonuses...`);
+          
+          // Process referral bonuses
+          const bonusResult = await processReferralBonusesOnFirstDeposit(userId, amountInNaira, session);
+          
+          if (bonusResult.directBonusAwarded) {
+            console.log(`✅ Referral bonuses processed: ₦200 to both referrer and referred user`);
+          } else {
+            console.log(`ℹ️ No referral bonuses awarded: ${bonusResult.message}`);
+          }
+        } else {
+          console.log(`ℹ️ Not first deposit (${previousDeposits} previous deposits), skipping referral bonuses`);
+        }
+      } catch (bonusError) {
+        console.error('⚠️ Error processing referral bonuses:', bonusError);
+        // Don't fail the main transaction if bonus processing fails
+      }
+
+      // Create wallet credit notification
       await Notification.create([{
-        recipientId: userId,
-        title: "Wallet Credited",
-        message: `₦${amountInNaira.toFixed(2)} added. New balance: ₦${user.walletBalance.toFixed(2)}`,
-        isRead: false
+        recipient: userId,
+        title: "Wallet Credited 💰",
+        message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
+        type: 'wallet_credit',
+        isRead: false,
+        metadata: {
+          amount: amountInNaira,
+          newBalance: user.walletBalance,
+          reference: reference,
+          isDeposit: true
+        }
       }], { session });
     });
 
@@ -9178,6 +9563,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
     session.endSession();
   }
 });
+
 
 
 // @desc    Find user by email
