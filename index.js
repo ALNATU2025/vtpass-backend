@@ -594,90 +594,6 @@ app.get('/api/users/token-status', protect, async (req, res) => {
 
 
 
-// @desc    Test referral bonus system
-// @route   POST /api/referral/test-bonus
-// @access  Private (Admin only)
-app.post('/api/referral/test-bonus', adminProtect, [
-  body('userId').notEmpty().withMessage('User ID is required')
-], async (req, res) => {
-  try {
-    const { userId } = req.body;
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    // Simulate a ₦2000 first deposit
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-      // Check current commission balances
-      const referrerId = user.referrerId;
-      let referrerBefore = 0;
-      let userBefore = user.commissionBalance;
-      
-      if (referrerId) {
-        const referrer = await User.findById(referrerId).session(session);
-        referrerBefore = referrer.commissionBalance;
-      }
-      
-      // Process referral bonuses
-      const bonusResult = await processReferralBonusesOnFirstDeposit(userId, 2000, session);
-      
-      // Get updated balances
-      await session.commitTransaction();
-      
-      // Get updated user info
-      const updatedUser = await User.findById(userId);
-      let updatedReferrer = null;
-      if (referrerId) {
-        updatedReferrer = await User.findById(referrerId);
-      }
-      
-      res.json({
-        success: true,
-        message: 'Referral bonus test completed',
-        data: {
-          bonusResult,
-          user: {
-            id: userId,
-            email: user.email,
-            commissionBefore: userBefore,
-            commissionAfter: updatedUser.commissionBalance,
-            bonusAwarded: updatedUser.referralBonusAwarded
-          },
-          referrer: referrerId ? {
-            id: referrerId,
-            email: updatedReferrer.email,
-            commissionBefore: referrerBefore,
-            commissionAfter: updatedReferrer.commissionBalance,
-            totalReferralEarnings: updatedReferrer.totalReferralEarnings
-          } : null,
-          bonusStructure: {
-            direct: '₦200 to both referrer and referred user',
-            indirect: '₦20 to original referrer (level 2)',
-            conditions: 'Minimum ₦1000 first deposit'
-          }
-        }
-      });
-      
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
-    }
-    
-  } catch (error) {
-    console.error('Referral bonus test error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Test failed: ' + error.message 
-    });
-  }
-});
 
 
 // @desc    Check token health and auto-refresh if needed
@@ -4105,6 +4021,99 @@ app.get('/api/users/:userId', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
+
+
+
+// @desc    Test referral bonus system
+// @route   POST /api/referral/test-bonus
+// @access  Private (Admin only)
+app.post('/api/referral/test-bonus', adminProtect, [
+  body('userId').notEmpty().withMessage('User ID is required')
+], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Simulate a ₦2000 first deposit
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+      // Check current commission balances
+      const referrerId = user.referrerId;
+      let referrerBefore = 0;
+      let userBefore = user.commissionBalance;
+      
+      if (referrerId) {
+        const referrer = await User.findById(referrerId).session(session);
+        referrerBefore = referrer.commissionBalance;
+      }
+      
+      // Process referral bonuses
+      const bonusResult = await processReferralBonusesOnFirstDeposit(userId, 2000, session);
+      
+      // Get updated balances
+      await session.commitTransaction();
+      
+      // Get updated user info
+      const updatedUser = await User.findById(userId);
+      let updatedReferrer = null;
+      if (referrerId) {
+        updatedReferrer = await User.findById(referrerId);
+      }
+      
+      res.json({
+        success: true,
+        message: 'Referral bonus test completed',
+        data: {
+          bonusResult,
+          user: {
+            id: userId,
+            email: user.email,
+            commissionBefore: userBefore,
+            commissionAfter: updatedUser.commissionBalance,
+            bonusAwarded: updatedUser.referralBonusAwarded
+          },
+          referrer: referrerId ? {
+            id: referrerId,
+            email: updatedReferrer.email,
+            commissionBefore: referrerBefore,
+            commissionAfter: updatedReferrer.commissionBalance,
+            totalReferralEarnings: updatedReferrer.totalReferralEarnings
+          } : null,
+          bonusStructure: {
+            direct: '₦200 to both referrer and referred user',
+            indirect: '₦20 to original referrer (level 2)',
+            conditions: 'Minimum ₦1000 first deposit'
+          }
+        }
+      });
+      
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+    
+  } catch (error) {
+    console.error('Referral bonus test error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Test failed: ' + error.message 
+    });
+  }
+});
+
+
 // @desc    Get all users (Admin only)
 // @route   GET /api/users
 // @access  Private/Admin
