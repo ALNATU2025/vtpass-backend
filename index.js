@@ -7886,6 +7886,26 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         });
         
         console.log(`✅ Commission earned: ₦${commissionEarned}`);
+
+
+        // 🔥 ADD REFERRAL SERVICE COMMISSION (0.005%)
+// Only if: 1. Commission was earned, 2. Not using commission to pay, 3. User has a referrer
+if (commissionEarned > 0 && !isUsingCommission) {
+  const referralCommission = await calculateAndAddReferralCommission(
+    userId, // Purchaser ID
+    transactionAmount, // Purchase amount
+    serviceType, // Service type (e.g., "mtn-data", "ikeja-electric")
+    session
+  ).catch(err => {
+    console.log('⚠️ Referral commission calculation failed:', err.message);
+    return 0;
+  });
+  
+  if (referralCommission > 0) {
+    console.log(`🎯 Referral service commission awarded: ₦${referralCommission.toFixed(2)}`);
+  }
+}
+        
       } else if (isUsingCommission) {
         console.log(`🚫 User paid with commission - NO commission earned for this purchase`);
         console.log(`📌 Transaction metadata:`, transactionMetadata);
@@ -7894,6 +7914,9 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
       } else {
         console.log(`ℹ️ No commission calculation needed for this transaction`);
       }
+
+
+      
 
       // ✅ REFERRAL COMMISSION - Only award if user paid with wallet (NOT commission)
       if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
@@ -9721,6 +9744,119 @@ app.post('/api/wallet/top-up', async (req, res) => {
     session.endSession();
   }
 });
+
+
+
+
+
+/**
+ * Calculate and add referral commission (0.005%) when referred users make purchases
+ */
+const calculateAndAddReferralCommission = async (purchaserUserId, amount, serviceType, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Checking referral commission for purchaser: ${purchaserUserId}, Amount: ₦${amount}`);
+    
+    // Get purchaser details
+    const purchaserQuery = User.findById(purchaserUserId);
+    if (mongooseSession) {
+      purchaserQuery.session(mongooseSession);
+    }
+    const purchaser = await purchaserQuery;
+    
+    if (!purchaser || !purchaser.referrerId) {
+      console.log('⚠️ No referrer found for purchaser');
+      return 0;
+    }
+    
+    const referrerId = purchaser.referrerId;
+    
+    // Get referrer details
+    const referrerQuery = User.findById(referrerId);
+    if (mongooseSession) {
+      referrerQuery.session(mongooseSession);
+    }
+    const referrer = await referrerQuery;
+    
+    if (!referrer) {
+      console.log('❌ Referrer not found');
+      return 0;
+    }
+    
+    // Calculate referral commission (0.005% = 0.00005)
+    const referralCommissionRate = 0.00005;
+    let commissionAmount = amount * referralCommissionRate;
+    
+    // Minimum commission ₦2 if amount is substantial
+    if (commissionAmount < 2 && amount >= 1000) {
+      commissionAmount = 2;
+    }
+    
+    if (commissionAmount <= 0) {
+      console.log('⚠️ Referral commission amount too small');
+      return 0;
+    }
+    
+    console.log(`💰 Referral commission: ₦${amount} × 0.005% = ₦${commissionAmount.toFixed(2)}`);
+    
+    // Add commission to referrer's balance
+    const commissionBefore = referrer.commissionBalance || 0;
+    referrer.commissionBalance = (referrer.commissionBalance || 0) + commissionAmount;
+    referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + commissionAmount;
+    
+    await referrer.save({ session: mongooseSession });
+    
+    // Create referral commission transaction
+    await createTransaction(
+      referrerId,
+      commissionAmount,
+      'Referral Service Commission',
+      'Successful',
+      `Referral commission from ${purchaser.fullName}'s ${serviceType} purchase`,
+      commissionBefore,
+      referrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        commissionType: 'referral_service',
+        purchaserUserId: purchaserUserId,
+        purchaserName: purchaser.fullName,
+        serviceType: serviceType,
+        purchaseAmount: amount,
+        commissionRate: referralCommissionRate,
+        commissionAmount: commissionAmount
+      }
+    );
+    
+    // Create notification
+    try {
+      await Notification.create([{
+        recipient: referrerId,
+        title: "Referral Commission Earned! 💰",
+        message: `You earned ₦${commissionAmount.toFixed(2)} from ${purchaser.fullName}'s ${serviceType} purchase`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          purchaserUserId: purchaserUserId,
+          serviceType: serviceType,
+          purchaseAmount: amount,
+          commissionAmount: commissionAmount
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ Referral commission notification error:', notifError);
+    }
+    
+    console.log(`✅ Referral commission awarded: ₦${commissionAmount.toFixed(2)} to ${referrer.email}`);
+    return commissionAmount;
+    
+  } catch (error) {
+    console.error('❌ Error calculating referral commission:', error);
+    return 0;
+  }
+};
 
 
 
