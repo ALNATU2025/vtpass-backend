@@ -84,6 +84,20 @@ router.get('/stats', protect, async (req, res) => {
               ]
             }
           },
+
+          referralServiceEarnings: {
+  $sum: {
+    $cond: [
+      { $regexMatch: { input: '$description', regex: /Referral Service Commission|referral service/i } },
+      '$amount',
+      0
+    ]
+  }
+},
+
+
+
+          
           serviceCommissionEarnings: {
             $sum: {
               $cond: [
@@ -216,6 +230,7 @@ router.get('/stats', protect, async (req, res) => {
           indirectReferralEarnings: stats.indirectReferralEarnings,
           welcomeBonusEarnings: stats.welcomeBonusEarnings,
           serviceCommissionEarnings: stats.serviceCommissionEarnings,
+          referralServiceEarnings: stats.referralServiceEarnings || 0,
           unwithdrawn: totalUnwithdrawn
         },
         
