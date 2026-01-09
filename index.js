@@ -1010,9 +1010,9 @@ const createTransaction = async (
 
 
 
-
-
 /**
+
+
  * Award direct referral bonus (₦200 to both referrer and referred user)
  * ONLY when first deposit amount is ₦5,000 or above
  */
@@ -4005,90 +4005,7 @@ app.get('/api/users/:userId', protect, async (req, res) => {
 
 
 
-// @desc    Test referral bonus system
-// @route   POST /api/referral/test-bonus
-// @access  Private (Admin only)
-app.post('/api/referral/test-bonus', adminProtect, [
-  body('userId').notEmpty().withMessage('User ID is required')
-], async (req, res) => {
-  try {
-    const { userId } = req.body;
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    // Simulate a ₦2000 first deposit
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-      // Check current commission balances
-      const referrerId = user.referrerId;
-      let referrerBefore = 0;
-      let userBefore = user.commissionBalance;
-      
-      if (referrerId) {
-        const referrer = await User.findById(referrerId).session(session);
-        referrerBefore = referrer.commissionBalance;
-      }
-      
-      // Process referral bonuses
-      const bonusResult = await processReferralBonusesOnFirstDeposit(userId, 2000, session);
-      
-      // Get updated balances
-      await session.commitTransaction();
-      
-      // Get updated user info
-      const updatedUser = await User.findById(userId);
-      let updatedReferrer = null;
-      if (referrerId) {
-        updatedReferrer = await User.findById(referrerId);
-      }
-      
-      res.json({
-        success: true,
-        message: 'Referral bonus test completed',
-        data: {
-          bonusResult,
-          user: {
-            id: userId,
-            email: user.email,
-            commissionBefore: userBefore,
-            commissionAfter: updatedUser.commissionBalance,
-            bonusAwarded: updatedUser.referralBonusAwarded
-          },
-          referrer: referrerId ? {
-            id: referrerId,
-            email: updatedReferrer.email,
-            commissionBefore: referrerBefore,
-            commissionAfter: updatedReferrer.commissionBalance,
-            totalReferralEarnings: updatedReferrer.totalReferralEarnings
-          } : null,
-          bonusStructure: {
-            direct: '₦200 to both referrer and referred user',
-            indirect: '₦20 to original referrer (level 2)',
-            conditions: 'Minimum ₦1000 first deposit'
-          }
-        }
-      });
-      
-    } catch (error) {
-      await session.abortTransaction();
-      throw error;
-    } finally {
-      session.endSession();
-    }
-    
-  } catch (error) {
-    console.error('Referral bonus test error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Test failed: ' + error.message 
-    });
-  }
-});
+
 
 
 // @desc    Get all users (Admin only)
@@ -7806,25 +7723,98 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
         });
         
         console.log(`✅ Commission earned: ₦${commissionEarned}`);
-
-
-        // 🔥 ADD REFERRAL SERVICE COMMISSION (0.005%)
-// Only if: 1. Commission was earned, 2. Not using commission to pay, 3. User has a referrer
-if (commissionEarned > 0 && !isUsingCommission) {
-  const referralCommission = await calculateAndAddReferralCommission(
-    userId, // Purchaser ID
-    transactionAmount, // Purchase amount
-    serviceType, // Service type (e.g., "mtn-data", "ikeja-electric")
-    session
-  ).catch(err => {
-    console.log('⚠️ Referral commission calculation failed:', err.message);
-    return 0;
-  });
-  
-  if (referralCommission > 0) {
-    console.log(`🎯 Referral service commission awarded: ₦${referralCommission.toFixed(2)}`);
-  }
-}
+        
+        // ================================================
+        // 🔥 REFERRAL SERVICE COMMISSION (0.005%)
+        // ================================================
+        // Only award referral commission if:
+        // 1. There's an actual purchase amount (> 0)
+        // 2. User is NOT using commission to pay
+        // 3. User has a referrer
+        // ================================================
+        if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
+          try {
+            console.log(`🎯 Checking referral service commission for ${user.email}`);
+            
+            // Get referrer details
+            const referrer = await User.findById(user.referrerId).session(session);
+            if (!referrer) {
+              console.log('⚠️ Referrer not found');
+            } else {
+              // Calculate referral commission (0.005% = 0.00005)
+              const referralCommissionRate = 0.00005;
+              let referralCommissionAmount = transactionAmount * referralCommissionRate;
+              
+              // Minimum commission ₦2 if amount is substantial
+              if (referralCommissionAmount < 2 && transactionAmount >= 1000) {
+                referralCommissionAmount = 2;
+              }
+              
+              if (referralCommissionAmount > 0) {
+                console.log(`💰 Referral commission: ₦${transactionAmount} × 0.005% = ₦${referralCommissionAmount.toFixed(4)}`);
+                
+                // Award commission to referrer
+                const referrerBalanceBefore = referrer.commissionBalance || 0;
+                referrer.commissionBalance = (referrer.commissionBalance || 0) + referralCommissionAmount;
+                referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + referralCommissionAmount;
+                
+                // Create commission transaction for referrer
+                await createTransaction(
+                  referrer._id,
+                  referralCommissionAmount,
+                  'Referral Service Commission',
+                  'Successful',
+                  `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
+                  referrerBalanceBefore,
+                  referrer.commissionBalance,
+                  session,
+                  true, // isCommission
+                  'none',
+                  null,
+                  {},
+                  {
+                    commissionSource: 'referral_service',
+                    referredUserId: userId,
+                    referredUserName: user.fullName,
+                    purchaseTransactionId: uniqueRequestId,
+                    purchaseAmount: transactionAmount,
+                    purchaseService: serviceID,
+                    commissionRate: referralCommissionRate,
+                    commissionAmount: referralCommissionAmount,
+                    commissionPercentage: '0.005%'
+                  }
+                );
+                
+                await referrer.save({ session });
+                console.log(`✅ Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission to ${referrer.email}`);
+                
+                // Create notification for referrer
+                await Notification.create({
+                  recipient: referrer._id,
+                  title: "Referral Commission Earned! 💰",
+                  message: `You earned ₦${referralCommissionAmount.toFixed(4)} from ${user.fullName}'s purchase.`,
+                  type: 'commission',
+                  isRead: false,
+                  metadata: {
+                    event: 'referral_commission',
+                    referredUserId: userId,
+                    commissionAmount: referralCommissionAmount,
+                    purchaseAmount: transactionAmount
+                  }
+                });
+              } else {
+                console.log('⚠️ Referral commission amount too small to award');
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error awarding referral commission:', error.message);
+            // Don't fail the transaction if referral commission fails
+          }
+        } else if (isUsingCommission && user.referrerId) {
+          console.log(`⚠️ Skipping referral commission - user paid with commission`);
+        } else if (!user.referrerId) {
+          console.log(`ℹ️ No referrer found - skipping referral commission`);
+        }
         
       } else if (isUsingCommission) {
         console.log(`🚫 User paid with commission - NO commission earned for this purchase`);
@@ -7833,78 +7823,6 @@ if (commissionEarned > 0 && !isUsingCommission) {
         console.log(`🚫 Commission used flag set - NO commission earned`);
       } else {
         console.log(`ℹ️ No commission calculation needed for this transaction`);
-      }
-
-
-      
-
-      // ✅ REFERRAL COMMISSION - Only award if user paid with wallet (NOT commission)
-      if (transactionAmount > 0 && !isUsingCommission && user.referrerId) {
-        try {
-          // 0.005% commission = 0.00005
-          const referralCommissionRate = 0.00005; // 0.005%
-          const referralCommissionAmount = transactionAmount * referralCommissionRate;
-          
-          if (referralCommissionAmount > 0) {
-            // Find the referrer
-            const referrer = await User.findById(user.referrerId).session(session);
-            if (referrer) {
-              // Award commission to referrer
-              const referrerBalanceBefore = referrer.commissionBalance;
-              referrer.commissionBalance += referralCommissionAmount;
-              referrer.totalReferralEarnings += referralCommissionAmount;
-              
-              // Create commission transaction for referrer
-              await createTransaction(
-                referrer._id,
-                referralCommissionAmount,
-                'Referral Commission Credit',
-                'Successful',
-                `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
-                referrerBalanceBefore,
-                referrer.commissionBalance,
-                session,
-                true, // isCommission
-                'none',
-                null,
-                {},
-                {
-                  commissionSource: 'referral',
-                  referredUserId: userId,
-                  referredUserName: user.fullName,
-                  purchaseTransactionId: uniqueRequestId,
-                  purchaseAmount: transactionAmount,
-                  purchaseService: serviceID,
-                  commissionRate: referralCommissionRate,
-                  commissionAmount: referralCommissionAmount
-                }
-              );
-              
-              await referrer.save({ session });
-              console.log(`🎯 Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission to ${referrer.email}`);
-              
-              // Create notification for referrer
-              await Notification.create({
-                recipient: referrer._id,
-                title: "Referral Commission Earned! 💰",
-                message: `You earned ₦${referralCommissionAmount.toFixed(4)} from ${user.fullName}'s purchase.`,
-                type: 'commission',
-                isRead: false,
-                metadata: {
-                  event: 'referral_commission',
-                  referredUserId: userId,
-                  commissionAmount: referralCommissionAmount,
-                  purchaseAmount: transactionAmount
-                }
-              });
-            }
-          }
-        } catch (error) {
-          console.error('❌ Error awarding referral commission:', error.message);
-          // Don't fail the transaction if referral commission fails
-        }
-      } else if (isUsingCommission && user.referrerId) {
-        console.log(`⚠️ Skipping referral commission - user paid with commission`);
       }
 
       // 🔥 UPDATE COMMISSION TRANSACTION WITH VTpass DATA
@@ -8006,7 +7924,6 @@ if (commissionEarned > 0 && !isUsingCommission) {
     session.endSession();
   }
 });
-
 
 
 
@@ -9508,8 +9425,7 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 
 
 
-
-// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES (FIXED)
+// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES (UPDATED)
 // @route   POST /api/wallet/top-up
 // @access  Public (called by virtual-account-backend)
 app.post('/api/wallet/top-up', async (req, res) => {
@@ -9544,7 +9460,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
       // FINAL DUPLICATE PROTECTION
       const existing = await Transaction.findOne({
         reference,
-        status: 'Successful' // ✅ Changed to 'Successful' (capital S)
+        status: 'Successful'
       }).session(session);
 
       if (existing) {
@@ -9555,7 +9471,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
       // Delete any failed/pending duplicates
       await Transaction.deleteMany({
         reference,
-        status: { $ne: 'Successful' } // ✅ Changed to 'Successful'
+        status: { $ne: 'Successful' }
       }).session(session);
 
       const balanceBefore = user.walletBalance;
@@ -9567,7 +9483,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
         userId,
         type: 'Wallet Funding',
         amount: amountInNaira,
-        status: 'Successful', // ✅ Changed to 'Successful'
+        status: 'Successful',
         reference,
         description: `Wallet funding via ${source} - Ref: ${reference}`,
         balanceBefore,
@@ -9587,16 +9503,16 @@ app.post('/api/wallet/top-up', async (req, res) => {
       console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
 
       // ================================================
-      // 🔥 REFERRAL BONUS SYSTEM: Check and award bonuses (FIXED)
+      // 🔥 REFERRAL BONUS SYSTEM: Check and award bonuses (IMPROVED)
       // ================================================
       try {
-        // ✅ FIXED: Check for ANY successful deposit with capital 'S'
+        // ✅ IMPROVED: Check for ANY successful deposit
         const previousDeposits = await Transaction.countDocuments({
           userId: userId,
-          type: 'Wallet Funding', // ✅ Use 'Wallet Funding' instead of 'credit'
-          status: 'Successful', // ✅ Capital 'S'
+          type: 'Wallet Funding',
+          status: 'Successful',
           'metadata.isDeposit': true,
-          reference: { $ne: reference } // Exclude current transaction
+          _id: { $ne: existing?._id } // Exclude current transaction
         }).session(session);
         
         console.log(`🔍 Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
@@ -9608,102 +9524,98 @@ app.post('/api/wallet/top-up', async (req, res) => {
           if (amountInNaira >= 5000) {
             console.log(`✅ Deposit ₦${amountInNaira} meets minimum for bonus (₦5,000)`);
             
-            // Process referral bonuses
-            const bonusResult = await processReferralBonusesOnFirstDeposit(userId, amountInNaira, session);
+            // 🔥 AWARD DIRECT REFERRAL BONUS
+            let directBonusAwarded = false;
+            if (user.referrerId) {
+              try {
+                directBonusAwarded = await awardDirectReferralBonus(userId, amountInNaira, session);
+                console.log(`✅ Direct referral bonus result: ${directBonusAwarded}`);
+              } catch (directError) {
+                console.error('❌ Direct referral bonus error:', directError);
+                directBonusAwarded = false;
+              }
+            } else {
+              console.log('ℹ️ User has no referrer, skipping direct bonus');
+            }
             
-            if (bonusResult.directBonusAwarded) {
-              console.log(`✅ Referral bonuses processed for ₦${amountInNaira} deposit:`);
-              console.log(`   - ₦200 to referrer (User A)`);
-              console.log(`   - ₦200 welcome bonus to referred user (User B)`);
-              console.log(`   - ₦20 indirect bonus to original referrer (User C) if applicable`);
+            // 🔥 AWARD INDIRECT REFERRAL BONUS (only if direct bonus was awarded)
+            let indirectBonusAwarded = false;
+            if (directBonusAwarded) {
+              try {
+                indirectBonusAwarded = await awardIndirectReferralBonus(userId, amountInNaira, session);
+                console.log(`✅ Indirect referral bonus result: ${indirectBonusAwarded}`);
+              } catch (indirectError) {
+                console.error('❌ Indirect referral bonus error:', indirectError);
+                indirectBonusAwarded = false;
+              }
+            }
+            
+            // Update user's bonus flags
+            if (directBonusAwarded) {
+              user.referralBonusAwarded = true;
+              await user.save({ session });
               
-              // ✅ Update the deposit transaction metadata to show bonus was awarded
-              await Transaction.findOneAndUpdate(
-                { reference: reference, userId: userId },
-                { 
-                  'metadata.hasBonus': true,
-                  'metadata.bonusAmount': 200,
-                  'metadata.bonusType': 'welcome_bonus'
-                },
-                { session }
+              // Also award welcome bonus to the user
+              const userCommissionBefore = user.commissionBalance || 0;
+              user.commissionBalance = (user.commissionBalance || 0) + 200;
+              await user.save({ session });
+              
+              // Create welcome bonus transaction
+              await createTransaction(
+                userId,
+                200,
+                'Welcome Bonus',
+                'Successful',
+                `Welcome bonus for ₦${amountInNaira} first deposit`,
+                userCommissionBefore,
+                user.commissionBalance,
+                session,
+                true,
+                'none',
+                null,
+                {},
+                {
+                  referralType: 'welcome_bonus',
+                  depositAmount: amountInNaira,
+                  bonusFor: 'referred_user'
+                }
               );
+            }
+            
+            if (directBonusAwarded || indirectBonusAwarded) {
+              console.log(`✅ Referral bonuses processed for ₦${amountInNaira} deposit:`);
+              console.log(`   - Direct bonus awarded: ${directBonusAwarded ? 'YES' : 'NO'}`);
+              console.log(`   - Indirect bonus awarded: ${indirectBonusAwarded ? 'YES' : 'NO'}`);
+              
+              // Get updated user to check commission balance
+              const updatedUser = await User.findById(userId).session(session);
               
               // ✅ Update notification to show it's first deposit with bonus
               await Notification.create([{
                 recipient: userId,
                 title: "First Deposit Bonus! 🎉",
-                message: `You received ₦200 welcome bonus for your first deposit of ₦${amountInNaira}! Total credited: ₦${amountInNaira + 200}`,
+                message: `You received ₦200 welcome bonus for your first deposit of ₦${amountInNaira}!`,
                 type: 'welcome_bonus',
                 isRead: false,
                 metadata: {
                   amount: amountInNaira,
                   bonus: 200,
                   newBalance: user.walletBalance,
+                  newCommissionBalance: updatedUser?.commissionBalance || 0,
                   isFirstDeposit: true,
                   reference: reference,
                   bonusType: 'welcome_bonus'
-                }
-              }], { session });
-              
-              // ✅ Also notify the referrer if they exist
-              if (user.referrerId) {
-                await Notification.create([{
-                  recipient: user.referrerId,
-                  title: "Referral Bonus Earned! 🎊",
-                  message: `You earned ₦200 referral bonus from ${user.fullName}'s first deposit of ₦${amountInNaira}!`,
-                  type: 'referral_bonus',
-                  isRead: false,
-                  metadata: {
-                    referredUserId: userId,
-                    referredUserName: user.fullName,
-                    depositAmount: amountInNaira,
-                    bonusAmount: 200,
-                    bonusType: 'direct_referral_bonus'
-                  }
-                }], { session });
-              }
-            } else {
-              console.log(`ℹ️ No referral bonuses: ${bonusResult.message}`);
-              
-              // Create notification for deposit without bonus
-              await Notification.create([{
-                recipient: userId,
-                title: "Wallet Credited 💰",
-                message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
-                type: 'wallet_credit',
-                isRead: false,
-                metadata: {
-                  amount: amountInNaira,
-                  newBalance: user.walletBalance,
-                  reference: reference,
-                  isDeposit: true,
-                  isFirstDeposit: true,
-                  bonusEligible: amountInNaira >= 5000,
-                  bonusMessage: amountInNaira < 5000 ? 
-                    `Deposit ₦${5000 - amountInNaira} more to get ₦200 welcome bonus!` : 
-                    'Welcome bonus processed!'
                 }
               }], { session });
             }
           } else {
             console.log(`⚠️ First deposit (₦${amountInNaira}) below ₦5,000 minimum for bonus`);
             
-            // Update transaction metadata to show minimum not met
-            await Transaction.findOneAndUpdate(
-              { reference: reference, userId: userId },
-              { 
-                'metadata.minimumNotMet': true,
-                'metadata.minimumRequired': 5000,
-                'metadata.neededAmount': 5000 - amountInNaira
-              },
-              { session }
-            );
-            
             // Create notification encouraging user to deposit more
             await Notification.create([{
               recipient: userId,
               title: "Wallet Credited 💰",
-              message: `₦${amountInNaira} added to your wallet. Deposit ₦${5000 - amountInNaira} more to unlock ₦200 welcome bonus!`,
+              message: `₦${amountInNaira} added to your wallet. Deposit ₦${(5000 - amountInNaira).toFixed(2)} more to unlock ₦200 welcome bonus!`,
               type: 'wallet_credit',
               isRead: false,
               metadata: {
@@ -9715,7 +9627,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
                 bonusEligible: false,
                 minimumRequired: 5000,
                 neededAmount: 5000 - amountInNaira,
-                bonusMessage: `Deposit ₦${5000 - amountInNaira} more to get ₦200 welcome bonus!`
+                bonusMessage: `Deposit ₦${(5000 - amountInNaira).toFixed(2)} more to get ₦200 welcome bonus!`
               }
             }], { session });
           }
@@ -9742,29 +9654,18 @@ app.post('/api/wallet/top-up', async (req, res) => {
         console.error('⚠️ Error processing referral bonuses:', bonusError);
         console.error('Bonus error stack:', bonusError.stack);
         
-        // Create error notification for admin
-        await Notification.create([{
-          recipient: 'admin', // You might want to use admin user ID
-          title: "Referral Bonus Processing Error ⚠️",
-          message: `Failed to process referral bonus for user ${userId}, deposit ₦${amountInNaira}`,
-          type: 'system_error',
-          isRead: false,
-          metadata: {
-            userId: userId,
-            amount: amountInNaira,
-            reference: reference,
-            error: bonusError.message
-          }
-        }], { session });
-        
         // Don't fail the main transaction if bonus processing fails
       }
     });
 
+    // Get updated user info to return commission balance
+    const updatedUser = await User.findById(userId);
+    
     return res.json({
       success: true,
       newBalance: null, // Flutter reads from local storage
       amount: amountInNaira,
+      commissionBalance: updatedUser?.commissionBalance || 0,
       message: 'Wallet funded successfully'
     });
 
@@ -9789,7 +9690,6 @@ app.post('/api/wallet/top-up', async (req, res) => {
     session.endSession();
   }
 });
-
 
 
 
