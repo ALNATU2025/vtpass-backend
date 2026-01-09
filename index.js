@@ -922,7 +922,7 @@ const createTransaction = async (
   description,
   balanceBefore,
   balanceAfter,
-  session,
+  session, // Mongoose session object
   isCommission = false,
   authenticationMethod = 'none',
   reference = null,
@@ -946,7 +946,9 @@ const createTransaction = async (
       serviceID: additionalData.serviceID || metadata.serviceID || '',
       selectedPackage: additionalData.selectedPackage || metadata.selectedPackage || '',
       meterNumber: additionalData.meterNumber || metadata.meterNumber || '',
-      vtpassResponse: additionalData.vtpassResponse || metadata.vtpassResponse || {}
+      vtpassResponse: additionalData.vtpassResponse || metadata.vtpassResponse || {},
+      // Include any other additionalData fields
+      ...additionalData
     };
 
     const newTransaction = new Transaction({
@@ -954,32 +956,53 @@ const createTransaction = async (
       userId,
       type,
       amount,
-      status,
+      status, // Should be 'Successful', 'Failed', 'Pending', etc.
       description,
       balanceBefore,
       balanceAfter,
-      session,
       reference: txReference, // Single source of truth
       isCommission,
       authenticationMethod,
       metadata: fullMetadata,
-      timestamp: new Date()
+      // Remove timestamp since Transaction model has timestamps: true
     });
 
-    const savedTransaction = await newTransaction.save({ session });
+    // Save with session if provided
+    let savedTransaction;
+    if (session) {
+      savedTransaction = await newTransaction.save({ session });
+    } else {
+      savedTransaction = await newTransaction.save();
+    }
     
     // Cable TV specific logging
-    if (type === 'Cable TV Subscription') {
+    if (type === 'Cable TV Subscription' || type === 'Cable TV Purchase') {
       console.log('📺 CABLE TV TRANSACTION SAVED:');
       console.log('🔢 Smartcard:', savedTransaction.metadata.billersCode);
       console.log('📞 Phone:', savedTransaction.metadata.phone);
       console.log('📦 Package:', savedTransaction.metadata.packageName);
       console.log('🆔 Reference:', savedTransaction.reference);
+      console.log('✅ Status:', savedTransaction.status);
+    } else if (isCommission) {
+      console.log('💰 COMMISSION TRANSACTION SAVED:');
+      console.log('📝 Type:', type);
+      console.log('💵 Amount: ₦', savedTransaction.amount);
+      console.log('✅ Status:', savedTransaction.status);
+      console.log('👤 User:', userId);
     }
     
     return savedTransaction;
   } catch (error) {
     console.error('❌ Error creating transaction:', error);
+    console.error('Transaction details:', {
+      userId,
+      type,
+      amount,
+      status,
+      description,
+      isCommission,
+      reference: reference || 'auto-generated'
+    });
     throw error;
   }
 };
@@ -998,8 +1021,8 @@ const checkFirstDeposit = async (userId, mongooseSession = null) => {
   try {
     const transactionQuery = Transaction.findOne({
       userId: userId,
-      type: 'credit',
-      status: 'Successful',
+      type: 'Wallet Funding', // ✅ Changed from 'credit' to 'Wallet Funding'
+      status: 'Successful', // ✅ Capital 'S'
       'metadata.isDeposit': true
     });
     
@@ -1014,11 +1037,11 @@ const checkFirstDeposit = async (userId, mongooseSession = null) => {
     return false;
   }
 };
-
 /**
  * Award direct referral bonus (₦200 to both referrer and referred user)
  * ONLY when first deposit amount is ₦5,000 or above
  */
+// FIXED: Update the commission transactions to use proper types from your model
 const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseSession = null) => {
   try {
     console.log(`🎯 Checking direct referral bonus for user: ${referredUserId}, Deposit: ₦${depositAmount}`);
@@ -1045,7 +1068,6 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
     
     if (depositAmount < MINIMUM_DEPOSIT_FOR_BONUS) {
       console.log(`⚠️ Deposit amount (₦${depositAmount}) below ₦5,000. No referral bonus awarded.`);
-      console.log(`ℹ️ User can still deposit any amount, but bonus requires ₦5,000+ first deposit`);
       return false;
     }
     
@@ -1069,12 +1091,12 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
     referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
     await referrer.save({ session: mongooseSession });
     
-    // Create transaction for referrer
+    // ✅ FIXED: Use proper transaction type 'Commission Credit'
     await createTransaction(
       referrerId,
       200,
-      'Direct Referral Bonus',
-      'Successful',
+      'Commission Credit', // ✅ Use proper type from your model
+      'Successful', // ✅ Capital 'S'
       `Direct referral bonus for referring ${referredUser.fullName} (First deposit: ₦${depositAmount})`,
       referrerCommissionBefore,
       referrer.commissionBalance,
@@ -1100,12 +1122,12 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
     referredUser.referralBonusAwarded = true;
     await referredUser.save({ session: mongooseSession });
     
-    // Create transaction for referred user
+    // ✅ FIXED: Use proper transaction type 'Commission Credit'
     await createTransaction(
       referredUserId,
       200,
-      'Welcome Bonus',
-      'Successful',
+      'Commission Credit', // ✅ Use proper type from your model
+      'Successful', // ✅ Capital 'S'
       `Welcome bonus for ₦${depositAmount} first deposit with referral code`,
       userCommissionBefore,
       referredUser.commissionBalance,
@@ -9589,7 +9611,7 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 
 
 
-// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES
+// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES (FIXED)
 // @route   POST /api/wallet/top-up
 // @access  Public (called by virtual-account-backend)
 app.post('/api/wallet/top-up', async (req, res) => {
@@ -9624,7 +9646,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
       // FINAL DUPLICATE PROTECTION
       const existing = await Transaction.findOne({
         reference,
-        status: 'successful'
+        status: 'Successful' // ✅ Changed to 'Successful' (capital S)
       }).session(session);
 
       if (existing) {
@@ -9635,7 +9657,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
       // Delete any failed/pending duplicates
       await Transaction.deleteMany({
         reference,
-        status: { $ne: 'successful' }
+        status: { $ne: 'Successful' } // ✅ Changed to 'Successful'
       }).session(session);
 
       const balanceBefore = user.walletBalance;
@@ -9645,9 +9667,9 @@ app.post('/api/wallet/top-up', async (req, res) => {
       // Create main wallet transaction with isDeposit flag
       await Transaction.create([{
         userId,
-        type: 'credit',
+        type: 'Wallet Funding',
         amount: amountInNaira,
-        status: 'successful',
+        status: 'Successful', // ✅ Changed to 'Successful'
         reference,
         description: `Wallet funding via ${source} - Ref: ${reference}`,
         balanceBefore,
@@ -9659,62 +9681,186 @@ app.post('/api/wallet/top-up', async (req, res) => {
           isDeposit: true, // Mark as deposit for referral bonus tracking
           depositAmount: amountInNaira,
           reference: reference,
-          paymentMethod: source.includes('paystack') ? 'paystack' : 'virtual_account'
+          paymentMethod: source.includes('paystack') ? 'paystack' : 'virtual_account',
+          transactionType: 'wallet_funding'
         }
       }], { session });
 
       console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
 
       // ================================================
-      // 🔥 REFERRAL BONUS SYSTEM: Check and award bonuses
+      // 🔥 REFERRAL BONUS SYSTEM: Check and award bonuses (FIXED)
       // ================================================
       try {
-        // Count previous successful deposits
+        // ✅ FIXED: Check for ANY successful deposit with capital 'S'
         const previousDeposits = await Transaction.countDocuments({
           userId: userId,
-          type: 'credit',
-          status: 'Successful',
+          type: 'Wallet Funding', // ✅ Use 'Wallet Funding' instead of 'credit'
+          status: 'Successful', // ✅ Capital 'S'
           'metadata.isDeposit': true,
           reference: { $ne: reference } // Exclude current transaction
         }).session(session);
         
+        console.log(`🔍 Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
+        
         if (previousDeposits === 0) {
-          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira}), processing referral bonuses...`);
+          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira})`);
           
-          // Process referral bonuses (only awards if ₦5,000 or above)
-          const bonusResult = await processReferralBonusesOnFirstDeposit(userId, amountInNaira, session);
-          
-          if (bonusResult.directBonusAwarded) {
-            console.log(`✅ Referral bonuses processed for ₦${amountInNaira} deposit:`);
-            console.log(`   - ₦200 to referrer (User A)`);
-            console.log(`   - ₦200 welcome bonus to referred user (User B)`);
-            console.log(`   - ₦20 indirect bonus to original referrer (User C) if applicable`);
+          // ✅ Check if deposit meets minimum for bonus (₦5,000)
+          if (amountInNaira >= 5000) {
+            console.log(`✅ Deposit ₦${amountInNaira} meets minimum for bonus (₦5,000)`);
+            
+            // Process referral bonuses
+            const bonusResult = await processReferralBonusesOnFirstDeposit(userId, amountInNaira, session);
+            
+            if (bonusResult.directBonusAwarded) {
+              console.log(`✅ Referral bonuses processed for ₦${amountInNaira} deposit:`);
+              console.log(`   - ₦200 to referrer (User A)`);
+              console.log(`   - ₦200 welcome bonus to referred user (User B)`);
+              console.log(`   - ₦20 indirect bonus to original referrer (User C) if applicable`);
+              
+              // ✅ Update the deposit transaction metadata to show bonus was awarded
+              await Transaction.findOneAndUpdate(
+                { reference: reference, userId: userId },
+                { 
+                  'metadata.hasBonus': true,
+                  'metadata.bonusAmount': 200,
+                  'metadata.bonusType': 'welcome_bonus'
+                },
+                { session }
+              );
+              
+              // ✅ Update notification to show it's first deposit with bonus
+              await Notification.create([{
+                recipient: userId,
+                title: "First Deposit Bonus! 🎉",
+                message: `You received ₦200 welcome bonus for your first deposit of ₦${amountInNaira}! Total credited: ₦${amountInNaira + 200}`,
+                type: 'welcome_bonus',
+                isRead: false,
+                metadata: {
+                  amount: amountInNaira,
+                  bonus: 200,
+                  newBalance: user.walletBalance,
+                  isFirstDeposit: true,
+                  reference: reference,
+                  bonusType: 'welcome_bonus'
+                }
+              }], { session });
+              
+              // ✅ Also notify the referrer if they exist
+              if (user.referrerId) {
+                await Notification.create([{
+                  recipient: user.referrerId,
+                  title: "Referral Bonus Earned! 🎊",
+                  message: `You earned ₦200 referral bonus from ${user.fullName}'s first deposit of ₦${amountInNaira}!`,
+                  type: 'referral_bonus',
+                  isRead: false,
+                  metadata: {
+                    referredUserId: userId,
+                    referredUserName: user.fullName,
+                    depositAmount: amountInNaira,
+                    bonusAmount: 200,
+                    bonusType: 'direct_referral_bonus'
+                  }
+                }], { session });
+              }
+            } else {
+              console.log(`ℹ️ No referral bonuses: ${bonusResult.message}`);
+              
+              // Create notification for deposit without bonus
+              await Notification.create([{
+                recipient: userId,
+                title: "Wallet Credited 💰",
+                message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
+                type: 'wallet_credit',
+                isRead: false,
+                metadata: {
+                  amount: amountInNaira,
+                  newBalance: user.walletBalance,
+                  reference: reference,
+                  isDeposit: true,
+                  isFirstDeposit: true,
+                  bonusEligible: amountInNaira >= 5000,
+                  bonusMessage: amountInNaira < 5000 ? 
+                    `Deposit ₦${5000 - amountInNaira} more to get ₦200 welcome bonus!` : 
+                    'Welcome bonus processed!'
+                }
+              }], { session });
+            }
           } else {
-            console.log(`ℹ️ No referral bonuses: ${bonusResult.message}`);
+            console.log(`⚠️ First deposit (₦${amountInNaira}) below ₦5,000 minimum for bonus`);
+            
+            // Update transaction metadata to show minimum not met
+            await Transaction.findOneAndUpdate(
+              { reference: reference, userId: userId },
+              { 
+                'metadata.minimumNotMet': true,
+                'metadata.minimumRequired': 5000,
+                'metadata.neededAmount': 5000 - amountInNaira
+              },
+              { session }
+            );
+            
+            // Create notification encouraging user to deposit more
+            await Notification.create([{
+              recipient: userId,
+              title: "Wallet Credited 💰",
+              message: `₦${amountInNaira} added to your wallet. Deposit ₦${5000 - amountInNaira} more to unlock ₦200 welcome bonus!`,
+              type: 'wallet_credit',
+              isRead: false,
+              metadata: {
+                amount: amountInNaira,
+                newBalance: user.walletBalance,
+                reference: reference,
+                isDeposit: true,
+                isFirstDeposit: true,
+                bonusEligible: false,
+                minimumRequired: 5000,
+                neededAmount: 5000 - amountInNaira,
+                bonusMessage: `Deposit ₦${5000 - amountInNaira} more to get ₦200 welcome bonus!`
+              }
+            }], { session });
           }
         } else {
           console.log(`ℹ️ Not first deposit (${previousDeposits} previous deposits), skipping referral bonuses`);
+          
+          // Create regular deposit notification
+          await Notification.create([{
+            recipient: userId,
+            title: "Wallet Credited 💰",
+            message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
+            type: 'wallet_credit',
+            isRead: false,
+            metadata: {
+              amount: amountInNaira,
+              newBalance: user.walletBalance,
+              reference: reference,
+              isDeposit: true,
+              isFirstDeposit: false
+            }
+          }], { session });
         }
       } catch (bonusError) {
         console.error('⚠️ Error processing referral bonuses:', bonusError);
+        console.error('Bonus error stack:', bonusError.stack);
+        
+        // Create error notification for admin
+        await Notification.create([{
+          recipient: 'admin', // You might want to use admin user ID
+          title: "Referral Bonus Processing Error ⚠️",
+          message: `Failed to process referral bonus for user ${userId}, deposit ₦${amountInNaira}`,
+          type: 'system_error',
+          isRead: false,
+          metadata: {
+            userId: userId,
+            amount: amountInNaira,
+            reference: reference,
+            error: bonusError.message
+          }
+        }], { session });
+        
         // Don't fail the main transaction if bonus processing fails
       }
-
-      // Create wallet credit notification
-      await Notification.create([{
-        recipient: userId,
-        title: "Wallet Credited 💰",
-        message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
-        type: 'wallet_credit',
-        isRead: false,
-        metadata: {
-          amount: amountInNaira,
-          newBalance: user.walletBalance,
-          reference: reference,
-          isDeposit: true,
-          isFirstDeposit: false // We'll update this after checking
-        }
-      }], { session });
     });
 
     return res.json({
@@ -9736,6 +9882,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
     }
 
     console.error('MAIN TOP-UP ERROR:', error);
+    console.error('Error stack:', error.stack);
     return res.status(500).json({
       success: false,
       message: 'Funding failed'
@@ -9744,7 +9891,6 @@ app.post('/api/wallet/top-up', async (req, res) => {
     session.endSession();
   }
 });
-
 
 
 
