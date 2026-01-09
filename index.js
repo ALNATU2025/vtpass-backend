@@ -1012,36 +1012,10 @@ const createTransaction = async (
 
 
 
-// ==================== FIXED REFERRAL BONUS FUNCTIONS ====================
-
-/**
- * Check if user has made first deposit (any amount)
- */
-const checkFirstDeposit = async (userId, mongooseSession = null) => {
-  try {
-    const transactionQuery = Transaction.findOne({
-      userId: userId,
-      type: 'Wallet Funding', // ✅ Changed from 'credit' to 'Wallet Funding'
-      status: 'Successful', // ✅ Capital 'S'
-      'metadata.isDeposit': true
-    });
-    
-    if (mongooseSession) {
-      transactionQuery.session(mongooseSession);
-    }
-    
-    const deposit = await transactionQuery;
-    return !!deposit;
-  } catch (error) {
-    console.error('❌ Error checking first deposit:', error);
-    return false;
-  }
-};
 /**
  * Award direct referral bonus (₦200 to both referrer and referred user)
  * ONLY when first deposit amount is ₦5,000 or above
  */
-// FIXED: Update the commission transactions to use proper types from your model
 const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseSession = null) => {
   try {
     console.log(`🎯 Checking direct referral bonus for user: ${referredUserId}, Deposit: ₦${depositAmount}`);
@@ -1091,12 +1065,12 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
     referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
     await referrer.save({ session: mongooseSession });
     
-    // ✅ FIXED: Use proper transaction type 'Commission Credit'
+    // ✅ CORRECTED: Use 'Direct Referral Bonus' which exists in your enum
     await createTransaction(
       referrerId,
       200,
-      'Commission Credit', // ✅ Use proper type from your model
-      'Successful', // ✅ Capital 'S'
+      'Direct Referral Bonus', // ✅ Changed from 'Commission Credit' to 'Direct Referral Bonus'
+      'Successful',
       `Direct referral bonus for referring ${referredUser.fullName} (First deposit: ₦${depositAmount})`,
       referrerCommissionBefore,
       referrer.commissionBalance,
@@ -1112,7 +1086,8 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
         bonusAmount: 200,
         depositAmount: depositAmount,
         bonusFor: 'referrer',
-        minimumMet: depositAmount >= 5000
+        minimumMet: depositAmount >= 5000,
+        transactionSubType: 'direct_referral_bonus'
       }
     );
     
@@ -1122,12 +1097,12 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
     referredUser.referralBonusAwarded = true;
     await referredUser.save({ session: mongooseSession });
     
-    // ✅ FIXED: Use proper transaction type 'Commission Credit'
+    // ✅ CORRECTED: Use 'Welcome Bonus' which exists in your enum
     await createTransaction(
       referredUserId,
       200,
-      'Commission Credit', // ✅ Use proper type from your model
-      'Successful', // ✅ Capital 'S'
+      'Welcome Bonus', // ✅ Changed from 'Commission Credit' to 'Welcome Bonus'
+      'Successful',
       `Welcome bonus for ₦${depositAmount} first deposit with referral code`,
       userCommissionBefore,
       referredUser.commissionBalance,
@@ -1143,7 +1118,8 @@ const awardDirectReferralBonus = async (referredUserId, depositAmount, mongooseS
         bonusAmount: 200,
         depositAmount: depositAmount,
         bonusFor: 'referred_user',
-        minimumMet: depositAmount >= 5000
+        minimumMet: depositAmount >= 5000,
+        transactionSubType: 'welcome_bonus'
       }
     );
     
@@ -1262,11 +1238,11 @@ const awardIndirectReferralBonus = async (referredUserId, depositAmount, mongoos
     referredUser.indirectBonusAwardedLevel2 = true;
     await referredUser.save({ session: mongooseSession });
     
-    // Create transaction
+    // ✅ CORRECTED: Already using 'Indirect Referral Bonus' which exists in your enum
     await createTransaction(
       originalReferrerId,
       bonusAmount,
-      'Indirect Referral Bonus',
+      'Indirect Referral Bonus', // ✅ This already exists in your enum
       'Successful',
       `Indirect referral bonus from ${referredUser.fullName}'s first deposit (₦${depositAmount})`,
       commissionBefore,
@@ -1318,84 +1294,6 @@ const awardIndirectReferralBonus = async (referredUserId, depositAmount, mongoos
     return false;
   }
 };
-
-/**
- * Process referral bonuses when user makes first deposit
- * Only awards bonuses if deposit is ₦5,000 or above
- */
-const processReferralBonusesOnFirstDeposit = async (userId, depositAmount, mongooseSession = null) => {
-  try {
-    console.log(`💰 Processing referral bonuses for user ${userId}'s first deposit: ₦${depositAmount}`);
-    
-    // Check if user has a referrer
-    const user = await User.findById(userId);
-    if (!user || !user.referrerId) {
-      console.log('⚠️ User has no referrer, skipping referral bonuses');
-      return { 
-        directBonusAwarded: false, 
-        message: 'No referrer found',
-        minimumMet: depositAmount >= 5000
-      };
-    }
-    
-    // Check if this is the first deposit
-    const isFirstDeposit = await checkFirstDeposit(userId, mongooseSession);
-    if (!isFirstDeposit) {
-      console.log('⚠️ Not first deposit, skipping referral bonuses');
-      return { 
-        directBonusAwarded: false, 
-        message: 'Not first deposit',
-        minimumMet: depositAmount >= 5000
-      };
-    }
-    
-    // Check if deposit meets minimum for bonuses (₦5,000)
-    if (depositAmount < 5000) {
-      console.log(`⚠️ First deposit (₦${depositAmount}) below ₦5,000. No referral bonuses.`);
-      return {
-        directBonusAwarded: false,
-        message: `First deposit below ₦5,000. No bonus awarded.`,
-        depositAmount: depositAmount,
-        minimumRequired: 5000,
-        minimumMet: false
-      };
-    }
-    
-    console.log(`✅ First deposit meets minimum (₦${depositAmount} >= ₦5,000). Awarding bonuses...`);
-    
-    // Award direct referral bonus (₦200 to both)
-    const directBonusAwarded = await awardDirectReferralBonus(userId, depositAmount, mongooseSession);
-    
-    if (directBonusAwarded) {
-      // Award indirect referral bonus (₦20 to level 2 referrer)
-      await awardIndirectReferralBonus(userId, depositAmount, mongooseSession);
-    }
-    
-    return {
-      directBonusAwarded,
-      message: directBonusAwarded ? 
-        `Referral bonuses awarded for ₦${depositAmount} deposit` : 
-        `No referral bonuses awarded`,
-      depositAmount: depositAmount,
-      minimumRequired: 5000,
-      minimumMet: depositAmount >= 5000,
-      bonuses: {
-        directBonus: directBonusAwarded ? 200 : 0,
-        welcomeBonus: directBonusAwarded ? 200 : 0,
-        indirectBonus: directBonusAwarded ? 20 : 0
-      }
-    };
-    
-  } catch (error) {
-    console.error('❌ Error processing referral bonuses:', error);
-    return { 
-      directBonusAwarded: false, 
-      error: error.message,
-      minimumMet: depositAmount >= 5000
-    };
-  }
-};
-
 
 
 
