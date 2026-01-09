@@ -111,7 +111,7 @@ referralTier: {
   type: String,
   enum: ['Bronze', 'Silver', 'Gold', 'Platinum'],
   default: 'Bronze'
-}
+},
 
 
 
