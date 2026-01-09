@@ -34,7 +34,116 @@ const withdrawLimiter = rateLimit({
 
 
 
-
+// @desc    Get comprehensive referral statistics
+// @route   GET /api/commission/referral-stats
+// @access  Private
+router.get('/referral-stats', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Get direct referrals
+    const directReferrals = await User.find({ referrerId: userId })
+      .select('fullName email phone createdAt walletBalance commissionBalance')
+      .lean();
+    
+    // Calculate commission earnings by type
+    const commissionTypes = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true
+        }
+      },
+      {
+        $group: {
+          _id: '$type',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Calculate totals
+    const totalCommission = await Transaction.aggregate([
+      {
+        $match: {
+          userId: userId,
+          isCommission: true
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Get recent commission transactions
+    const recentCommissions = await Transaction.find({
+      userId: userId,
+      isCommission: true
+    })
+    .sort({ createdAt: -1 })
+    .limit(10)
+    .lean();
+    
+    // Calculate breakdown
+    const directBonus = commissionTypes.find(c => c._id === 'Direct Referral Bonus')?.totalAmount || 0;
+    const indirectBonus = commissionTypes.find(c => c._id === 'Indirect Referral Bonus')?.totalAmount || 0;
+    const welcomeBonus = commissionTypes.find(c => c._id === 'Welcome Bonus')?.totalAmount || 0;
+    const referralService = commissionTypes.find(c => c._id === 'Referral Service Commission')?.totalAmount || 0;
+    const serviceCommission = totalCommission[0]?.total - (directBonus + indirectBonus + welcomeBonus + referralService) || 0;
+    
+    res.json({
+      success: true,
+      data: {
+        user: {
+          referralCode: user.referralCode,
+          totalReferrals: directReferrals.length,
+          totalReferralEarnings: user.totalReferralEarnings || 0,
+          commissionBalance: user.commissionBalance || 0
+        },
+        referrals: directReferrals,
+        earnings: {
+          total: totalCommission[0]?.total || 0,
+          breakdown: {
+            directReferralBonus: directBonus,
+            indirectReferralBonus: indirectBonus,
+            welcomeBonus: welcomeBonus,
+            referralServiceCommission: referralService,
+            serviceCommission: serviceCommission
+          },
+          formatted: {
+            total: formatCurrency(totalCommission[0]?.total || 0),
+            directReferralBonus: formatCurrency(directBonus),
+            indirectReferralBonus: formatCurrency(indirectBonus),
+            welcomeBonus: formatCurrency(welcomeBonus),
+            referralServiceCommission: formatCurrency(referralService),
+            serviceCommission: formatCurrency(serviceCommission)
+          }
+        },
+        recentCommissions: recentCommissions,
+        commissionTypes: commissionTypes
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Referral stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get referral statistics'
+    });
+  }
+});
 
 
 
