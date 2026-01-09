@@ -9635,7 +9635,8 @@ app.post('/api/wallet/top-up', async (req, res) => {
           processedAt: new Date(),
           isDeposit: true, // Mark as deposit for referral bonus tracking
           depositAmount: amountInNaira,
-          reference: reference
+          reference: reference,
+          paymentMethod: source.includes('paystack') ? 'paystack' : 'virtual_account'
         }
       }], { session });
 
@@ -9655,15 +9656,18 @@ app.post('/api/wallet/top-up', async (req, res) => {
         }).session(session);
         
         if (previousDeposits === 0) {
-          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId}, processing referral bonuses...`);
+          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira}), processing referral bonuses...`);
           
-          // Process referral bonuses
+          // Process referral bonuses (only awards if ₦5,000 or above)
           const bonusResult = await processReferralBonusesOnFirstDeposit(userId, amountInNaira, session);
           
           if (bonusResult.directBonusAwarded) {
-            console.log(`✅ Referral bonuses processed: ₦200 to both referrer and referred user`);
+            console.log(`✅ Referral bonuses processed for ₦${amountInNaira} deposit:`);
+            console.log(`   - ₦200 to referrer (User A)`);
+            console.log(`   - ₦200 welcome bonus to referred user (User B)`);
+            console.log(`   - ₦20 indirect bonus to original referrer (User C) if applicable`);
           } else {
-            console.log(`ℹ️ No referral bonuses awarded: ${bonusResult.message}`);
+            console.log(`ℹ️ No referral bonuses: ${bonusResult.message}`);
           }
         } else {
           console.log(`ℹ️ Not first deposit (${previousDeposits} previous deposits), skipping referral bonuses`);
@@ -9684,7 +9688,8 @@ app.post('/api/wallet/top-up', async (req, res) => {
           amount: amountInNaira,
           newBalance: user.walletBalance,
           reference: reference,
-          isDeposit: true
+          isDeposit: true,
+          isFirstDeposit: false // We'll update this after checking
         }
       }], { session });
     });
