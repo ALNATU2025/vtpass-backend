@@ -52,6 +52,10 @@ const transactionSchema = new mongoose.Schema({
             
             // Commission transactions
             'Commission Credit',                  // Generic commission
+            'Direct Referral Bonus',              // Add this for referral bonuses
+            'Welcome Bonus',                      // Add this for welcome bonuses
+            'Indirect Referral Bonus',            // Add this for indirect bonuses
+            'Referral Service Commission',        // Add this for referral service commissions
             'Transfer Commission Credit',
             'Airtime Commission Credit',
             'Data Commission Credit',
