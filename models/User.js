@@ -114,10 +114,7 @@ indirectBonusAwardedLevel3: {
   type: Boolean,
   default: false
 },
-totalReferralEarnings: {
-  type: Number,
-  default: 0
-},
+
 referralTier: {
   type: String,
   enum: ['Bronze', 'Silver', 'Gold', 'Platinum'],
