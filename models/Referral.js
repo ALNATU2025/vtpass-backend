@@ -42,4 +42,10 @@ const referralSchema = new mongoose.Schema({
   }
 });
 
+// Update timestamp on save
+referralSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
 module.exports = mongoose.model('Referral', referralSchema);
