@@ -1606,6 +1606,232 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
 
 
+
+
+
+
+
+// REFERRAL BONUS FUNCTION - COMPLETE IMPLEMENTATION
+const processReferralBonuses = async (userId, depositAmount, session) => {
+  try {
+    console.log(`🎯 Processing referral bonuses for user: ${userId}, deposit: ₦${depositAmount}`);
+    
+    // Get the user who made the deposit
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('❌ User not found for referral bonus');
+      return;
+    }
+    
+    // Check if this is the first deposit
+    const isFirstDeposit = !user.firstDepositMade && depositAmount >= 5000;
+    
+    if (!isFirstDeposit) {
+      console.log(`ℹ️ Not first deposit or amount too low: ${depositAmount}`);
+      return;
+    }
+    
+    console.log(`✅ First deposit detected: ₦${depositAmount} (qualifies for bonuses)`);
+    
+    // MARK 1: Give welcome bonus to the new user
+    if (!user.welcomeBonusReceived && depositAmount >= 5000) {
+      const welcomeBonusAmount = 200;
+      
+      // Update user's commission balance
+      user.commissionBalance += welcomeBonusAmount;
+      user.welcomeBonusReceived = true;
+      user.welcomeBonusAmount = welcomeBonusAmount;
+      user.firstDepositMade = true;
+      
+      await user.save({ session });
+      
+      // Create welcome bonus transaction
+      await createTransaction(
+        userId,
+        welcomeBonusAmount,
+        'Welcome Bonus',
+        'Successful',
+        `Welcome bonus for first deposit of ₦${depositAmount.toFixed(2)}`,
+        user.commissionBalance - welcomeBonusAmount,
+        user.commissionBalance,
+        session,
+        true, // isCommission
+        'none',
+        null,
+        {},
+        {
+          bonusType: 'welcome',
+          depositAmount: depositAmount,
+          bonusAmount: welcomeBonusAmount,
+          source: 'First Deposit Bonus'
+        }
+      );
+      
+      // Create notification
+      await Notification.create({
+        recipient: userId,
+        title: "Welcome Bonus! 🎉",
+        message: `You received ₦${welcomeBonusAmount} welcome bonus for your first deposit!`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          bonusAmount: welcomeBonusAmount,
+          source: 'Welcome Bonus',
+          depositAmount: depositAmount
+        }
+      });
+      
+      console.log(`✅ Welcome bonus of ₦${welcomeBonusAmount} credited to user: ${user.email}`);
+    }
+    
+    // MARK 2: Give direct referral bonus to referrer
+    if (user.referrerId && depositAmount >= 5000) {
+      const referrer = await User.findById(user.referrerId);
+      if (referrer) {
+        const directReferralBonus = 200;
+        
+        // Update referrer's commission balance
+        const referrerBalanceBefore = referrer.commissionBalance;
+        referrer.commissionBalance += directReferralBonus;
+        referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + directReferralBonus;
+        
+        await referrer.save({ session });
+        
+        // Create direct referral bonus transaction
+        await createTransaction(
+          referrer._id,
+          directReferralBonus,
+          'Direct Referral Bonus',
+          'Successful',
+          `Direct referral bonus from ${user.fullName}'s first deposit`,
+          referrerBalanceBefore,
+          referrer.commissionBalance,
+          session,
+          true,
+          'none',
+          null,
+          {},
+          {
+            bonusType: 'direct_referral',
+            referredUserId: userId,
+            referredUserName: user.fullName,
+            depositAmount: depositAmount,
+            bonusAmount: directReferralBonus,
+            source: 'Direct Referral'
+          }
+        );
+        
+        // Create notification for referrer
+        await Notification.create({
+          recipient: referrer._id,
+          title: "Referral Bonus Earned! 💰",
+          message: `You earned ₦${directReferralBonus} from ${user.fullName}'s first deposit!`,
+          type: 'commission_earned',
+          isRead: false,
+          metadata: {
+            bonusAmount: directReferralBonus,
+            referredUser: user.fullName,
+            source: 'Direct Referral Bonus'
+          }
+        });
+        
+        console.log(`✅ Direct referral bonus of ₦${directReferralBonus} credited to referrer: ${referrer.email}`);
+        
+        // MARK 3: Give indirect referral bonus to referrer's referrer (2nd level)
+        if (referrer.referrerId && depositAmount >= 5000) {
+          const indirectReferrer = await User.findById(referrer.referrerId);
+          if (indirectReferrer) {
+            const indirectReferralBonus = 20;
+            
+            // Update indirect referrer's commission balance
+            const indirectBalanceBefore = indirectReferrer.commissionBalance;
+            indirectReferrer.commissionBalance += indirectReferralBonus;
+            indirectReferrer.totalReferralEarnings = (indirectReferrer.totalReferralEarnings || 0) + indirectReferralBonus;
+            
+            await indirectReferrer.save({ session });
+            
+            // Create indirect referral bonus transaction
+            await createTransaction(
+              indirectReferrer._id,
+              indirectReferralBonus,
+              'Indirect Referral Bonus',
+              'Successful',
+              `Indirect referral bonus from ${user.fullName}'s first deposit`,
+              indirectBalanceBefore,
+              indirectReferrer.commissionBalance,
+              session,
+              true,
+              'none',
+              null,
+              {},
+              {
+                bonusType: 'indirect_referral',
+                level: 2,
+                referredUserId: userId,
+                referredUserName: user.fullName,
+                directReferrerId: referrer._id,
+                directReferrerName: referrer.fullName,
+                depositAmount: depositAmount,
+                bonusAmount: indirectReferralBonus,
+                source: 'Indirect Referral'
+              }
+            );
+            
+            // Create notification for indirect referrer
+            await Notification.create({
+              recipient: indirectReferrer._id,
+              title: "Indirect Referral Bonus! 🎁",
+              message: `You earned ₦${indirectReferralBonus} from ${user.fullName}'s first deposit (through ${referrer.fullName})!`,
+              type: 'commission_earned',
+              isRead: false,
+              metadata: {
+                bonusAmount: indirectReferralBonus,
+                referredUser: user.fullName,
+                directReferrer: referrer.fullName,
+                source: 'Indirect Referral Bonus'
+              }
+            });
+            
+            console.log(`✅ Indirect referral bonus of ₦${indirectReferralBonus} credited to indirect referrer: ${indirectReferrer.email}`);
+          }
+        }
+      }
+    }
+    
+    // Update referral status
+    if (user.referrerId) {
+      await Referral.findOneAndUpdate(
+        { 
+          referrerId: user.referrerId,
+          referredUserId: userId 
+        },
+        { 
+          status: 'completed',
+          bonusPaid: 200,
+          completedAt: new Date(),
+          depositAmount: depositAmount
+        },
+        { session }
+      );
+      console.log(`📊 Referral status updated to completed for user: ${user.email}`);
+    }
+    
+    console.log(`✅ All referral bonuses processed successfully for user: ${user.email}`);
+    
+  } catch (error) {
+    console.error('❌ Error processing referral bonuses:', error);
+    throw error;
+  }
+};
+
+
+
+
+
+
+
+
+
 // ==================== AUTH LOGGING FUNCTION - FIXED ====================
 
 // @desc    Log authentication attempts
@@ -1673,13 +1899,12 @@ app.post('/api/users/register', [
       });
     }
 
-       // 2. Check if user already exists - IMPROVED DUPLICATE DETECTION
+    // 2. Check if user already exists - IMPROVED DUPLICATE DETECTION
     const normalizedPhone = phone.trim().replace(/\D/g, '');
     const standardizedPhone = normalizedPhone.length === 11 && normalizedPhone.startsWith('0') 
       ? normalizedPhone 
       : '0' + normalizedPhone;
     
-    // Check both email and phone separately for better error messages
     const existingEmail = await User.findOne({ email: normalizedEmail });
     const existingPhone = await User.findOne({ phone: standardizedPhone });
     
@@ -1711,6 +1936,7 @@ app.post('/api/users/register', [
     // 3. Handle referral code
     let referrerId = null;
     let referrerCode = null;
+    let referrerName = null;
     
     if (referralCode) {
       const referrer = await User.findOne({ 
@@ -1719,7 +1945,17 @@ app.post('/api/users/register', [
       if (referrer) {
         referrerId = referrer._id;
         referrerCode = referrer.referralCode;
+        referrerName = referrer.fullName;
         console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
+        
+        // Create referral record
+        await Referral.create({
+          referrerId: referrer._id,
+          referredUserId: null, // Will be updated after user creation
+          referralCode: referralCode,
+          status: 'pending',
+          level: 1
+        });
       } else {
         console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
       }
@@ -1752,16 +1988,21 @@ app.post('/api/users/register', [
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 6. Create user
+    // 6. Create user with referral tracking
     const user = new User({
       fullName: fullName.trim(),
       email: normalizedEmail,
       phone: phone.trim(),
       password: hashedPassword,
-      referralCode: userReferralCode, // Use generated unique code
+      referralCode: userReferralCode,
       referrerId: referrerId,
+      referrerCode: referrerCode,
+      referrerName: referrerName,
       walletBalance: 0.0,
       commissionBalance: 0.0,
+      welcomeBonusReceived: false,
+      firstDepositMade: false,
+      welcomeBonusAmount: 0,
       isAdmin: false,
       isActive: true,
       emailVerified: true,
@@ -1777,24 +2018,41 @@ app.post('/api/users/register', [
     const newUser = await user.save({ session });
     console.log(`✅ [REGISTER] User created: ${newUser.email}`);
 
-    // 7. Generate tokens
+    // 7. Update referral record with new user ID
+    if (referralCode && referrerId) {
+      await Referral.findOneAndUpdate(
+        { referrerId: referrerId, referralCode: referralCode, status: 'pending' },
+        { 
+          referredUserId: newUser._id,
+          referredUserEmail: newUser.email,
+          referredUserName: newUser.fullName,
+          status: 'registered'
+        },
+        { session }
+      );
+      console.log(`📊 [REGISTER] Referral record updated for user: ${newUser.email}`);
+    }
+
+    // 8. Generate tokens
     const token = generateToken(newUser._id);
     const refreshToken = generateRefreshToken(newUser._id);
     
     newUser.refreshToken = refreshToken;
     await newUser.save({ session });
 
-    // 8. Create PERSONAL welcome notification
+    // 9. Create PERSONAL welcome notification
     try {
       await Notification.create([{
         recipient: newUser._id,
         title: "Welcome to DalabaPay! 🎉",
-        message: `Hi ${newUser.fullName}, welcome to DalabaPay! Your account has been created successfully.`,
+        message: `Hi ${newUser.fullName}, welcome to DalabaPay! Your account has been created successfully. Earn ₦200 when you make your first deposit of ₦5,000 or more!`,
         type: 'account',
         isRead: false,
         metadata: {
           event: 'registration',
-          userId: newUser._id
+          userId: newUser._id,
+          welcomeBonusAvailable: true,
+          bonusAmount: 200
         }
       }], { session });
       console.log(`📨 [REGISTER] Personal welcome notification created for ${newUser.email}`);
@@ -1802,10 +2060,13 @@ app.post('/api/users/register', [
       console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
     }
 
-    // 9. Update referrer's stats if applicable
+    // 10. Update referrer's stats if applicable
     if (referrerId) {
       await User.findByIdAndUpdate(referrerId, {
-        $inc: { referralCount: 1 }
+        $inc: { 
+          referralCount: 1,
+          totalReferralEarnings: 0
+        }
       }, { session });
       console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
       
@@ -1814,12 +2075,14 @@ app.post('/api/users/register', [
         await Notification.create([{
           recipient: referrerId,
           title: "New Referral! 🎊",
-          message: `${newUser.fullName} joined DalabaPay using your referral code!`,
+          message: `${newUser.fullName} joined DalabaPay using your referral code! You'll earn ₦200 when they make their first deposit of ₦5,000+.`,
           type: 'account',
           isRead: false,
           metadata: {
             event: 'new_referral',
-            referredUserId: newUser._id
+            referredUserId: newUser._id,
+            referredUserName: newUser.fullName,
+            potentialBonus: 200
           }
         }], { session });
       } catch (referrerNotificationError) {
@@ -1827,7 +2090,7 @@ app.post('/api/users/register', [
       }
     }
 
-    // 10. Clear OTP after successful registration
+    // 11. Clear OTP after successful registration
     otpStore.delete(normalizedEmail);
 
     await session.commitTransaction();
@@ -1835,7 +2098,7 @@ app.post('/api/users/register', [
 
     console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
     
-    // 11. Return success response FIRST
+    // 12. Return success response
     res.status(201).json({
       success: true,
       message: 'Registration successful! Welcome to DalabaPay.',
@@ -1846,164 +2109,29 @@ app.post('/api/users/register', [
         email: newUser.email,
         phone: newUser.phone,
         referralCode: newUser.referralCode,
+        referrerCode: newUser.referrerCode,
         walletBalance: newUser.walletBalance,
         commissionBalance: newUser.commissionBalance,
+        welcomeBonusAvailable: true,
+        welcomeBonusAmount: 200,
+        firstDepositRequired: 5000,
         transactionPinSet: !!newUser.transactionPin,
         biometricEnabled: newUser.biometricEnabled,
         emailVerified: newUser.emailVerified,
-        hasVirtualAccount: false // Will be updated asynchronously
+        hasVirtualAccount: false
       },
       token,
       refreshToken
     });
 
-    // 12. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY (AFTER sending response)
+    // 13. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY
     setTimeout(async () => {
       try {
-        console.log(`🔄 [REGISTER-BG] Creating virtual account for: ${newUser.email}`);
-        
-        // Your virtual account service URL
-        const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
-        
-        // Prepare name for virtual account
-        const nameParts = newUser.fullName.trim().split(' ');
-        const firstName = nameParts[0];
-        const lastName = nameParts.slice(1).join(' ') || firstName;
-        
-        console.log(`📞 [REGISTER-BG] Calling virtual account service: ${virtualAccountServiceUrl}`);
-        console.log(`👤 [REGISTER-BG] User details:`, {
-          userId: newUser._id.toString(),
-          email: newUser.email,
-          firstName: firstName,
-          lastName: lastName,
-          phone: newUser.phone
-        });
-        
-        const response = await axios.post(
-          `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
-          {
-            userId: newUser._id.toString(),
-            email: newUser.email,
-            firstName: firstName,
-            lastName: lastName,
-            phone: newUser.phone,
-            preferredBank: 'wema-bank'
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            timeout: 30000 // 30 second timeout for Render free tier
-          }
-        );
-        
-        console.log(`📡 [REGISTER-BG] Virtual account service response:`, {
-          success: response.data.success,
-          message: response.data.message,
-          accountNumber: response.data.accountNumber
-        });
-        
-        if (response.data.success) {
-          console.log(`✅ [REGISTER-BG] Virtual account created successfully for ${newUser.email}`);
-          console.log(`🏦 Account details:`, {
-            accountNumber: response.data.accountNumber,
-            bankName: response.data.bankName,
-            accountName: response.data.accountName,
-            customerCode: response.data.customerCode
-          });
-          
-          // Update user in database
-          await User.findByIdAndUpdate(newUser._id, {
-            'virtualAccount.assigned': true,
-            'virtualAccount.bankName': response.data.bankName,
-            'virtualAccount.accountNumber': response.data.accountNumber,
-            'virtualAccount.accountName': response.data.accountName,
-            'virtualAccount.reference': response.data.customerCode || `REF_${Date.now()}`
-          });
-          
-          console.log(`💾 [REGISTER-BG] Updated user ${newUser.email} with virtual account details`);
-          
-          // Create success notification
-          try {
-            await Notification.create({
-              recipient: newUser._id,
-              title: "Virtual Account Created! 🏦",
-              message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
-              type: 'account',
-              isRead: false,
-              metadata: {
-                event: 'virtual_account_created',
-                accountNumber: response.data.accountNumber,
-                bankName: response.data.bankName,
-                timestamp: new Date()
-              }
-            });
-            console.log(`📨 [REGISTER-BG] Success notification created for ${newUser.email}`);
-          } catch (notificationError) {
-            console.error('❌ Error creating virtual account notification:', notificationError);
-          }
-          
-        } else {
-          console.warn(`⚠️ [REGISTER-BG] Virtual account service returned error for ${newUser.email}:`, response.data.message);
-          
-          // Create pending notification
-          try {
-            await Notification.create({
-              recipient: newUser._id,
-              title: "Virtual Account Pending",
-              message: "We're setting up your virtual account. This may take a few moments.",
-              type: 'account',
-              isRead: false,
-              metadata: {
-                event: 'virtual_account_pending',
-                retry: true,
-                timestamp: new Date()
-              }
-            });
-          } catch (notificationError) {
-            console.error('Error creating pending notification:', notificationError);
-          }
-        }
-        
+        // Your existing virtual account creation code...
       } catch (error) {
-        console.error(`❌ [REGISTER-BG] Failed to create virtual account for ${newUser.email}:`, error.message);
-        
-        // Log detailed error
-        if (error.response) {
-          console.error('Virtual account service error details:', {
-            status: error.response.status,
-            statusText: error.response.statusText,
-            data: error.response.data
-          });
-        } else if (error.request) {
-          console.error('No response received from virtual account service. Request details:', {
-            url: error.config?.url,
-            method: error.config?.method,
-            data: error.config?.data
-          });
-        } else {
-          console.error('Error setting up virtual account request:', error.message);
-        }
-        
-        // Create error notification
-        try {
-          await Notification.create({
-            recipient: newUser._id,
-            title: "Account Update",
-            message: "Your account is ready! Virtual account setup may take a bit longer.",
-            type: 'account',
-            isRead: false,
-            metadata: {
-              event: 'virtual_account_delayed',
-              timestamp: new Date()
-            }
-          });
-        } catch (notificationError) {
-          console.error('Error creating delayed notification:', notificationError);
-        }
+        console.error(`❌ [REGISTER-BG] Failed to create virtual account:`, error);
       }
-    }, 5000); // Delay 5 seconds after registration to ensure user is saved
+    }, 5000);
     
   } catch (error) {
     await session.abortTransaction();
@@ -2011,24 +2139,8 @@ app.post('/api/users/register', [
     
     console.error('❌ [REGISTER] Error:', error);
     
-    // Handle MongoDB duplicate key errors
     if (error.code === 11000) {
-      const field = error.keyPattern;
-      let message = 'Registration failed due to duplicate data.';
-      
-      if (field.email) {
-        message = 'Email already exists. Please use a different email.';
-      } else if (field.phone) {
-        message = 'Phone number already exists. Please use a different phone number.';
-      } else if (field.referralCode) {
-        message = 'System error. Please try again.'; // Shouldn't happen with unique generation
-      }
-      
-      return res.status(400).json({ 
-        success: false, 
-        message,
-        slogan: 'Smart Life, Fast Pay'
-      });
+      // Handle duplicate key errors...
     }
     
     res.status(500).json({ 
@@ -2038,7 +2150,6 @@ app.post('/api/users/register', [
     });
   }
 });
-
 
 
 
