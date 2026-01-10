@@ -2001,7 +2001,7 @@ if (referralCode && referrerId) {
     console.error('❌ [REGISTER] Error creating referral record:', referralError);
     // Don't fail registration if referral record fails
   }
-}
+
 
     // 8. Generate tokens
     const token = generateToken(newUser._id);
