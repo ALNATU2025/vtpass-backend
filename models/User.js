@@ -127,7 +127,12 @@ referralTier: {
 
 
 
-
+referrerCode: String,
+referrerName: String,
+referralCount: {
+  type: Number,
+  default: 0
+},
     
     
     // Referral system fields
