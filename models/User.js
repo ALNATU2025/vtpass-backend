@@ -94,6 +94,12 @@ const userSchema = mongoose.Schema(
   type: Boolean,
   default: false
 },
+
+  firstDepositBonusReceived: {
+  type: Boolean,
+  default: false
+},
+    
 firstDepositMade: {
   type: Boolean,
   default: false
