@@ -23,6 +23,7 @@ const Beneficiary = require('./models/Beneficiary');
 const Settings = require('./models/AppSettings');
 const AuthLog = require('./models/AuthLog');
 const Alert = require('./models/Alert');
+const Referral = require('./models/Referral');
 
 
 // Try to load security middleware with error handling
@@ -1933,105 +1934,74 @@ app.post('/api/users/register', [
       });
     }
 
-    // 3. Handle referral code
-    let referrerId = null;
-    let referrerCode = null;
-    let referrerName = null;
-    
-    if (referralCode) {
-      const referrer = await User.findOne({ 
-        referralCode: referralCode.toUpperCase().trim() 
-      });
-      if (referrer) {
-        referrerId = referrer._id;
-        referrerCode = referrer.referralCode;
-        referrerName = referrer.fullName;
-        console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
-        
-        // Create referral record
-        await Referral.create({
-          referrerId: referrer._id,
-          referredUserId: null, // Will be updated after user creation
-          referralCode: referralCode,
-          status: 'pending',
-          level: 1
-        });
-      } else {
-        console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
-      }
-    }
+   // 3. Handle referral code
+let referrerId = null;
+let referrerCode = null;
+let referrerName = null;
 
-    // 4. Generate UNIQUE referral code for new user
-    const generateUniqueReferralCode = async () => {
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-      
-      for (let attempt = 0; attempt < 5; attempt++) {
-        let code = 'DALABA'; // Prefix for DalabaPay
-        for (let i = 0; i < 6; i++) {
-          code += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        
-        const existing = await User.findOne({ referralCode: code });
-        if (!existing) {
-          return code;
-        }
-      }
-      
-      // If all attempts fail, use timestamp-based code
-      return 'DALABA' + Date.now().toString().slice(-6);
-    };
+if (referralCode) {
+  const referrer = await User.findOne({ 
+    referralCode: referralCode.toUpperCase().trim() 
+  });
+  if (referrer) {
+    referrerId = referrer._id;
+    referrerCode = referrer.referralCode;
+    referrerName = referrer.fullName;
+    console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
+  } else {
+    console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
+  }
+}
 
-    const userReferralCode = await generateUniqueReferralCode();
-    console.log(`🔑 [REGISTER] Generated unique referral code: ${userReferralCode}`);
+// 6. Create user with referral tracking
+const user = new User({
+  fullName: fullName.trim(),
+  email: normalizedEmail,
+  phone: phone.trim(),
+  password: hashedPassword,
+  referralCode: userReferralCode,
+  referrerId: referrerId,
+  referrerCode: referrerCode,
+  referrerName: referrerName,
+  walletBalance: 0.0,
+  commissionBalance: 0.0,
+  welcomeBonusReceived: false,
+  firstDepositMade: false,
+  welcomeBonusAmount: 0,
+  referralBonusAwarded: false,
+  indirectBonusAwardedLevel2: false,
+  isAdmin: false,
+  isActive: true,
+  emailVerified: true,
+  virtualAccount: {
+    assigned: false,
+    bankName: '',
+    accountNumber: '',
+    accountName: '',
+    reference: ''
+  }
+});
 
-    // 5. Hash password
-    const salt = await bcrypt.genSalt(12);
-    const hashedPassword = await bcrypt.hash(password, salt);
+const newUser = await user.save({ session });
+console.log(`✅ [REGISTER] User created: ${newUser.email}`);
 
-    // 6. Create user with referral tracking
-    const user = new User({
-      fullName: fullName.trim(),
-      email: normalizedEmail,
-      phone: phone.trim(),
-      password: hashedPassword,
-      referralCode: userReferralCode,
+// 7. Create referral record AFTER user is created
+if (referralCode && referrerId) {
+  try {
+    await Referral.create([{
       referrerId: referrerId,
-      referrerCode: referrerCode,
-      referrerName: referrerName,
-      walletBalance: 0.0,
-      commissionBalance: 0.0,
-      welcomeBonusReceived: false,
-      firstDepositMade: false,
-      welcomeBonusAmount: 0,
-      isAdmin: false,
-      isActive: true,
-      emailVerified: true,
-      virtualAccount: {
-        assigned: false,
-        bankName: '',
-        accountNumber: '',
-        accountName: '',
-        reference: ''
-      }
-    });
-
-    const newUser = await user.save({ session });
-    console.log(`✅ [REGISTER] User created: ${newUser.email}`);
-
-    // 7. Update referral record with new user ID
-    if (referralCode && referrerId) {
-      await Referral.findOneAndUpdate(
-        { referrerId: referrerId, referralCode: referralCode, status: 'pending' },
-        { 
-          referredUserId: newUser._id,
-          referredUserEmail: newUser.email,
-          referredUserName: newUser.fullName,
-          status: 'registered'
-        },
-        { session }
-      );
-      console.log(`📊 [REGISTER] Referral record updated for user: ${newUser.email}`);
-    }
+      referredUserId: newUser._id,
+      referralCode: referralCode,
+      referredUserEmail: newUser.email,
+      referredUserName: newUser.fullName,
+      status: 'registered'
+    }], { session });
+    console.log(`📊 [REGISTER] Referral record created for user: ${newUser.email}`);
+  } catch (referralError) {
+    console.error('❌ [REGISTER] Error creating referral record:', referralError);
+    // Don't fail registration if referral record fails
+  }
+}
 
     // 8. Generate tokens
     const token = generateToken(newUser._id);
