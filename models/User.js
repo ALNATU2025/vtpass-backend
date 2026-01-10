@@ -90,8 +90,19 @@ const userSchema = mongoose.Schema(
       default: true,
     },
 
-
-    referralBonusAwarded: {
+    welcomeBonusReceived: {
+  type: Boolean,
+  default: false
+},
+firstDepositMade: {
+  type: Boolean,
+  default: false
+},
+welcomeBonusAmount: {
+  type: Number,
+  default: 0
+},
+  referralBonusAwarded: {
   type: Boolean,
   default: false
 },
