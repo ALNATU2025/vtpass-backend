@@ -541,6 +541,68 @@ const checkServiceEnabled = (serviceKey) => {
 
 
 
+// @desc    Validate referral code (REF format only)
+// @route   GET /api/referral/validate/:code
+// @access  Public
+app.get('/api/referral/validate/:code', async (req, res) => {
+  try {
+    const referralCode = req.params.code.toUpperCase().trim();
+    
+    console.log(`🔍 Validating referral code: ${referralCode}`);
+    
+    // ONLY ACCEPT REF format (8-20 characters total, REF + 5-17)
+    if (!referralCode.startsWith('REF') || referralCode.length < 8 || referralCode.length > 20) {
+      return res.json({
+        success: false,
+        message: 'Referral code must start with REF and be 8-20 characters total'
+      });
+    }
+    
+    const referrer = await User.findOne({ referralCode });
+    
+    if (!referrer) {
+      return res.json({
+        success: false,
+        message: 'Invalid referral code. User not found.'
+      });
+    }
+    
+    if (!referrer.isActive) {
+      return res.json({
+        success: false,
+        message: 'This referral code belongs to an inactive account.'
+      });
+    }
+    
+    // Check if referrer is trying to use their own code
+    if (req.user && referrer._id.toString() === req.user._id.toString()) {
+      return res.json({
+        success: false,
+        message: 'You cannot use your own referral code'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      referrerId: referrer._id,
+      referrerName: referrer.fullName,
+      referrerEmail: referrer.email,
+      referralCode: referrer.referralCode,
+      message: 'Valid referral code'
+    });
+    
+  } catch (error) {
+    console.error('Referral validation error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error validating referral code'
+    });
+  }
+});
+
+
+
+
 // @desc    Check token status and refresh if needed
 // @route   GET /api/users/token-status
 // @access  Private
@@ -1953,28 +2015,28 @@ app.post('/api/users/register', [
       }
     }
 
-    // 4. Generate UNIQUE referral code for new user
-    const generateUniqueReferralCode = async () => {
-      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-      
-      for (let attempt = 0; attempt < 5; attempt++) {
-        let code = 'DALABA'; // Prefix for DalabaPay
-        for (let i = 0; i < 6; i++) {
-          code += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        
-        const existing = await User.findOne({ referralCode: code });
-        if (!existing) {
-          return code;
-        }
-      }
-      
-      // If all attempts fail, use timestamp-based code
-      return 'DALABA' + Date.now().toString().slice(-6);
-    };
+    // 4. Generate UNIQUE referral code for new user - ONLY REF FORMAT
+const generateUniqueReferralCode = async () => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  
+  for (let attempt = 0; attempt < 10; attempt++) {
+    let code = 'REF'; // ONLY REF format
+    for (let i = 0; i < 8; i++) { // Make total 11 characters (REF + 8 = 11)
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    const existing = await User.findOne({ referralCode: code });
+    if (!existing) {
+      return code;
+    }
+  }
+  
+  // If all attempts fail, use timestamp-based code
+  return 'REF' + Date.now().toString().slice(-8);
+};
 
-    const userReferralCode = await generateUniqueReferralCode();
-    console.log(`🔑 [REGISTER] Generated unique referral code: ${userReferralCode}`);
+const userReferralCode = await generateUniqueReferralCode();
+console.log(`🔑 [REGISTER] Generated REF referral code: ${userReferralCode}`);
 
     // 5. ✅ FIXED: Hash password
     const salt = await bcrypt.genSalt(12);
