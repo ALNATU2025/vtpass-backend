@@ -1900,7 +1900,7 @@ app.post('/api/users/register', [
       });
     }
 
-    // 2. Check if user already exists - IMPROVED DUPLICATE DETECTION
+    // 2. Check if user already exists
     const normalizedPhone = phone.trim().replace(/\D/g, '');
     const standardizedPhone = normalizedPhone.length === 11 && normalizedPhone.startsWith('0') 
       ? normalizedPhone 
@@ -1934,74 +1934,101 @@ app.post('/api/users/register', [
       });
     }
 
-   // 3. Handle referral code
-let referrerId = null;
-let referrerCode = null;
-let referrerName = null;
+    // 3. Handle referral code
+    let referrerId = null;
+    let referrerCode = null;
+    let referrerName = null;
+    
+    if (referralCode) {
+      const referrer = await User.findOne({ 
+        referralCode: referralCode.toUpperCase().trim() 
+      });
+      if (referrer) {
+        referrerId = referrer._id;
+        referrerCode = referrer.referralCode;
+        referrerName = referrer.fullName;
+        console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
+      } else {
+        console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
+      }
+    }
 
-if (referralCode) {
-  const referrer = await User.findOne({ 
-    referralCode: referralCode.toUpperCase().trim() 
-  });
-  if (referrer) {
-    referrerId = referrer._id;
-    referrerCode = referrer.referralCode;
-    referrerName = referrer.fullName;
-    console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
-  } else {
-    console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
-  }
-}
+    // 4. Generate UNIQUE referral code for new user
+    const generateUniqueReferralCode = async () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      
+      for (let attempt = 0; attempt < 5; attempt++) {
+        let code = 'DALABA'; // Prefix for DalabaPay
+        for (let i = 0; i < 6; i++) {
+          code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        
+        const existing = await User.findOne({ referralCode: code });
+        if (!existing) {
+          return code;
+        }
+      }
+      
+      // If all attempts fail, use timestamp-based code
+      return 'DALABA' + Date.now().toString().slice(-6);
+    };
 
-// 6. Create user with referral tracking
-const user = new User({
-  fullName: fullName.trim(),
-  email: normalizedEmail,
-  phone: phone.trim(),
-  password: hashedPassword,
-  referralCode: userReferralCode,
-  referrerId: referrerId,
-  referrerCode: referrerCode,
-  referrerName: referrerName,
-  walletBalance: 0.0,
-  commissionBalance: 0.0,
-  welcomeBonusReceived: false,
-  firstDepositMade: false,
-  welcomeBonusAmount: 0,
-  referralBonusAwarded: false,
-  indirectBonusAwardedLevel2: false,
-  isAdmin: false,
-  isActive: true,
-  emailVerified: true,
-  virtualAccount: {
-    assigned: false,
-    bankName: '',
-    accountNumber: '',
-    accountName: '',
-    reference: ''
-  }
-});
+    const userReferralCode = await generateUniqueReferralCode();
+    console.log(`🔑 [REGISTER] Generated unique referral code: ${userReferralCode}`);
 
-const newUser = await user.save({ session });
-console.log(`✅ [REGISTER] User created: ${newUser.email}`);
+    // 5. ✅ FIXED: Hash password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
-// 7. Create referral record AFTER user is created
-if (referralCode && referrerId) {
-  try {
-    await Referral.create([{
+    // 6. Create user with referral tracking
+    const user = new User({
+      fullName: fullName.trim(),
+      email: normalizedEmail,
+      phone: phone.trim(),
+      password: hashedPassword, // ✅ Use the hashedPassword variable
+      referralCode: userReferralCode,
       referrerId: referrerId,
-      referredUserId: newUser._id,
-      referralCode: referralCode,
-      referredUserEmail: newUser.email,
-      referredUserName: newUser.fullName,
-      status: 'registered'
-    }], { session });
-    console.log(`📊 [REGISTER] Referral record created for user: ${newUser.email}`);
-  } catch (referralError) {
-    console.error('❌ [REGISTER] Error creating referral record:', referralError);
-    // Don't fail registration if referral record fails
-  }
+      referrerCode: referrerCode,
+      referrerName: referrerName,
+      walletBalance: 0.0,
+      commissionBalance: 0.0,
+      welcomeBonusReceived: false,
+      firstDepositMade: false,
+      welcomeBonusAmount: 0,
+      referralBonusAwarded: false,
+      indirectBonusAwardedLevel2: false,
+      isAdmin: false,
+      isActive: true,
+      emailVerified: true,
+      virtualAccount: {
+        assigned: false,
+        bankName: '',
+        accountNumber: '',
+        accountName: '',
+        reference: ''
+      }
+    });
 
+    const newUser = await user.save({ session });
+    console.log(`✅ [REGISTER] User created: ${newUser.email}`);
+
+    // 7. Create referral record AFTER user is created
+    if (referralCode && referrerId) {
+      try {
+        await Referral.create([{
+          referrerId: referrerId,
+          referredUserId: newUser._id,
+          referralCode: referralCode,
+          referredUserEmail: newUser.email,
+          referredUserName: newUser.fullName,
+          status: 'registered'
+        }], { session });
+        console.log(`📊 [REGISTER] Referral record created for user: ${newUser.email}`);
+      } catch (referralError) {
+        console.error('❌ [REGISTER] Error creating referral record:', referralError);
+        // Don't fail registration if referral record fails
+      }
+    }
 
     // 8. Generate tokens
     const token = generateToken(newUser._id);
@@ -2033,10 +2060,7 @@ if (referralCode && referrerId) {
     // 10. Update referrer's stats if applicable
     if (referrerId) {
       await User.findByIdAndUpdate(referrerId, {
-        $inc: { 
-          referralCount: 1,
-          totalReferralEarnings: 0
-        }
+        $inc: { referralCount: 1 }
       }, { session });
       console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
       
@@ -2097,9 +2121,68 @@ if (referralCode && referrerId) {
     // 13. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY
     setTimeout(async () => {
       try {
+        console.log(`🔄 [REGISTER-BG] Creating virtual account for: ${newUser.email}`);
+        
         // Your existing virtual account creation code...
+        const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
+        const nameParts = newUser.fullName.trim().split(' ');
+        const firstName = nameParts[0];
+        const lastName = nameParts.slice(1).join(' ') || firstName;
+        
+        const response = await axios.post(
+          `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
+          {
+            userId: newUser._id.toString(),
+            email: newUser.email,
+            firstName: firstName,
+            lastName: lastName,
+            phone: newUser.phone,
+            preferredBank: 'wema-bank'
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            timeout: 30000
+          }
+        );
+        
+        if (response.data.success) {
+          console.log(`✅ [REGISTER-BG] Virtual account created successfully for ${newUser.email}`);
+          
+          await User.findByIdAndUpdate(newUser._id, {
+            'virtualAccount.assigned': true,
+            'virtualAccount.bankName': response.data.bankName,
+            'virtualAccount.accountNumber': response.data.accountNumber,
+            'virtualAccount.accountName': response.data.accountName,
+            'virtualAccount.reference': response.data.customerCode || `REF_${Date.now()}`
+          });
+          
+          console.log(`💾 [REGISTER-BG] Updated user ${newUser.email} with virtual account details`);
+          
+          // Create success notification
+          try {
+            await Notification.create({
+              recipient: newUser._id,
+              title: "Virtual Account Created! 🏦",
+              message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
+              type: 'account',
+              isRead: false,
+              metadata: {
+                event: 'virtual_account_created',
+                accountNumber: response.data.accountNumber,
+                bankName: response.data.bankName,
+                timestamp: new Date()
+              }
+            });
+          } catch (notificationError) {
+            console.error('❌ Error creating virtual account notification:', notificationError);
+          }
+        }
+        
       } catch (error) {
-        console.error(`❌ [REGISTER-BG] Failed to create virtual account:`, error);
+        console.error(`❌ [REGISTER-BG] Failed to create virtual account:`, error.message);
       }
     }, 5000);
     
@@ -2110,7 +2193,22 @@ if (referralCode && referrerId) {
     console.error('❌ [REGISTER] Error:', error);
     
     if (error.code === 11000) {
-      // Handle duplicate key errors...
+      const field = error.keyPattern;
+      let message = 'Registration failed due to duplicate data.';
+      
+      if (field.email) {
+        message = 'Email already exists. Please use a different email.';
+      } else if (field.phone) {
+        message = 'Phone number already exists. Please use a different phone number.';
+      } else if (field.referralCode) {
+        message = 'System error. Please try again.';
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        message,
+        slogan: 'Smart Life, Fast Pay'
+      });
     }
     
     res.status(500).json({ 
