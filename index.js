@@ -6568,7 +6568,8 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
   body('billersCode').notEmpty().withMessage('Billers code is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-  body('phone').isMobilePhone().withMessage('Please provide a valid phone number')
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -6603,6 +6604,7 @@ app.post('/api/vtpass/tv/purchase', protect, verifyTransactionAuth, checkService
       amount,
       phone,
       request_id: reference,
+      subscription_type: req.body.subscription_type || 'renew', // 🔥 ADD THIS LINE
     });
     
     console.log('📡 VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
