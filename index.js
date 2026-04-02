@@ -2263,7 +2263,7 @@ app.post('/api/users/register', [
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // 6. Create user with referral tracking
-    const user = new User({
+       const user = new User({
       fullName: fullName.trim(),
       email: normalizedEmail,
       phone: phone.trim(),
@@ -2283,10 +2283,10 @@ app.post('/api/users/register', [
       emailVerified: true,
       virtualAccount: {
         assigned: false,
-        bankName: '',
-        accountNumber: '',
-        accountName: '',
-        reference: ''
+        bankName: null,
+        accountNumber: null,
+        accountName: null,
+        reference: null
       }
     });
 
@@ -2452,7 +2452,7 @@ app.post('/api/users/register', [
         if (response.data.success) {
           console.log(`✅ [REGISTER-BG] Virtual account created successfully for ${newUser.email}`);
           
-          await User.findByIdAndUpdate(newUser._id, {
+                    await User.findByIdAndUpdate(newUser._id, {
             'virtualAccount.assigned': true,
             'virtualAccount.bankName': response.data.bankName,
             'virtualAccount.accountNumber': response.data.accountNumber,
