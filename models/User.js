@@ -224,7 +224,8 @@ lastCommissionAwarded: {
       default: false,
     },
 
-    // Virtual Account fields
+    
+      // Virtual Account fields
     virtualAccount: {
       assigned: { 
         type: Boolean, 
@@ -232,21 +233,23 @@ lastCommissionAwarded: {
       },
       bankName: { 
         type: String, 
-        default: '' 
+        default: null 
       },
       accountNumber: { 
         type: String, 
         unique: true, 
-        sparse: true 
+        sparse: true,
+        default: null
       },
       accountName: { 
         type: String, 
-        default: '' 
+        default: null 
       },
       reference: { 
         type: String, 
         unique: true, 
-        sparse: true 
+        sparse: true,
+        default: null
       },
     },
   },
