@@ -2281,12 +2281,12 @@ app.post('/api/users/register', [
       isAdmin: false,
       isActive: true,
       emailVerified: true,
-      virtualAccount: {
+        virtualAccount: {
         assigned: false,
         bankName: null,
         accountNumber: null,
         accountName: null,
-        reference: null
+        reference: `PENDING_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
       }
     });
 
