@@ -60,6 +60,122 @@ try {
   moment = require('moment');
 }
 dotenv.config();
+
+
+
+
+
+
+
+
+
+// ==================== SUPER FAST FIXES ====================
+// Add this entire block RIGHT AFTER dotenv.config()
+
+// 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
+server.timeout = 120000; // 2 minutes
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 120000;
+
+// 2. FIX AXIOS TIMEOUTS GLOBALLY
+const axios = require('axios');
+axios.defaults.timeout = 30000;
+axios.defaults.retry = 3;
+axios.defaults.retryDelay = 1000;
+
+// 3. ADD CONNECTION KEEP-ALIVE
+const http = require('http');
+const https = require('https');
+const agent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 60000
+});
+axios.defaults.httpsAgent = agent;
+
+// 4. FIX JWT TOKEN EXPIRATION - CHANGE TO 30 DAYS!
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' }); // ← CHANGED FROM 24h to 30d
+};
+
+// 5. FIX REFRESH TOKEN - 90 DAYS!
+const generateRefreshToken = (id) => {
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '90d' }); // ← CHANGED FROM 30d to 90d
+};
+
+// 6. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
+setInterval(() => {
+  if (mongoose.connection.readyState !== 1) {
+    console.log('🔄 MongoDB disconnected, attempting to reconnect...');
+    mongoose.connect(process.env.MONGO_URI).catch(console.error);
+  }
+}, 30000); // Check every 30 seconds
+
+// 7. ADD CORS FIX FOR MOBILE APPS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-refresh-token', 'x-commission-usage', 'Transaction-PIN'],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
+
+// 8. ADD REQUEST LOGGING FOR DEBUGGING
+app.use((req, res, next) => {
+  console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  next();
+});
+
+// 9. FIX VTPASS API CALLS WITH RETRY
+const callVtpassApi = async (endpoint, data, headers = {}, retryCount = 0) => {
+  const maxRetries = 3;
+  try {
+    const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': vtpassConfig.apiKey,
+        'secret-key': vtpassConfig.secretKey,
+        ...headers,
+      },
+      timeout: 30000, // Increased from 15000
+      httpsAgent: agent
+    });
+    return { success: true, data: response.data };
+  } catch (error) {
+    if (retryCount < maxRetries && (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT')) {
+      console.log(`🔄 VTpass retry ${retryCount + 1}/${maxRetries} for ${endpoint}`);
+      await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
+      return callVtpassApi(endpoint, data, headers, retryCount + 1);
+    }
+    console.error(`❌ VTpass API Error to ${endpoint}:`, error.message);
+    return { success: false, message: error.message };
+  }
+};
+
+// 10. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
+setInterval(async () => {
+  try {
+    await axios.get('https://vtpass-backend.onrender.com/health', { timeout: 5000 });
+    console.log('💓 Keep-alive ping successful');
+  } catch (error) {
+    console.log('⚠️ Keep-alive ping failed');
+  }
+}, 4 * 60 * 1000); // Every 4 minutes
+
+console.log('✅ SUPER FAST FIXES APPLIED!');
+// ==================== END OF FIXES ====================
+
+
+
+
+
+
+
+
 // Initialize Express app
 const app = express();
 app.set('trust proxy', 1);
@@ -338,13 +454,14 @@ connectDB();
 
 // JWT Token Generation - INCREASE EXPIRATION
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '24h' }); // Changed from 1h to 24h
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
-// Generate Refresh Token
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '30d' }); // 30 days
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '90d' });
 };
+
+
 
 // ✅ Add this check after dotenv.config()
 if (!process.env.JWT_SECRET) {
@@ -652,6 +769,49 @@ app.get('/api/users/token-status', protect, async (req, res) => {
   } catch (error) {
     console.error('Token status check error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// EMERGENCY RECOVERY ENDPOINT - Forces token refresh
+app.post('/api/users/emergency-recover', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID required' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Force generate new tokens
+    const newToken = generateToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
+    
+    user.refreshToken = newRefreshToken;
+    await user.save();
+    
+    console.log(`🚑 Emergency recovery for user: ${user.email}`);
+    
+    res.json({
+      success: true,
+      message: 'Authentication recovered successfully',
+      token: newToken,
+      refreshToken: newRefreshToken,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance
+      }
+    });
+  } catch (error) {
+    console.error('Emergency recovery error:', error);
+    res.status(500).json({ success: false, message: 'Recovery failed' });
   }
 });
 
