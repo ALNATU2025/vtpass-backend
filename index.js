@@ -79,7 +79,6 @@ server.keepAliveTimeout = 120000;
 server.headersTimeout = 120000;
 
 // 2. FIX AXIOS TIMEOUTS GLOBALLY
-const axios = require('axios');
 axios.defaults.timeout = 30000;
 axios.defaults.retry = 3;
 axios.defaults.retryDelay = 1000;
