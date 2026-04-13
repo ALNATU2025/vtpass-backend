@@ -74,9 +74,7 @@ dotenv.config();
 
 // 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
-server.timeout = 120000; // 2 minutes
-server.keepAliveTimeout = 120000;
-server.headersTimeout = 120000;
+// ❌ REMOVED server.timeout lines - they go after server is created
 
 // 2. FIX AXIOS TIMEOUTS GLOBALLY
 axios.defaults.timeout = 30000;
@@ -12418,6 +12416,12 @@ app.use((req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// ✅ ADD TIMEOUT SETTINGS HERE (AFTER server is created)
+server.timeout = 120000; // 2 minutes
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 120000;
+
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
