@@ -413,6 +413,7 @@ const connectDB = async () => {
 };
 connectDB();
 
+
 // JWT Token Generation - INCREASE EXPIRATION
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
