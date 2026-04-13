@@ -60,24 +60,9 @@ try {
   moment = require('moment');
 }
 dotenv.config();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// Initialize Express app
+const app = express();
+app.set('trust proxy', 1);
 // Apply security middleware if available
 if (helmet && typeof helmet === 'function') {
   try {
@@ -351,17 +336,15 @@ const connectDB = async () => {
 };
 connectDB();
 
-
 // JWT Token Generation - INCREASE EXPIRATION
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '24h' }); // Changed from 1h to 24h
 };
 
+// Generate Refresh Token
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '90d' });
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '30d' }); // 30 days
 };
-
-
 
 // ✅ Add this check after dotenv.config()
 if (!process.env.JWT_SECRET) {
@@ -674,49 +657,6 @@ app.get('/api/users/token-status', protect, async (req, res) => {
 
 
 
-// EMERGENCY RECOVERY ENDPOINT - Forces token refresh
-app.post('/api/users/emergency-recover', async (req, res) => {
-  try {
-    const { userId } = req.body;
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID required' });
-    }
-    
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    // Force generate new tokens
-    const newToken = generateToken(user._id);
-    const newRefreshToken = generateRefreshToken(user._id);
-    
-    user.refreshToken = newRefreshToken;
-    await user.save();
-    
-    console.log(`🚑 Emergency recovery for user: ${user.email}`);
-    
-    res.json({
-      success: true,
-      message: 'Authentication recovered successfully',
-      token: newToken,
-      refreshToken: newRefreshToken,
-      user: {
-        _id: user._id,
-        email: user.email,
-        fullName: user.fullName,
-        walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance
-      }
-    });
-  } catch (error) {
-    console.error('Emergency recovery error:', error);
-    res.status(500).json({ success: false, message: 'Recovery failed' });
-  }
-});
-
-
-
 
 
 // @desc    Check token health and auto-refresh if needed
@@ -998,9 +938,7 @@ const vtpassConfig = {
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
-// REPLACE your existing callVtpassApi with this retry-enabled version
-const callVtpassApi = async (endpoint, data, headers = {}, retryCount = 0) => {
-  const maxRetries = 3;
+const callVtpassApi = async (endpoint, data, headers = {}) => {
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
       headers: {
@@ -1009,25 +947,27 @@ const callVtpassApi = async (endpoint, data, headers = {}, retryCount = 0) => {
         'secret-key': vtpassConfig.secretKey,
         ...headers,
       },
-      timeout: 30000, // Increased from 15000
-      httpsAgent: agent
+      timeout: 15000
     });
-    console.log(`✅ VTPass API call to ${endpoint} successful.`);
+    console.log(`VTPass API call to ${endpoint} successful.`);
+    console.log('VTPass API Response Data:', JSON.stringify(response.data, null, 2));
     return { success: true, data: response.data };
   } catch (error) {
-    if (retryCount < maxRetries && (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET')) {
-      console.log(`🔄 VTpass retry ${retryCount + 1}/${maxRetries} for ${endpoint}`);
-      await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
-      return callVtpassApi(endpoint, data, headers, retryCount + 1);
-    }
-    console.error(`❌ VTPass API Error to ${endpoint}:`, error.message);
+    console.error(`--- VTPass API Error to ${endpoint} ---`);
     if (error.response) {
+      console.error('Server responded with non-2xx status:', error.response.status);
       console.error('Response data:', error.response.data);
-      return { success: false, status: error.response.status, message: error.response.data.message || 'Error from VTPass API', details: error.response.data };
+      return {
+        success: false,
+        status: error.response.status,
+        message: error.response.data.message || 'Error from VTPass API',
+        details: error.response.data
+      };
     } else if (error.request) {
-      console.error('No response received:', error.request);
+      console.error('No response received from VTPass API:', error.request);
       return { success: false, status: 504, message: 'Timeout: No response from VTPass API' };
     } else {
+      console.error('Error setting up request:', error.message);
       return { success: false, status: 500, message: error.message || 'Internal Server Error' };
     }
   }
@@ -12355,12 +12295,6 @@ app.use((req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-// ✅ ADD TIMEOUT SETTINGS HERE (AFTER server is created)
-server.timeout = 120000; // 2 minutes
-server.keepAliveTimeout = 120000;
-server.headersTimeout = 120000;
-
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
