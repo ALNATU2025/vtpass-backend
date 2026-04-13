@@ -99,14 +99,6 @@ setInterval(() => {
 }, 30000);
 
 // 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-refresh-token', 'x-commission-usage', 'Transaction-PIN'],
-  credentials: true,
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
 
 // 6. ADD REQUEST LOGGING FOR DEBUGGING
 app.use((req, res, next) => {
