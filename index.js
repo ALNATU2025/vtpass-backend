@@ -69,10 +69,6 @@ dotenv.config();
 
 
 
-// ==================== INITIALIZE EXPRESS APP FIRST ====================
-const app = express();
-app.set('trust proxy', 1);
-
 // ==================== SUPER FAST FIXES (NOW AFTER app IS CREATED) ====================
 // 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
@@ -138,9 +134,7 @@ console.log('✅ SUPER FAST FIXES APPLIED!');
 
 
 
-// Initialize Express app
-const app = express();
-app.set('trust proxy', 1);
+
 // Apply security middleware if available
 if (helmet && typeof helmet === 'function') {
   try {
