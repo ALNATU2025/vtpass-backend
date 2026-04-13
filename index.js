@@ -95,17 +95,7 @@ const agent = new https.Agent({
 });
 axios.defaults.httpsAgent = agent;
 
-// 4. FIX JWT TOKEN EXPIRATION - CHANGE TO 30 DAYS!
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' }); // ← CHANGED FROM 24h to 30d
-};
-
-// 5. FIX REFRESH TOKEN - 90 DAYS!
-const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '90d' }); // ← CHANGED FROM 30d to 90d
-};
-
-// 6. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
+// 4. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
 setInterval(() => {
   if (mongoose.connection.readyState !== 1) {
     console.log('🔄 MongoDB disconnected, attempting to reconnect...');
@@ -113,7 +103,7 @@ setInterval(() => {
   }
 }, 30000); // Check every 30 seconds
 
-// 7. ADD CORS FIX FOR MOBILE APPS
+// 5. ADD CORS FIX FOR MOBILE APPS
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -123,39 +113,13 @@ app.use(cors({
   optionsSuccessStatus: 204
 }));
 
-// 8. ADD REQUEST LOGGING FOR DEBUGGING
+// 6. ADD REQUEST LOGGING FOR DEBUGGING
 app.use((req, res, next) => {
   console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
   next();
 });
 
-// 9. FIX VTPASS API CALLS WITH RETRY
-const callVtpassApi = async (endpoint, data, headers = {}, retryCount = 0) => {
-  const maxRetries = 3;
-  try {
-    const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': vtpassConfig.apiKey,
-        'secret-key': vtpassConfig.secretKey,
-        ...headers,
-      },
-      timeout: 30000, // Increased from 15000
-      httpsAgent: agent
-    });
-    return { success: true, data: response.data };
-  } catch (error) {
-    if (retryCount < maxRetries && (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT')) {
-      console.log(`🔄 VTpass retry ${retryCount + 1}/${maxRetries} for ${endpoint}`);
-      await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
-      return callVtpassApi(endpoint, data, headers, retryCount + 1);
-    }
-    console.error(`❌ VTpass API Error to ${endpoint}:`, error.message);
-    return { success: false, message: error.message };
-  }
-};
-
-// 10. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
+// 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
 setInterval(async () => {
   try {
     await axios.get('https://vtpass-backend.onrender.com/health', { timeout: 5000 });
@@ -1097,7 +1061,9 @@ const vtpassConfig = {
   secretKey: process.env.VTPASS_SECRET_KEY,
   baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
 };
-const callVtpassApi = async (endpoint, data, headers = {}) => {
+// REPLACE your existing callVtpassApi with this retry-enabled version
+const callVtpassApi = async (endpoint, data, headers = {}, retryCount = 0) => {
+  const maxRetries = 3;
   try {
     const response = await axios.post(`${vtpassConfig.baseUrl}${endpoint}`, data, {
       headers: {
@@ -1106,27 +1072,25 @@ const callVtpassApi = async (endpoint, data, headers = {}) => {
         'secret-key': vtpassConfig.secretKey,
         ...headers,
       },
-      timeout: 15000
+      timeout: 30000, // Increased from 15000
+      httpsAgent: agent
     });
-    console.log(`VTPass API call to ${endpoint} successful.`);
-    console.log('VTPass API Response Data:', JSON.stringify(response.data, null, 2));
+    console.log(`✅ VTPass API call to ${endpoint} successful.`);
     return { success: true, data: response.data };
   } catch (error) {
-    console.error(`--- VTPass API Error to ${endpoint} ---`);
+    if (retryCount < maxRetries && (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET')) {
+      console.log(`🔄 VTpass retry ${retryCount + 1}/${maxRetries} for ${endpoint}`);
+      await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
+      return callVtpassApi(endpoint, data, headers, retryCount + 1);
+    }
+    console.error(`❌ VTPass API Error to ${endpoint}:`, error.message);
     if (error.response) {
-      console.error('Server responded with non-2xx status:', error.response.status);
       console.error('Response data:', error.response.data);
-      return {
-        success: false,
-        status: error.response.status,
-        message: error.response.data.message || 'Error from VTPass API',
-        details: error.response.data
-      };
+      return { success: false, status: error.response.status, message: error.response.data.message || 'Error from VTPass API', details: error.response.data };
     } else if (error.request) {
-      console.error('No response received from VTPass API:', error.request);
+      console.error('No response received:', error.request);
       return { success: false, status: 504, message: 'Timeout: No response from VTPass API' };
     } else {
-      console.error('Error setting up request:', error.message);
       return { success: false, status: 500, message: error.message || 'Internal Server Error' };
     }
   }
