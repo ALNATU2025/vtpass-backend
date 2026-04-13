@@ -69,55 +69,6 @@ dotenv.config();
 
 
 
-// ==================== SUPER FAST FIXES (NOW AFTER app IS CREATED) ====================
-// 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
-
-// 2. FIX AXIOS TIMEOUTS GLOBALLY
-axios.defaults.timeout = 30000;
-axios.defaults.retry = 3;
-axios.defaults.retryDelay = 1000;
-
-// 3. ADD CONNECTION KEEP-ALIVE
-const http = require('http');
-const https = require('https');
-const agent = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000
-});
-axios.defaults.httpsAgent = agent;
-
-// 4. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
-setInterval(() => {
-  if (mongoose.connection.readyState !== 1) {
-    console.log('🔄 MongoDB disconnected, attempting to reconnect...');
-    mongoose.connect(process.env.MONGO_URI).catch(console.error);
-  }
-}, 30000);
-
-// 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
-
-// 6. ADD REQUEST LOGGING FOR DEBUGGING
-app.use((req, res, next) => {
-  console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
-  next();
-});
-
-// 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
-setInterval(async () => {
-  try {
-    await axios.get('https://vtpass-backend.onrender.com/health', { timeout: 5000 });
-    console.log('💓 Keep-alive ping successful');
-  } catch (error) {
-    console.log('⚠️ Keep-alive ping failed');
-  }
-}, 4 * 60 * 1000);
-
-console.log('✅ SUPER FAST FIXES APPLIED!');
-// ==================== END OF FIXES ====================
 
 
 
