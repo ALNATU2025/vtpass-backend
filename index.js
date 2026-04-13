@@ -69,12 +69,13 @@ dotenv.config();
 
 
 
-// ==================== SUPER FAST FIXES ====================
-// Add this entire block RIGHT AFTER dotenv.config()
+// ==================== INITIALIZE EXPRESS APP FIRST ====================
+const app = express();
+app.set('trust proxy', 1);
 
+// ==================== SUPER FAST FIXES (NOW AFTER app IS CREATED) ====================
 // 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
-// ❌ REMOVED server.timeout lines - they go after server is created
 
 // 2. FIX AXIOS TIMEOUTS GLOBALLY
 axios.defaults.timeout = 30000;
@@ -99,9 +100,9 @@ setInterval(() => {
     console.log('🔄 MongoDB disconnected, attempting to reconnect...');
     mongoose.connect(process.env.MONGO_URI).catch(console.error);
   }
-}, 30000); // Check every 30 seconds
+}, 30000);
 
-// 5. ADD CORS FIX FOR MOBILE APPS
+// 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -125,7 +126,7 @@ setInterval(async () => {
   } catch (error) {
     console.log('⚠️ Keep-alive ping failed');
   }
-}, 4 * 60 * 1000); // Every 4 minutes
+}, 4 * 60 * 1000);
 
 console.log('✅ SUPER FAST FIXES APPLIED!');
 // ==================== END OF FIXES ====================
