@@ -60,9 +60,6 @@ try {
   moment = require('moment');
 }
 dotenv.config();
-// Initialize Express app
-const app = express();
-app.set('trust proxy', 1);
 
 
 
