@@ -279,42 +279,48 @@ app.use(async (req, res, next) => {
 
 
 
-// ==================== REQUEST QUEUE FOR TRANSACTIONS ====================
-const transactionRequestQueue = new Map();
-const MAX_CONCURRENT_REQUESTS = 1;
+// ==================== TRANSACTIONS RATE LIMITING ====================
+const transactionRateLimit = new Map();
 
-app.use('/api/transactions/all', async (req, res, next) => {
-  const userId = req.user?._id?.toString() || 'anonymous';
-  const requestKey = `${userId}_transactions`;
+// Rate limiting middleware for transactions
+app.use('/api/transactions/all', (req, res, next) => {
+  const userId = req.user?._id?.toString() || 'unknown';
+  const now = Date.now();
+  const windowMs = 5000; // 5 seconds
+  const maxRequests = 2; // Max 2 requests per 5 seconds
   
-  // Check if there's already a pending request from this user
-  if (transactionRequestQueue.has(requestKey)) {
-    console.log(`⏳ Queued request for user ${userId}, waiting for previous to complete...`);
-    try {
-      await transactionRequestQueue.get(requestKey);
-    } catch (e) {
-      // Previous request failed, continue
-    }
+  if (!transactionRateLimit.has(userId)) {
+    transactionRateLimit.set(userId, []);
   }
   
-  // Create a promise for this request
-  let resolveRequest;
-  const requestPromise = new Promise((resolve) => {
-    resolveRequest = resolve;
-  });
-  transactionRequestQueue.set(requestKey, requestPromise);
+  const requests = transactionRateLimit.get(userId);
+  const recentRequests = requests.filter(t => now - t < windowMs);
   
-  // Store original end function
-  const originalEnd = res.end;
-  res.end = function(...args) {
-    resolveRequest();
-    transactionRequestQueue.delete(requestKey);
-    originalEnd.apply(res, args);
-  };
+  if (recentRequests.length >= maxRequests) {
+    console.log(`⏸️ Rate limit exceeded for user ${userId}`);
+    return res.status(429).json({
+      success: false,
+      message: 'Too many requests. Please wait a moment.',
+      retryAfter: Math.ceil(windowMs / 1000)
+    });
+  }
+  
+  recentRequests.push(now);
+  transactionRateLimit.set(userId, recentRequests);
+  
+  // Clean up old entries
+  setTimeout(() => {
+    const current = transactionRateLimit.get(userId) || [];
+    const cleaned = current.filter(t => Date.now() - t < 60000);
+    if (cleaned.length === 0) {
+      transactionRateLimit.delete(userId);
+    } else {
+      transactionRateLimit.set(userId, cleaned);
+    }
+  }, 60000);
   
   next();
 });
-
 
 
 
@@ -5490,7 +5496,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - OPTIMIZED for speed
+// @desc    Get all transactions (Admin only) - WITH RATE LIMITING
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
@@ -5505,21 +5511,21 @@ app.get('/api/transactions/all', adminProtect, [
   try {
     let { page = 1, limit = 20 } = req.query;
     
-    // Force a reasonable limit for dashboard
+    // Force a reasonable limit
     if (parseInt(limit) > 50) limit = 50;
     
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     console.log(`📊 Fetching transactions page ${page} (limit: ${limit}, skip: ${skip})`);
     
-    // CRITICAL: Add timeout and use lean() for performance
+    // Use lean() for performance
     const transactions = await Transaction.find({})
       .select('userId amount type status description createdAt reference')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean()
-      .maxTimeMS(5000); // 5 second timeout
+      .maxTimeMS(5000);
     
     if (!transactions || transactions.length === 0) {
       return res.json({
@@ -5555,7 +5561,7 @@ app.get('/api/transactions/all', adminProtect, [
       }, {});
     }
     
-    // Attach user data quickly
+    // Attach user data
     const transactionsWithUsers = transactions.map(tx => ({
       ...tx,
       user: userMap[tx.userId?.toString()] || {
@@ -5564,7 +5570,7 @@ app.get('/api/transactions/all', adminProtect, [
       }
     }));
     
-    // Use estimated count for speed (or cache this value)
+    // Use estimated count for speed
     const total = await Transaction.estimatedDocumentCount();
     
     res.json({
@@ -5588,6 +5594,12 @@ app.get('/api/transactions/all', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
+
+
 
 
 
@@ -5621,14 +5633,27 @@ app.get('/api/admin/transaction-stats', adminProtect, async (req, res) => {
 
 
 
-// @desc    Get dashboard summary (FAST - no heavy queries)
+// ==================== DASHBOARD CACHE ====================
+const dashboardCache = new Map();
+const CACHE_TTL = 5000; // 5 seconds cache
+
+// @desc    Get dashboard summary (CACHED - NO DUPLICATE CALLS)
 // @route   GET /api/admin/dashboard-summary
 // @access  Private/Admin
 app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
+  const cacheKey = `dashboard_${req.user._id}`;
+  const cached = dashboardCache.get(cacheKey);
+  
+  // Return cached response if still fresh (prevents duplicate calls)
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    console.log('📦 Returning CACHED dashboard summary');
+    return res.json(cached.data);
+  }
+  
   try {
-    console.log('📊 Dashboard summary requested by:', req.user?._id);
+    console.log('📊 Fetching FRESH dashboard summary for:', req.user?._id);
     
-    // Run lightweight aggregations in parallel with error handling
+    // Run lightweight aggregations in parallel
     const [totalUsers, totalTransactions, recentCount] = await Promise.all([
       User.countDocuments().catch(err => {
         console.error('User count error:', err);
@@ -5646,22 +5671,26 @@ app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
       })
     ]);
     
-    console.log('📊 Summary data:', { totalUsers, totalTransactions, recentCount });
-    
-    // Return in the format your frontend expects
-    res.json({
+    const responseData = {
       success: true,
       totalUsers: totalUsers || 0,
       totalTransactions: totalTransactions || 0,
       recentTransactions7Days: recentCount || 0,
       lastUpdated: new Date().toISOString()
+    };
+    
+    // Store in cache
+    dashboardCache.set(cacheKey, {
+      data: responseData,
+      timestamp: Date.now()
     });
+    
+    res.json(responseData);
     
   } catch (error) {
     console.error('❌ Dashboard summary error:', error);
-    // Return default values instead of failing
     res.json({
-      success: true, // Still return success to prevent frontend from breaking
+      success: true,
       totalUsers: 0,
       totalTransactions: 0,
       recentTransactions7Days: 0,
@@ -5670,6 +5699,20 @@ app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
     });
   }
 });
+
+// Clean up cache every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of dashboardCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      dashboardCache.delete(key);
+    }
+  }
+}, 60000);
+
+
+
+
 
 // @desc    Get transactions for specific user (Admin only)
 // @route   GET /api/transactions/user/:userId
