@@ -4739,18 +4739,18 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
 });
 
 
-// @desc    Get ALL users without pagination (Admin only - for transactions)
+/// @desc    Get ALL users without pagination (Admin only - for transactions)
 // @route   GET /api/admin/all-users
 // @access  Private/Admin
 app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    // ✅ Only get essential fields, no password
+    // ✅ Only get essential fields, no password, use lean() for speed
     const users = await User.find({})
-      .select('_id fullName email phone isAdmin') // ← Only needed fields
+      .select('_id fullName email phone isAdmin')
       .lean()
-      .maxTimeMS(5000);
+      .maxTimeMS(8000);
     
     console.log(`✅ Found ${users.length} users`);
     
