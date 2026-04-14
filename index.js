@@ -279,48 +279,7 @@ app.use(async (req, res, next) => {
 
 
 
-// ==================== TRANSACTIONS RATE LIMITING ====================
-const transactionRateLimit = new Map();
 
-// Rate limiting middleware for transactions
-app.use('/api/transactions/all', (req, res, next) => {
-  const userId = req.user?._id?.toString() || 'unknown';
-  const now = Date.now();
-  const windowMs = 5000; // 5 seconds
-  const maxRequests = 2; // Max 2 requests per 5 seconds
-  
-  if (!transactionRateLimit.has(userId)) {
-    transactionRateLimit.set(userId, []);
-  }
-  
-  const requests = transactionRateLimit.get(userId);
-  const recentRequests = requests.filter(t => now - t < windowMs);
-  
-  if (recentRequests.length >= maxRequests) {
-    console.log(`⏸️ Rate limit exceeded for user ${userId}`);
-    return res.status(429).json({
-      success: false,
-      message: 'Too many requests. Please wait a moment.',
-      retryAfter: Math.ceil(windowMs / 1000)
-    });
-  }
-  
-  recentRequests.push(now);
-  transactionRateLimit.set(userId, recentRequests);
-  
-  // Clean up old entries
-  setTimeout(() => {
-    const current = transactionRateLimit.get(userId) || [];
-    const cleaned = current.filter(t => Date.now() - t < 60000);
-    if (cleaned.length === 0) {
-      transactionRateLimit.delete(userId);
-    } else {
-      transactionRateLimit.set(userId, cleaned);
-    }
-  }, 60000);
-  
-  next();
-});
 
 
 
@@ -4785,9 +4744,12 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
 // @access  Private/Admin
 app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
+    console.log('📊 Fetching all users for admin');
+    
     const users = await User.find({})
       .select('-password')
-      .lean();
+      .lean()
+      .maxTimeMS(5000); // Add timeout
     
     res.json({ 
       success: true, 
@@ -5496,12 +5458,12 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - WITH RATE LIMITING
+// @desc    Get all transactions (Admin only)
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -5511,21 +5473,20 @@ app.get('/api/transactions/all', adminProtect, [
   try {
     let { page = 1, limit = 20 } = req.query;
     
-    // Force a reasonable limit
+    // Force reasonable limit
     if (parseInt(limit) > 50) limit = 50;
     
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     console.log(`📊 Fetching transactions page ${page} (limit: ${limit}, skip: ${skip})`);
     
-    // Use lean() for performance
     const transactions = await Transaction.find({})
       .select('userId amount type status description createdAt reference')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean()
-      .maxTimeMS(5000);
+      .maxTimeMS(10000);
     
     if (!transactions || transactions.length === 0) {
       return res.json({
@@ -5550,7 +5511,7 @@ app.get('/api/transactions/all', adminProtect, [
       const users = await User.find(
         { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
         { fullName: 1, email: 1 }
-      ).lean().maxTimeMS(3000);
+      ).lean().maxTimeMS(5000);
       
       userMap = users.reduce((map, user) => {
         map[user._id.toString()] = {
@@ -5570,7 +5531,6 @@ app.get('/api/transactions/all', adminProtect, [
       }
     }));
     
-    // Use estimated count for speed
     const total = await Transaction.estimatedDocumentCount();
     
     res.json({
@@ -5583,14 +5543,6 @@ app.get('/api/transactions/all', adminProtect, [
     
   } catch (error) {
     console.error('❌ Error in /api/transactions/all:', error);
-    
-    if (error.message?.includes('exceeded time limit')) {
-      return res.status(408).json({ 
-        success: false, 
-        message: 'Request timeout. Please try with a smaller limit.' 
-      });
-    }
-    
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
