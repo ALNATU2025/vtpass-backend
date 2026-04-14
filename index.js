@@ -5421,7 +5421,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - FIXED VERSION
+// @desc    Get all transactions (Admin only) - OPTIMIZED FAST VERSION
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
@@ -5432,102 +5432,75 @@ app.get('/api/transactions/all', adminProtect, [
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
+  
   try {
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 20 } = req.query; // CHANGED: 50 → 20 for faster loading
     const skip = (page - 1) * limit;
     
-    console.log('🔍 DEBUG: Starting /api/transactions/all endpoint');
+    console.log(`📊 Fetching transactions page ${page} (limit: ${limit})`);
     
-    // 1. Get ALL transactions first
+    // Get paginated transactions
     const transactions = await Transaction.find({})
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
     
-    console.log(`🔍 DEBUG: Found ${transactions.length} transactions`);
-    
-    // 2. Get ALL user IDs from transactions
-    const userIds = [];
-    for (const tx of transactions) {
-      if (tx.userId) {
-        // Convert to ObjectId if valid
-        if (mongoose.Types.ObjectId.isValid(tx.userId)) {
-          userIds.push(new mongoose.Types.ObjectId(tx.userId));
-        } else {
-          console.log(`⚠️ WARNING: Invalid userId ${tx.userId} in transaction ${tx._id}`);
-        }
-      }
-    }
-    
-    console.log(`🔍 DEBUG: Unique userIds to fetch: ${userIds.length}`);
-    
-    // 3. Fetch ALL users at once
-    let users = [];
-    if (userIds.length > 0) {
-      users = await User.find({ 
-        _id: { $in: userIds } 
-      })
-      .select('fullName email phone')
-      .lean();
-    }
-    
-    console.log(`🔍 DEBUG: Found ${users.length} users in database`);
-    
-    // 4. Create a quick lookup map
-    const userMap = {};
-    for (const user of users) {
-      userMap[user._id.toString()] = {
-        _id: user._id,
-        fullName: user.fullName || 'Unknown User',
-        email: user.email || 'no-email@example.com',
-        phone: user.phone || 'N/A'
-      };
-    }
-    
-    // 5. Attach user data to each transaction
-    const transactionsWithUsers = transactions.map(tx => {
-      const transaction = { ...tx };
-      const userId = tx.userId?.toString();
-      
-      if (userId && userMap[userId]) {
-        // User exists in database
-        transaction.user = userMap[userId];
-        console.log(`✅ Attached user: ${userMap[userId].fullName} to transaction ${tx._id}`);
-      } else if (userId) {
-        // User ID exists but user not found (might be deleted)
-        transaction.user = {
-          _id: userId,
-          fullName: 'Deleted User',
-          email: 'deleted@account.removed',
-          phone: 'N/A'
-        };
-        console.log(`⚠️ User ${userId} not found (deleted), marked as deleted`);
-      } else {
-        // No user ID
-        transaction.user = {
-          _id: null,
-          fullName: 'System Transaction',
-          email: 'system@transaction',
-          phone: 'N/A'
-        };
-      }
-      
-      return transaction;
-    });
-    
-    // 6. Verify first transaction has user data
-    if (transactionsWithUsers.length > 0) {
-      const firstTx = transactionsWithUsers[0];
-      console.log('🔍 DEBUG: First transaction user data:', {
-        hasUser: !!firstTx.user,
-        userName: firstTx.user?.fullName,
-        userEmail: firstTx.user?.email,
-        userId: firstTx.user?._id
+    if (transactions.length === 0) {
+      return res.json({
+        success: true,
+        transactions: [],
+        totalPages: 0,
+        currentPage: parseInt(page),
+        totalItems: 0
       });
     }
     
-    const total = await Transaction.countDocuments();
+    // Extract unique user IDs (filter out invalid ones)
+    const userIds = [];
+    for (const tx of transactions) {
+      if (tx.userId && mongoose.Types.ObjectId.isValid(tx.userId)) {
+        userIds.push(tx.userId.toString());
+      }
+    }
+    
+    const uniqueUserIds = [...new Set(userIds)];
+    
+    // Fetch users in ONE query (only if needed)
+    let userMap = {};
+    if (uniqueUserIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: uniqueUserIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    // Attach user data (NO console.log inside loop!)
+    const transactionsWithUsers = transactions.map(tx => {
+      const userId = tx.userId?.toString();
+      return {
+        ...tx,
+        user: (userId && userMap[userId]) ? userMap[userId] : {
+          _id: userId || null,
+          fullName: userId ? 'Deleted User' : 'System Transaction',
+          email: userId ? 'deleted@account.removed' : 'system@transaction',
+          phone: 'N/A'
+        }
+      };
+    });
+    
+    // Get total count (faster for large collections)
+    const total = await Transaction.estimatedDocumentCount();
     
     res.json({ 
       success: true, 
@@ -5539,8 +5512,38 @@ app.get('/api/transactions/all', adminProtect, [
     
   } catch (error) {
     console.error('❌ Error in /api/transactions/all:', error);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+// @desc    Get dashboard summary (FAST - no heavy queries)
+// @route   GET /api/admin/dashboard-summary
+// @access  Private/Admin
+app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
+  try {
+    // Run lightweight aggregations in parallel
+    const [totalUsers, totalTransactions, recentCount] = await Promise.all([
+      User.countDocuments(),
+      Transaction.estimatedDocumentCount(),
+      Transaction.countDocuments({ createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } })
+    ]);
+    
+    res.json({
+      success: true,
+      summary: {
+        totalUsers,
+        totalTransactions,
+        recentTransactions7Days: recentCount,
+        lastUpdated: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    console.error('Dashboard summary error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load summary' });
   }
 });
 
