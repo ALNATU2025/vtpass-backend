@@ -63,10 +63,33 @@ dotenv.config();
 
 
 
+// ==================== MEMORY MANAGEMENT ====================
+// Increase memory limit to 2GB
+const v8 = require('v8');
+v8.setFlagsFromString('--max-old-space-size=2048');
+
+// Memory usage logger (every 30 seconds)
+setInterval(() => {
+  const usage = process.memoryUsage();
+  const heapUsedMB = (usage.heapUsed / 1024 / 1024).toFixed(2);
+  const heapTotalMB = (usage.heapTotal / 1024 / 1024).toFixed(2);
+  const rssMB = (usage.rss / 1024 / 1024).toFixed(2);
+  
+  if (heapUsedMB > 1500) {
+    console.warn(`⚠️ HIGH MEMORY USAGE: Heap: ${heapUsedMB}MB / ${heapTotalMB}MB, RSS: ${rssMB}MB`);
+  } else if (heapUsedMB > 1000) {
+    console.log(`📊 Memory usage: Heap: ${heapUsedMB}MB / ${heapTotalMB}MB, RSS: ${rssMB}MB`);
+  } else {
+    // Only log every 5th time to reduce noise
+    if (Math.random() < 0.2) {
+      console.log(`📊 Memory usage: Heap: ${heapUsedMB}MB / ${heapTotalMB}MB, RSS: ${rssMB}MB`);
+    }
+  }
+}, 30000);
 
 
 
-// ... all your imports and requires ...
+
 
 dotenv.config();
 
@@ -250,6 +273,52 @@ app.use(async (req, res, next) => {
   }
 });
 // ==================== END MAINTENANCE MIDDLEWARE ====================
+
+
+
+
+
+
+// ==================== REQUEST QUEUE FOR TRANSACTIONS ====================
+const transactionRequestQueue = new Map();
+const MAX_CONCURRENT_REQUESTS = 1;
+
+app.use('/api/transactions/all', async (req, res, next) => {
+  const userId = req.user?._id?.toString() || 'anonymous';
+  const requestKey = `${userId}_transactions`;
+  
+  // Check if there's already a pending request from this user
+  if (transactionRequestQueue.has(requestKey)) {
+    console.log(`⏳ Queued request for user ${userId}, waiting for previous to complete...`);
+    try {
+      await transactionRequestQueue.get(requestKey);
+    } catch (e) {
+      // Previous request failed, continue
+    }
+  }
+  
+  // Create a promise for this request
+  let resolveRequest;
+  const requestPromise = new Promise((resolve) => {
+    resolveRequest = resolve;
+  });
+  transactionRequestQueue.set(requestKey, requestPromise);
+  
+  // Store original end function
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    resolveRequest();
+    transactionRequestQueue.delete(requestKey);
+    originalEnd.apply(res, args);
+  };
+  
+  next();
+});
+
+
+
+
+
 
 
 const virtualAccountSyncRoutes = require("./routes/virtualAccountSyncRoutes");
@@ -5421,12 +5490,12 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - OPTIMIZED FAST VERSION
+// @desc    Get all transactions (Admin only) - MEMORY OPTIMIZED
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -5434,19 +5503,21 @@ app.get('/api/transactions/all', adminProtect, [
   }
   
   try {
-    const { page = 1, limit = 20 } = req.query; // CHANGED: 50 → 20 for faster loading
+    const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
-    console.log(`📊 Fetching transactions page ${page} (limit: ${limit})`);
+    console.log(`📊 Fetching transactions page ${page} (limit: ${limit}, skip: ${skip})`);
     
-    // Get paginated transactions
+    // CRITICAL: Use lean() and select only needed fields to reduce memory
     const transactions = await Transaction.find({})
+      .select('userId amount type status description createdAt balanceBefore balanceAfter reference metadata')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .lean();
+      .lean()
+      .maxTimeMS(10000); // Timeout after 10 seconds
     
-    if (transactions.length === 0) {
+    if (!transactions || transactions.length === 0) {
       return res.json({
         success: true,
         transactions: [],
@@ -5456,23 +5527,22 @@ app.get('/api/transactions/all', adminProtect, [
       });
     }
     
-    // Extract unique user IDs (filter out invalid ones)
-    const userIds = [];
-    for (const tx of transactions) {
-      if (tx.userId && mongoose.Types.ObjectId.isValid(tx.userId)) {
-        userIds.push(tx.userId.toString());
-      }
-    }
+    // Extract unique user IDs efficiently
+    const userIds = [...new Set(
+      transactions
+        .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
+        .map(tx => tx.userId.toString())
+    )];
     
-    const uniqueUserIds = [...new Set(userIds)];
+    console.log(`📊 Found ${transactions.length} transactions with ${userIds.length} unique users`);
     
-    // Fetch users in ONE query (only if needed)
+    // Fetch users in a single optimized query
     let userMap = {};
-    if (uniqueUserIds.length > 0) {
+    if (userIds.length > 0) {
       const users = await User.find(
-        { _id: { $in: uniqueUserIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
         { fullName: 1, email: 1, phone: 1 }
-      ).lean();
+      ).lean().maxTimeMS(5000);
       
       userMap = users.reduce((map, user) => {
         map[user._id.toString()] = {
@@ -5485,7 +5555,7 @@ app.get('/api/transactions/all', adminProtect, [
       }, {});
     }
     
-    // Attach user data (NO console.log inside loop!)
+    // Attach user data (no console logs inside loop)
     const transactionsWithUsers = transactions.map(tx => {
       const userId = tx.userId?.toString();
       return {
@@ -5499,11 +5569,11 @@ app.get('/api/transactions/all', adminProtect, [
       };
     });
     
-    // Get total count (faster for large collections)
+    // Get fast approximate count
     const total = await Transaction.estimatedDocumentCount();
     
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       transactions: transactionsWithUsers,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
@@ -5512,10 +5582,18 @@ app.get('/api/transactions/all', adminProtect, [
     
   } catch (error) {
     console.error('❌ Error in /api/transactions/all:', error);
+    
+    // Check for timeout error
+    if (error.message?.includes('exceeded time limit')) {
+      return res.status(408).json({ 
+        success: false, 
+        message: 'Request timeout. Please try with a smaller page or limit.' 
+      });
+    }
+    
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 
 
 
