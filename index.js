@@ -5490,7 +5490,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - MEMORY OPTIMIZED
+// @desc    Get all transactions (Admin only) - OPTIMIZED for speed
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
@@ -5503,19 +5503,23 @@ app.get('/api/transactions/all', adminProtect, [
   }
   
   try {
-    const { page = 1, limit = 20 } = req.query;
-    const skip = (page - 1) * limit;
+    let { page = 1, limit = 20 } = req.query;
+    
+    // Force a reasonable limit for dashboard
+    if (parseInt(limit) > 50) limit = 50;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
     
     console.log(`📊 Fetching transactions page ${page} (limit: ${limit}, skip: ${skip})`);
     
-    // CRITICAL: Use lean() and select only needed fields to reduce memory
+    // CRITICAL: Add timeout and use lean() for performance
     const transactions = await Transaction.find({})
-      .select('userId amount type status description createdAt balanceBefore balanceAfter reference metadata')
+      .select('userId amount type status description createdAt reference')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .lean()
-      .maxTimeMS(10000); // Timeout after 10 seconds
+      .maxTimeMS(5000); // 5 second timeout
     
     if (!transactions || transactions.length === 0) {
       return res.json({
@@ -5527,49 +5531,40 @@ app.get('/api/transactions/all', adminProtect, [
       });
     }
     
-    // Extract unique user IDs efficiently
+    // Get user IDs efficiently
     const userIds = [...new Set(
       transactions
         .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
         .map(tx => tx.userId.toString())
     )];
     
-    console.log(`📊 Found ${transactions.length} transactions with ${userIds.length} unique users`);
-    
-    // Fetch users in a single optimized query
+    // Fetch users in a single query
     let userMap = {};
     if (userIds.length > 0) {
       const users = await User.find(
         { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 }
-      ).lean().maxTimeMS(5000);
+        { fullName: 1, email: 1 }
+      ).lean().maxTimeMS(3000);
       
       userMap = users.reduce((map, user) => {
         map[user._id.toString()] = {
-          _id: user._id,
           fullName: user.fullName || 'Unknown User',
-          email: user.email || 'no-email@example.com',
-          phone: user.phone || 'N/A'
+          email: user.email || 'no-email@example.com'
         };
         return map;
       }, {});
     }
     
-    // Attach user data (no console logs inside loop)
-    const transactionsWithUsers = transactions.map(tx => {
-      const userId = tx.userId?.toString();
-      return {
-        ...tx,
-        user: (userId && userMap[userId]) ? userMap[userId] : {
-          _id: userId || null,
-          fullName: userId ? 'Deleted User' : 'System Transaction',
-          email: userId ? 'deleted@account.removed' : 'system@transaction',
-          phone: 'N/A'
-        }
-      };
-    });
+    // Attach user data quickly
+    const transactionsWithUsers = transactions.map(tx => ({
+      ...tx,
+      user: userMap[tx.userId?.toString()] || {
+        fullName: 'System',
+        email: 'system@transaction'
+      }
+    }));
     
-    // Get fast approximate count
+    // Use estimated count for speed (or cache this value)
     const total = await Transaction.estimatedDocumentCount();
     
     res.json({
@@ -5583,15 +5578,44 @@ app.get('/api/transactions/all', adminProtect, [
   } catch (error) {
     console.error('❌ Error in /api/transactions/all:', error);
     
-    // Check for timeout error
     if (error.message?.includes('exceeded time limit')) {
       return res.status(408).json({ 
         success: false, 
-        message: 'Request timeout. Please try with a smaller page or limit.' 
+        message: 'Request timeout. Please try with a smaller limit.' 
       });
     }
     
     res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Get transaction counts only (VERY FAST)
+// @route   GET /api/admin/transaction-stats
+// @access  Private/Admin
+app.get('/api/admin/transaction-stats', adminProtect, async (req, res) => {
+  try {
+    // Use estimated counts for speed
+    const [totalCount, pendingCount] = await Promise.all([
+      Transaction.estimatedDocumentCount(),
+      Transaction.countDocuments({ 
+        status: { $in: ['pending', 'processing'] } 
+      }).maxTimeMS(2000)
+    ]);
+    
+    res.json({
+      success: true,
+      totalTransactions: totalCount,
+      pendingTransactions: pendingCount
+    });
+  } catch (error) {
+    console.error('Transaction stats error:', error);
+    res.json({
+      success: true,
+      totalTransactions: 0,
+      pendingTransactions: 0
+    });
   }
 });
 
