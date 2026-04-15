@@ -66,9 +66,7 @@ dotenv.config();
 
 
 // ==================== MEMORY MANAGEMENT ====================
-// Increase memory limit to 2GB
-const v8 = require('v8');
-v8.setFlagsFromString('--max-old-space-size=2048');
+
 
 // Memory usage logger (every 30 seconds)
 setInterval(() => {
