@@ -61,12 +61,14 @@ try {
   console.log('moment-timezone not found, using moment as fallback');
   moment = require('moment');
 }
-dotenv.config();
+
 
 
 
 // ==================== MEMORY MANAGEMENT ====================
-
+// Increase memory limit to 2GB
+const v8 = require('v8');
+v8.setFlagsFromString('--max-old-space-size=2048');
 
 // Memory usage logger (every 30 seconds)
 setInterval(() => {
@@ -92,40 +94,6 @@ setInterval(() => {
 
 
 dotenv.config();
-
-
-
-// ==================== GLOBAL TIMEOUT & MEMORY FIXES ====================
-// COPY THIS EXACT CODE - PASTE AT LINE 1 OF index.js
-
-// 1. Increase memory limit
-const v8 = require('v8');
-v8.setFlagsFromString('--max-old-space-size=2048');
-
-// 2. Global timeout for all HTTP requests
-
-
-// 3. Create keep-alive agent for all outbound requests
-const globalAgent = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 100,
-  maxFreeSockets: 10,
-  timeout: 60000
-});
-
-// Override default agent
-https.globalAgent = globalAgent;
-http.globalAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30000 });
-
-// 4. Global axios defaults
-axios.defaults.timeout = 60000;
-axios.defaults.retry = 3;
-axios.defaults.retryDelay = 2000;
-
-console.log('✅ GLOBAL FIXES APPLIED - Memory: 2GB, Timeout: 60s');
-// ==================== END OF FIXES ====================
-
 
 
 // ==================== INITIALIZE EXPRESS APP FIRST ====================
@@ -177,7 +145,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
 // 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping) - IMPROVED
 let keepAliveCount = 0;
 setInterval(async () => {
