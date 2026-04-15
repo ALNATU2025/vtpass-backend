@@ -103,8 +103,7 @@ const v8 = require('v8');
 v8.setFlagsFromString('--max-old-space-size=2048');
 
 // 2. Global timeout for all HTTP requests
-const http = require('http');
-const https = require('https');
+
 
 // 3. Create keep-alive agent for all outbound requests
 const globalAgent = new https.Agent({
@@ -120,7 +119,6 @@ https.globalAgent = globalAgent;
 http.globalAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30000 });
 
 // 4. Global axios defaults
-const axios = require('axios');
 axios.defaults.timeout = 60000;
 axios.defaults.retry = 3;
 axios.defaults.retryDelay = 2000;
