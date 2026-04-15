@@ -5756,6 +5756,45 @@ app.get('/api/transactions/user/:userId', adminProtect, async (req, res) => {
 
 
 
+// @desc    Create transaction with CORRECT timestamp
+// @route   POST /api/transactions/create-with-timestamp
+// @access  Private
+app.post('/api/transactions/create-with-timestamp', protect, async (req, res) => {
+  try {
+    const { userId, amount, type, status, description, metadata } = req.body;
+    
+    // Use the actual transaction date from metadata or current time
+    const transactionDate = metadata?.transactionDate 
+      ? new Date(metadata.transactionDate)
+      : new Date();
+    
+    const transaction = new Transaction({
+      userId,
+      amount,
+      type,
+      status,
+      description,
+      metadata: {
+        ...metadata,
+        actualTransactionDate: transactionDate
+      },
+      createdAt: transactionDate,  // ← USE ACTUAL DATE, NOT CURRENT TIME
+      updatedAt: transactionDate
+    });
+    
+    await transaction.save();
+    
+    res.json({
+      success: true,
+      transaction: transaction
+    });
+    
+  } catch (error) {
+    console.error('Error creating transaction:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 
 
 
