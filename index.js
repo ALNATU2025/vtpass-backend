@@ -95,6 +95,43 @@ setInterval(() => {
 
 dotenv.config();
 
+
+
+// ==================== GLOBAL TIMEOUT & MEMORY FIXES ====================
+// COPY THIS EXACT CODE - PASTE AT LINE 1 OF index.js
+
+// 1. Increase memory limit
+const v8 = require('v8');
+v8.setFlagsFromString('--max-old-space-size=2048');
+
+// 2. Global timeout for all HTTP requests
+const http = require('http');
+const https = require('https');
+
+// 3. Create keep-alive agent for all outbound requests
+const globalAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 100,
+  maxFreeSockets: 10,
+  timeout: 60000
+});
+
+// Override default agent
+https.globalAgent = globalAgent;
+http.globalAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 30000 });
+
+// 4. Global axios defaults
+const axios = require('axios');
+axios.defaults.timeout = 60000;
+axios.defaults.retry = 3;
+axios.defaults.retryDelay = 2000;
+
+console.log('✅ GLOBAL FIXES APPLIED - Memory: 2GB, Timeout: 60s');
+// ==================== END OF FIXES ====================
+
+
+
 // ==================== INITIALIZE EXPRESS APP FIRST ====================
 const app = express();
 app.set('trust proxy', 1);
@@ -145,14 +182,24 @@ app.use((req, res, next) => {
 });
 
 // 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping)
+// 7. ADD KEEP-ALIVE PING (Prevents Render from sleeping) - IMPROVED
+let keepAliveCount = 0;
 setInterval(async () => {
   try {
-    await axios.get('https://vtpass-backend.onrender.com/health', { timeout: 5000 });
-    console.log('💓 Keep-alive ping successful');
+    const response = await axios.get('https://vtpass-backend.onrender.com/health', { 
+      timeout: 8000,
+      headers: { 'User-Agent': 'Keep-Alive/1.0' }
+    });
+    keepAliveCount = 0;
+    console.log(`💓 Keep-alive successful at ${new Date().toISOString()}`);
   } catch (error) {
-    console.log('⚠️ Keep-alive ping failed');
+    keepAliveCount++;
+    console.log(`⚠️ Keep-alive failed (${keepAliveCount}/3)`);
+    if (keepAliveCount >= 3) {
+      console.log('🚨 Keep-alive failing repeatedly - checking server status...');
+    }
   }
-}, 4 * 60 * 1000);
+}, 3 * 60 * 1000); // Every 3 minutes
 
 console.log('✅ SUPER FAST FIXES APPLIED!');
 // ==================== END OF FIXES ====================
@@ -361,6 +408,7 @@ setInterval(() => {
 
 // Initialize cache
 const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
+const userCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); // User cache for protect middleware
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -546,6 +594,7 @@ const autoRefreshToken = async (req, res, next) => {
 
 
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
+// ==================== PROTECT MIDDLEWARE - WITH CACHING ====================
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
@@ -558,8 +607,17 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('-password');
+    // Try cache first - 5 second cache for user data
+    const cacheKey = `user_${token.substring(0, 20)}`;
+    let user = userCache.get(cacheKey);
+    
+    if (!user) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      user = await User.findById(decoded.id).select('-password').lean();
+      if (user) {
+        userCache.set(cacheKey, user, 5); // Cache for 5 seconds
+      }
+    }
     
     if (!user) {
       return res.status(401).json({ 
@@ -578,7 +636,7 @@ const protect = async (req, res, next) => {
     }
 
     req.user = user;
-    next(); // ← This is the key: continue if valid!
+    next();
 
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
@@ -12445,52 +12503,34 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
 // @desc    Health check endpoint for Flutter app compatibility
 // @route   GET /health
 // @access  Public
+// ==================== HEALTH CHECK - FLUTTER COMPATIBLE ====================
 app.get('/health', async (req, res) => {
   try {
-    console.log('🔍 FLUTTER HEALTH CHECK: Endpoint called');
-    
     const mongoConnected = mongoose.connection.readyState === 1;
+    const memoryUsage = process.memoryUsage();
+    const heapUsedMB = (memoryUsage.heapUsed / 1024 / 1024).toFixed(2);
     
-    if (!mongoConnected) {
-      console.log('❌ Health check failed: MongoDB not connected');
-      return res.json({
-        'status': 'ERROR',
-        'message': 'Database connection failed',
-        'timestamp': new Date().toISOString(),
-        'uptime': process.uptime()
-      });
-    }
-    
-    console.log('✅ Health check passed: MongoDB connected');
-    
-    // Return the EXACT format your Flutter app expects
-    const response = {
-      'status': 'OK',  // ← CRITICAL: Your Flutter app checks for this!
+    res.json({
+      'status': 'OK',
       'message': 'Server is healthy',
       'timestamp': new Date().toISOString(),
       'uptime': process.uptime(),
-      
-      // Optional: Add additional diagnostic info
-      'database': 'connected',
-      'services': {
-        'mongodb': 'connected',
-        'vtpass': 'reachable'
+      'database': mongoConnected ? 'connected' : 'disconnected',
+      'memory': {
+        heapUsedMB: heapUsedMB,
+        rssMB: (memoryUsage.rss / 1024 / 1024).toFixed(2)
       }
-    };
-    
-    console.log('📤 Sending health response:', JSON.stringify(response, null, 2));
-    res.json(response);
-    
+    });
   } catch (error) {
-    console.error('❌ Health check error:', error);
     res.json({
       'status': 'ERROR',
-      'message': 'Health check failed: ' + error.message,
-      'timestamp': new Date().toISOString(),
-      'uptime': process.uptime()
+      'message': error.message,
+      'timestamp': new Date().toISOString()
     });
   }
 });
+
+
 
 // @desc    Alternative health endpoint with 'success' field
 // @route   GET /api/health
