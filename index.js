@@ -5486,148 +5486,92 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - DEBUG VERSION
+// @desc    Get all transactions (Admin only) - WORKING VERSION
 // @route   GET /api/transactions/all
 // @access  Private/Admin
-app.get('/api/transactions/all', adminProtect, [
-  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-  
+app.get('/api/transactions/all', adminProtect, async (req, res) => {
   try {
-    let { page = 1, limit = 15 } = req.query;
+    // Get query parameters with defaults
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 15, 50);
+    const skip = (page - 1) * limit;
     
-    // Force reasonable limits
-    if (parseInt(limit) > 30) limit = 30;
-    if (parseInt(limit) < 5) limit = 5;
+    console.log(`📊 Fetching transactions - Page: ${page}, Limit: ${limit}, Skip: ${skip}`);
     
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // Get total count FIRST (for pagination)
+    const total = await Transaction.countDocuments();
+    console.log(`📊 Total transactions in DB: ${total}`);
     
-    console.log(`📊 Admin transactions - Page ${page}, Limit ${limit}, Skip ${skip}`);
-    
-    // 🔍 DEBUG: Check total transaction count first
-    const totalCount = await Transaction.countDocuments();
-    console.log(`📊 Total transactions in database: ${totalCount}`);
-    
-    if (totalCount === 0) {
-      console.log('⚠️ No transactions found in database!');
+    if (total === 0) {
       return res.json({
         success: true,
         transactions: [],
         totalPages: 0,
-        currentPage: parseInt(page),
+        currentPage: page,
         totalItems: 0,
-        message: 'No transactions found in database'
+        pageSize: limit
       });
     }
     
-    // 🔍 DEBUG: Log the query we're about to run
-    console.log(`🔍 Running query: skip=${skip}, limit=${limit}`);
-    
-    const transactions = await Transaction.find({})
+    // Fetch transactions with pagination
+    const transactions = await Transaction
+      .find({})
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit))
-      .lean()
-      .maxTimeMS(10000);
+      .limit(limit)
+      .lean();
     
-    console.log(`✅ Found ${transactions.length} transactions out of ${totalCount} total`);
+    console.log(`✅ Retrieved ${transactions.length} transactions for page ${page}`);
     
-    if (!transactions || transactions.length === 0) {
-      console.log('⚠️ Query returned no transactions despite total count > 0');
-      return res.json({
-        success: true,
-        transactions: [],
-        totalPages: 0,
-        currentPage: parseInt(page),
-        totalItems: totalCount,
-        message: 'No transactions on this page'
-      });
-    }
-    
-    // Get unique user IDs
-    const userIds = [...new Set(
-      transactions
-        .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
-        .map(tx => tx.userId.toString())
-    )];
-    
-    console.log(`📊 Found ${userIds.length} unique users in these transactions`);
-    
-    let userMap = {};
-    
-    if (userIds.length > 0) {
-      const users = await User.find(
-        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 }
-      ).lean().maxTimeMS(5000);
-      
-      userMap = users.reduce((map, user) => {
-        map[user._id.toString()] = {
-          _id: user._id,
-          fullName: user.fullName || 'Unknown User',
-          email: user.email || 'no-email@example.com',
-          phone: user.phone || 'N/A'
-        };
-        return map;
-      }, {});
-    }
-    
-    // Map transactions with user data
-    const transactionsWithUsers = transactions.map(tx => {
-      const userId = tx.userId?.toString();
-      const user = userMap[userId];
-      
-      return {
-        _id: tx._id,
-        userId: tx.userId,
-        amount: tx.amount,
-        type: tx.type,
-        status: tx.status,
-        description: tx.description,
-        createdAt: tx.createdAt,
-        reference: tx.reference,
-        user: user || {
-          _id: userId || 'system',
-          fullName: userId ? 'User Account Deleted' : 'System Transaction',
-          email: userId ? 'account@deleted.user' : 'system@transaction',
-          phone: 'N/A'
-        }
-      };
-    });
-    
+    // Return success response
     res.json({
       success: true,
-      transactions: transactionsWithUsers,
-      totalPages: Math.ceil(totalCount / limit),
-      currentPage: parseInt(page),
-      totalItems: totalCount,
-      pageSize: parseInt(limit)
+      transactions: transactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      totalItems: total,
+      pageSize: limit
     });
     
   } catch (error) {
-    console.error('❌ Error in /api/transactions/all:', error);
+    console.error('❌ Transactions endpoint error:', error);
     console.error('Error stack:', error.stack);
     
-    if (error.message?.includes('exceeded time limit')) {
-      return res.status(408).json({ 
-        success: false, 
-        message: 'Request timeout. Please try with a smaller page or limit.' 
-      });
-    }
-    
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to fetch transactions',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: error.message
     });
   }
 });
 
+
+
+
+// @desc    SIMPLE test endpoint for transactions
+// @route   GET /api/debug/simple-transactions
+// @access  Private/Admin
+app.get('/api/debug/simple-transactions', adminProtect, async (req, res) => {
+  try {
+    const transactions = await Transaction
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    
+    console.log(`🔍 Simple test found ${transactions.length} transactions`);
+    
+    res.json({
+      success: true,
+      count: transactions.length,
+      transactions: transactions,
+      firstTransaction: transactions[0] || null
+    });
+  } catch (error) {
+    console.error('Simple test error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 
 
