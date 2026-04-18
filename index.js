@@ -5548,6 +5548,53 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
 
 
 
+
+
+
+
+// @desc    TEMPORARY: Debug transactions without auth (REMOVE AFTER TESTING)
+// @route   GET /api/debug/all-transactions
+// @access  PUBLIC (TEMPORARY)
+app.get('/api/debug/all-transactions', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 15, 50);
+    const skip = (page - 1) * limit;
+    
+    console.log('🔍 DEBUG: Fetching all transactions without auth');
+    
+    const total = await Transaction.countDocuments();
+    console.log(`📊 Total transactions: ${total}`);
+    
+    const transactions = await Transaction
+      .find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    
+    console.log(`✅ Found ${transactions.length} transactions`);
+    
+    res.json({
+      success: true,
+      total: total,
+      transactions: transactions,
+      page: page,
+      limit: limit
+    });
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+
+
+
 // @desc    SIMPLE test endpoint for transactions
 // @route   GET /api/debug/simple-transactions
 // @access  Private/Admin
