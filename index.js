@@ -5486,12 +5486,12 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - ULTRA FAST VERSION
+// @desc    Get all transactions (Admin only) - DEBUG VERSION
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 30 }).withMessage('Limit must be between 1 and 30')
+  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -5509,44 +5509,62 @@ app.get('/api/transactions/all', adminProtect, [
     
     console.log(`📊 Admin transactions - Page ${page}, Limit ${limit}, Skip ${skip}`);
     
-    // ✅ CRITICAL OPTIMIZATION: Use lean() and only essential fields
-    const [transactions, total] = await Promise.all([
-      Transaction.find({})
-        .select('userId amount type status description createdAt reference') // Minimal fields
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean() // Use lean() for faster results
-        .maxTimeMS(8000), // 8 second timeout
-      Transaction.estimatedDocumentCount() // Faster than countDocuments
-    ]);
+    // 🔍 DEBUG: Check total transaction count first
+    const totalCount = await Transaction.countDocuments();
+    console.log(`📊 Total transactions in database: ${totalCount}`);
     
-    console.log(`✅ Found ${transactions.length} transactions (Total: ${total})`);
-    
-    if (!transactions || transactions.length === 0) {
+    if (totalCount === 0) {
+      console.log('⚠️ No transactions found in database!');
       return res.json({
         success: true,
         transactions: [],
         totalPages: 0,
         currentPage: parseInt(page),
-        totalItems: 0
+        totalItems: 0,
+        message: 'No transactions found in database'
       });
     }
     
-    // ✅ OPTIMIZATION: Batch fetch users with a single query
+    // 🔍 DEBUG: Log the query we're about to run
+    console.log(`🔍 Running query: skip=${skip}, limit=${limit}`);
+    
+    const transactions = await Transaction.find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean()
+      .maxTimeMS(10000);
+    
+    console.log(`✅ Found ${transactions.length} transactions out of ${totalCount} total`);
+    
+    if (!transactions || transactions.length === 0) {
+      console.log('⚠️ Query returned no transactions despite total count > 0');
+      return res.json({
+        success: true,
+        transactions: [],
+        totalPages: 0,
+        currentPage: parseInt(page),
+        totalItems: totalCount,
+        message: 'No transactions on this page'
+      });
+    }
+    
+    // Get unique user IDs
     const userIds = [...new Set(
       transactions
         .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
         .map(tx => tx.userId.toString())
     )];
     
+    console.log(`📊 Found ${userIds.length} unique users in these transactions`);
+    
     let userMap = {};
     
     if (userIds.length > 0) {
       const users = await User.find(
         { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 } // Only needed fields
-      ).lean().maxTimeMS(3000);
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean().maxTimeMS(5000);
       
       userMap = users.reduce((map, user) => {
         map[user._id.toString()] = {
@@ -5559,7 +5577,7 @@ app.get('/api/transactions/all', adminProtect, [
       }, {});
     }
     
-    // ✅ Map transactions with user data
+    // Map transactions with user data
     const transactionsWithUsers = transactions.map(tx => {
       const userId = tx.userId?.toString();
       const user = userMap[userId];
@@ -5585,14 +5603,15 @@ app.get('/api/transactions/all', adminProtect, [
     res.json({
       success: true,
       transactions: transactionsWithUsers,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(totalCount / limit),
       currentPage: parseInt(page),
-      totalItems: total,
+      totalItems: totalCount,
       pageSize: parseInt(limit)
     });
     
   } catch (error) {
     console.error('❌ Error in /api/transactions/all:', error);
+    console.error('Error stack:', error.stack);
     
     if (error.message?.includes('exceeded time limit')) {
       return res.status(408).json({ 
@@ -5608,7 +5627,6 @@ app.get('/api/transactions/all', adminProtect, [
     });
   }
 });
-
 
 
 
