@@ -5486,12 +5486,12 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - OPTIMIZED FOR SPEED
+// @desc    Get all transactions (Admin only) - ULTRA FAST VERSION
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50')
+  query('limit').optional().isInt({ min: 1, max: 30 }).withMessage('Limit must be between 1 and 30')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -5499,23 +5499,29 @@ app.get('/api/transactions/all', adminProtect, [
   }
   
   try {
-    let { page = 1, limit = 15 } = req.query; // ← DEFAULT 15 INSTEAD OF 20
+    let { page = 1, limit = 15 } = req.query;
     
-    // Force reasonable limit
-    if (parseInt(limit) > 30) limit = 30; // ← MAX 30 INSTEAD OF 50
+    // Force reasonable limits
+    if (parseInt(limit) > 30) limit = 30;
+    if (parseInt(limit) < 5) limit = 5;
     
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
-    console.log(`📊 Fetching transactions page ${page} (limit: ${limit}, skip: ${skip})`);
+    console.log(`📊 Admin transactions - Page ${page}, Limit ${limit}, Skip ${skip}`);
     
-    // ✅ CRITICAL OPTIMIZATION: Only select essential fields
-    const transactions = await Transaction.find({})
-      .select('userId amount type status description createdAt reference') // ← REMOVED 'balanceBefore balanceAfter'
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .lean()
-      .maxTimeMS(8000); // ← 8 seconds timeout (was 10)
+    // ✅ CRITICAL OPTIMIZATION: Use lean() and only essential fields
+    const [transactions, total] = await Promise.all([
+      Transaction.find({})
+        .select('userId amount type status description createdAt reference') // Minimal fields
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean() // Use lean() for faster results
+        .maxTimeMS(8000), // 8 second timeout
+      Transaction.estimatedDocumentCount() // Faster than countDocuments
+    ]);
+    
+    console.log(`✅ Found ${transactions.length} transactions (Total: ${total})`);
     
     if (!transactions || transactions.length === 0) {
       return res.json({
@@ -5527,42 +5533,37 @@ app.get('/api/transactions/all', adminProtect, [
       });
     }
     
-    // ✅ OPTIMIZATION: Use Set for unique userIds
-    const userIds = [];
-    const userIdSet = new Set();
+    // ✅ OPTIMIZATION: Batch fetch users with a single query
+    const userIds = [...new Set(
+      transactions
+        .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
+        .map(tx => tx.userId.toString())
+    )];
     
-    for (const tx of transactions) {
-      if (tx.userId && mongoose.Types.ObjectId.isValid(tx.userId)) {
-        const userIdStr = tx.userId.toString();
-        if (!userIdSet.has(userIdStr)) {
-          userIdSet.add(userIdStr);
-          userIds.push(userIdStr);
-        }
-      }
-    }
-    
-    console.log(`📊 Found ${transactions.length} transactions with ${userIds.length} unique users`);
-    
-    // ✅ OPTIMIZATION: Fetch only needed user fields
     let userMap = {};
+    
     if (userIds.length > 0) {
       const users = await User.find(
         { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1 } // ← ONLY these fields
+        { fullName: 1, email: 1, phone: 1 } // Only needed fields
       ).lean().maxTimeMS(3000);
       
       userMap = users.reduce((map, user) => {
         map[user._id.toString()] = {
+          _id: user._id,
           fullName: user.fullName || 'Unknown User',
-          email: user.email || 'no-email@example.com'
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A'
         };
         return map;
       }, {});
     }
     
-    // ✅ OPTIMIZATION: Simple mapping without extra processing
+    // ✅ Map transactions with user data
     const transactionsWithUsers = transactions.map(tx => {
       const userId = tx.userId?.toString();
+      const user = userMap[userId];
+      
       return {
         _id: tx._id,
         userId: tx.userId,
@@ -5572,22 +5573,22 @@ app.get('/api/transactions/all', adminProtect, [
         description: tx.description,
         createdAt: tx.createdAt,
         reference: tx.reference,
-        user: userMap[userId] || {
-          fullName: userId ? 'User Account Deleted' : 'System',
-          email: userId ? 'account@deleted.user' : 'system@transaction'
+        user: user || {
+          _id: userId || 'system',
+          fullName: userId ? 'User Account Deleted' : 'System Transaction',
+          email: userId ? 'account@deleted.user' : 'system@transaction',
+          phone: 'N/A'
         }
       };
     });
-    
-    // ✅ Use estimated count for speed (doesn't scan all documents)
-    const total = await Transaction.estimatedDocumentCount();
     
     res.json({
       success: true,
       transactions: transactionsWithUsers,
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
-      totalItems: total
+      totalItems: total,
+      pageSize: parseInt(limit)
     });
     
   } catch (error) {
@@ -5596,14 +5597,17 @@ app.get('/api/transactions/all', adminProtect, [
     if (error.message?.includes('exceeded time limit')) {
       return res.status(408).json({ 
         success: false, 
-        message: 'Request timeout. Please try with a smaller limit.' 
+        message: 'Request timeout. Please try with a smaller page or limit.' 
       });
     }
     
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
-
 
 
 
