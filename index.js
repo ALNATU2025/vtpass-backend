@@ -3943,6 +3943,53 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 
 
+// Get latest 100 transactions (for admin page)
+app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
+    
+    const transactions = await Transaction.find()
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    
+    // Get user data
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          fullName: user.fullName || 'Unknown',
+          email: user.email || '',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    const result = transactions.map(tx => ({
+      ...tx,
+      user: userMap[tx.userId?.toString()] || null
+    }));
+    
+    res.json({
+      success: true,
+      transactions: result,
+      total: await Transaction.countDocuments(),
+      returned: result.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
 
 // @desc    Admin: Check user's PIN status
 // @route   POST /api/admin/check-pin-status
