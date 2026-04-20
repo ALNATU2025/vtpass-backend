@@ -5486,20 +5486,29 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - WORKING VERSION
+// @desc    Get all transactions (Admin only) - OPTIMIZED
 // @route   GET /api/transactions/all
 // @access  Private/Admin
-app.get('/api/transactions/all', adminProtect, async (req, res) => {
+app.get('/api/transactions/all', adminProtect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 20 }).withMessage('Limit must be between 1 and 20')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
   try {
-    // Get query parameters with defaults
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 15, 50);
-    const skip = (page - 1) * limit;
+    let { page = 1, limit = 15 } = req.query;
     
-    console.log(`📊 Fetching transactions - Page: ${page}, Limit: ${limit}, Skip: ${skip}`);
+    // Force small limits for speed
+    limit = Math.min(parseInt(limit), 20);
+    const skip = (parseInt(page) - 1) * limit;
     
-    // Get total count FIRST (for pagination)
-    const total = await Transaction.countDocuments();
+    console.log(`📊 Admin transactions - Page ${page}, Limit ${limit}, Skip ${skip}`);
+    
+    // ✅ OPTIMIZATION 1: Use estimated count for speed
+    const total = await Transaction.estimatedDocumentCount();
     console.log(`📊 Total transactions in DB: ${total}`);
     
     if (total === 0) {
@@ -5507,44 +5516,137 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
         success: true,
         transactions: [],
         totalPages: 0,
-        currentPage: page,
-        totalItems: 0,
-        pageSize: limit
+        currentPage: parseInt(page),
+        totalItems: 0
       });
     }
     
-    // Fetch transactions with pagination
+    // ✅ OPTIMIZATION 2: EXCLUDE large metadata field
+    // ✅ OPTIMIZATION 3: Only select essential fields
     const transactions = await Transaction
       .find({})
+      .select('userId amount type status description createdAt reference balanceBefore balanceAfter isCommission')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean();
+      .lean()
+      .maxTimeMS(8000); // 8 second timeout
     
-    console.log(`✅ Retrieved ${transactions.length} transactions for page ${page}`);
+    console.log(`✅ Retrieved ${transactions.length} transactions`);
     
-    // Return success response
+    if (!transactions || transactions.length === 0) {
+      return res.json({
+        success: true,
+        transactions: [],
+        totalPages: Math.ceil(total / limit),
+        currentPage: parseInt(page),
+        totalItems: total
+      });
+    }
+    
+    // Get unique user IDs
+    const userIds = [...new Set(
+      transactions
+        .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
+        .map(tx => tx.userId.toString())
+    )];
+    
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean().maxTimeMS(3000);
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    // Map transactions with user data
+    const transactionsWithUsers = transactions.map(tx => {
+      const userId = tx.userId?.toString();
+      const user = userMap[userId];
+      
+      return {
+        _id: tx._id,
+        userId: tx.userId,
+        amount: tx.amount,
+        type: tx.type,
+        status: tx.status,
+        description: tx.description,
+        createdAt: tx.createdAt,
+        reference: tx.reference,
+        balanceBefore: tx.balanceBefore,
+        balanceAfter: tx.balanceAfter,
+        isCommission: tx.isCommission || false,
+        user: user || {
+          _id: userId || 'system',
+          fullName: userId ? 'User Account Deleted' : 'System Transaction',
+          email: userId ? 'account@deleted.user' : 'system@transaction',
+          phone: 'N/A'
+        }
+      };
+    });
+    
     res.json({
       success: true,
-      transactions: transactions,
+      transactions: transactionsWithUsers,
       totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      currentPage: parseInt(page),
       totalItems: total,
       pageSize: limit
     });
     
   } catch (error) {
     console.error('❌ Transactions endpoint error:', error);
-    console.error('Error stack:', error.stack);
     
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch transactions',
-      error: error.message
+    if (error.message?.includes('exceeded time limit')) {
+      return res.status(408).json({ 
+        success: false, 
+        message: 'Request timeout. Please try with a smaller page or limit.' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch transactions'
     });
   }
 });
 
+
+// @desc    Get recent transactions only (FAST)
+// @route   GET /api/transactions/recent
+// @access  Private/Admin
+app.get('/api/transactions/recent', adminProtect, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    
+    const transactions = await Transaction
+      .find({})
+      .select('userId amount type status description createdAt reference')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+      .maxTimeMS(5000);
+    
+    res.json({
+      success: true,
+      transactions: transactions,
+      count: transactions.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 
 
