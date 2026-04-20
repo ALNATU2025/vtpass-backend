@@ -5486,86 +5486,86 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// ==================== CURSOR-BASED TRANSACTIONS ENDPOINT ====================
-// @desc    Get all transactions with cursor pagination + user data via $lookup
+// @desc    Get all transactions with cursor pagination
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, async (req, res) => {
   try {
-    const { lastId, limit = 15 } = req.query;
-    const parsedLimit = Math.min(parseInt(limit), 30);
+    const limit = Math.min(parseInt(req.query.limit) || 15, 30);
+    const lastId = req.query.lastId;
 
-    // Build query - use _id for cursor pagination (faster than createdAt)
-    const query = lastId && lastId !== 'null' && lastId !== 'undefined'
-      ? { _id: { $lt: new mongoose.Types.ObjectId(lastId) } }
-      : {};
+    console.log('📊 Fetching transactions - lastId:', lastId || 'none', 'limit:', limit);
 
-    console.log(`📊 Cursor pagination - lastId: ${lastId || 'none'}, limit: ${parsedLimit}`);
+    let query = {};
+    if (lastId && lastId !== 'null' && lastId !== 'undefined') {
+      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+    }
 
-    // Use aggregation with $lookup to join user data in ONE query
-    const transactions = await Transaction.aggregate([
-      { $match: query },
-      { $sort: { _id: -1 } },
-      { $limit: parsedLimit },
-      {
-        $lookup: {
-          from: "users",
-          localField: "userId",
-          foreignField: "_id",
-          as: "user"
-        }
-      },
-      {
-        $unwind: {
-          path: "$user",
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $project: {
-          _id: 1,
-          userId: 1,
-          amount: 1,
-          type: 1,
-          status: 1,
-          description: 1,
-          createdAt: 1,
-          reference: 1,
-          balanceBefore: 1,
-          balanceAfter: 1,
-          isCommission: 1,
-          "user._id": 1,
-          "user.fullName": 1,
-          "user.email": 1,
-          "user.phone": 1
-        }
-      }
-    ]).option({ maxTimeMS: 8000 });
+    // Fetch one extra to determine if there are more
+    const transactions = await Transaction
+      .find(query)
+      .sort({ _id: -1 })  // ✅ REQUIRED for cursor pagination
+      .limit(limit + 1)
+      .lean();
 
-    // Get the last ID for next page cursor
-    const newLastId = transactions.length === parsedLimit
+    const hasMore = transactions.length > limit;
+    
+    // Remove the extra item if it exists
+    if (hasMore) {
+      transactions.pop();
+    }
+
+    const newLastId = transactions.length > 0
       ? transactions[transactions.length - 1]._id.toString()
       : null;
 
-    console.log(`✅ Returned ${transactions.length} transactions, hasMore: ${transactions.length === parsedLimit}`);
+    // Get user data for these transactions
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    
+    let userMap = {};
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          fullName: user.fullName || 'Unknown',
+          email: user.email || 'no-email',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+
+    // Combine transactions with user data
+    const result = transactions.map(tx => ({
+      ...tx,
+      user: userMap[tx.userId?.toString()] || {
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A'
+      }
+    }));
+
+    console.log(`✅ Returning ${result.length} transactions, hasMore: ${hasMore}`);
 
     res.json({
       success: true,
-      transactions: transactions,
+      transactions: result,
+      hasMore: hasMore,
       lastId: newLastId,
-      hasMore: transactions.length === parsedLimit
     });
 
   } catch (error) {
     console.error('❌ Transactions error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to fetch transactions',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: error.message 
     });
   }
 });
-
 
 
 
