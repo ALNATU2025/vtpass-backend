@@ -5486,6 +5486,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
+// ==================== CURSOR-BASED TRANSACTIONS ENDPOINT ====================
 // @desc    Get all transactions with cursor pagination + user data via $lookup
 // @route   GET /api/transactions/all
 // @access  Private/Admin
@@ -5495,9 +5496,11 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
     const parsedLimit = Math.min(parseInt(limit), 30);
 
     // Build query - use _id for cursor pagination (faster than createdAt)
-    const query = lastId && lastId !== 'null'
+    const query = lastId && lastId !== 'null' && lastId !== 'undefined'
       ? { _id: { $lt: new mongoose.Types.ObjectId(lastId) } }
       : {};
+
+    console.log(`📊 Cursor pagination - lastId: ${lastId || 'none'}, limit: ${parsedLimit}`);
 
     // Use aggregation with $lookup to join user data in ONE query
     const transactions = await Transaction.aggregate([
@@ -5544,6 +5547,8 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
       ? transactions[transactions.length - 1]._id.toString()
       : null;
 
+    console.log(`✅ Returned ${transactions.length} transactions, hasMore: ${transactions.length === parsedLimit}`);
+
     res.json({
       success: true,
       transactions: transactions,
@@ -5565,14 +5570,17 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
 
 
 
+// ==================== TOTAL USERS COUNT ENDPOINT ====================
 // @desc    Get total user count (fast, no pagination)
 // @route   GET /api/admin/total-users
 // @access  Private/Admin
 app.get('/api/admin/total-users', adminProtect, async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
+    console.log(`📊 Total users count: ${totalUsers}`);
     res.json({ success: true, totalUsers: totalUsers });
   } catch (error) {
+    console.error('Error getting user count:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
