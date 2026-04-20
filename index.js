@@ -5620,6 +5620,31 @@ app.get('/api/transactions/recent', adminProtect, async (req, res) => {
 
 
 
+// DEBUG: Check what's in the database
+app.get('/api/debug/transactions-check', adminProtect, async (req, res) => {
+  try {
+    const count = await Transaction.countDocuments();
+    const sample = await Transaction.findOne().sort({ createdAt: -1 });
+    const lastFive = await Transaction.find().sort({ createdAt: -1 }).limit(5);
+    
+    res.json({
+      success: true,
+      totalCount: count,
+      sampleTransaction: sample,
+      lastFiveTransactions: lastFive,
+      message: count === 0 ? 'No transactions found in database!' : 'Transactions exist'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+
+
 // @desc    TEMPORARY: Debug transactions without auth (REMOVE AFTER TESTING)
 // @route   GET /api/debug/all-transactions
 // @access  PUBLIC (TEMPORARY)
