@@ -5486,141 +5486,99 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions (Admin only) - OPTIMIZED
+// @desc    Get all transactions with cursor pagination + user data via $lookup
 // @route   GET /api/transactions/all
 // @access  Private/Admin
-app.get('/api/transactions/all', adminProtect, [
-  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 20 }).withMessage('Limit must be between 1 and 20')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-  
+app.get('/api/transactions/all', adminProtect, async (req, res) => {
   try {
-    let { page = 1, limit = 15 } = req.query;
-    
-    // Force small limits for speed
-    limit = Math.min(parseInt(limit), 20);
-    const skip = (parseInt(page) - 1) * limit;
-    
-    console.log(`📊 Admin transactions - Page ${page}, Limit ${limit}, Skip ${skip}`);
-    
-    // ✅ OPTIMIZATION 1: Use estimated count for speed
-    const total = await Transaction.estimatedDocumentCount();
-    console.log(`📊 Total transactions in DB: ${total}`);
-    
-    if (total === 0) {
-      return res.json({
-        success: true,
-        transactions: [],
-        totalPages: 0,
-        currentPage: parseInt(page),
-        totalItems: 0
-      });
-    }
-    
-    // ✅ OPTIMIZATION 2: EXCLUDE large metadata field
-    // ✅ OPTIMIZATION 3: Only select essential fields
-    const transactions = await Transaction
-      .find({})
-      .select('userId amount type status description createdAt reference balanceBefore balanceAfter isCommission')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean()
-      .maxTimeMS(8000); // 8 second timeout
-    
-    console.log(`✅ Retrieved ${transactions.length} transactions`);
-    
-    if (!transactions || transactions.length === 0) {
-      return res.json({
-        success: true,
-        transactions: [],
-        totalPages: Math.ceil(total / limit),
-        currentPage: parseInt(page),
-        totalItems: total
-      });
-    }
-    
-    // Get unique user IDs
-    const userIds = [...new Set(
-      transactions
-        .filter(tx => tx.userId && mongoose.Types.ObjectId.isValid(tx.userId))
-        .map(tx => tx.userId.toString())
-    )];
-    
-    let userMap = {};
-    
-    if (userIds.length > 0) {
-      const users = await User.find(
-        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 }
-      ).lean().maxTimeMS(3000);
-      
-      userMap = users.reduce((map, user) => {
-        map[user._id.toString()] = {
-          _id: user._id,
-          fullName: user.fullName || 'Unknown User',
-          email: user.email || 'no-email@example.com',
-          phone: user.phone || 'N/A'
-        };
-        return map;
-      }, {});
-    }
-    
-    // Map transactions with user data
-    const transactionsWithUsers = transactions.map(tx => {
-      const userId = tx.userId?.toString();
-      const user = userMap[userId];
-      
-      return {
-        _id: tx._id,
-        userId: tx.userId,
-        amount: tx.amount,
-        type: tx.type,
-        status: tx.status,
-        description: tx.description,
-        createdAt: tx.createdAt,
-        reference: tx.reference,
-        balanceBefore: tx.balanceBefore,
-        balanceAfter: tx.balanceAfter,
-        isCommission: tx.isCommission || false,
-        user: user || {
-          _id: userId || 'system',
-          fullName: userId ? 'User Account Deleted' : 'System Transaction',
-          email: userId ? 'account@deleted.user' : 'system@transaction',
-          phone: 'N/A'
+    const { lastId, limit = 15 } = req.query;
+    const parsedLimit = Math.min(parseInt(limit), 30);
+
+    // Build query - use _id for cursor pagination (faster than createdAt)
+    const query = lastId && lastId !== 'null'
+      ? { _id: { $lt: new mongoose.Types.ObjectId(lastId) } }
+      : {};
+
+    // Use aggregation with $lookup to join user data in ONE query
+    const transactions = await Transaction.aggregate([
+      { $match: query },
+      { $sort: { _id: -1 } },
+      { $limit: parsedLimit },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "user"
         }
-      };
-    });
-    
+      },
+      {
+        $unwind: {
+          path: "$user",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          userId: 1,
+          amount: 1,
+          type: 1,
+          status: 1,
+          description: 1,
+          createdAt: 1,
+          reference: 1,
+          balanceBefore: 1,
+          balanceAfter: 1,
+          isCommission: 1,
+          "user._id": 1,
+          "user.fullName": 1,
+          "user.email": 1,
+          "user.phone": 1
+        }
+      }
+    ]).option({ maxTimeMS: 8000 });
+
+    // Get the last ID for next page cursor
+    const newLastId = transactions.length === parsedLimit
+      ? transactions[transactions.length - 1]._id.toString()
+      : null;
+
     res.json({
       success: true,
-      transactions: transactionsWithUsers,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
-      totalItems: total,
-      pageSize: limit
+      transactions: transactions,
+      lastId: newLastId,
+      hasMore: transactions.length === parsedLimit
     });
-    
+
   } catch (error) {
-    console.error('❌ Transactions endpoint error:', error);
-    
-    if (error.message?.includes('exceeded time limit')) {
-      return res.status(408).json({ 
-        success: false, 
-        message: 'Request timeout. Please try with a smaller page or limit.' 
-      });
-    }
-    
+    console.error('❌ Transactions error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to fetch transactions'
+      message: 'Failed to fetch transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
+
+
+
+
+
+// @desc    Get total user count (fast, no pagination)
+// @route   GET /api/admin/total-users
+// @access  Private/Admin
+app.get('/api/admin/total-users', adminProtect, async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    res.json({ success: true, totalUsers: totalUsers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
 
 
 // @desc    Get recent transactions only (FAST)
