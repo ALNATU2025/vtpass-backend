@@ -558,6 +558,7 @@ const autoRefreshToken = async (req, res, next) => {
 
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
 // ==================== PROTECT MIDDLEWARE - WITH CACHING ====================
+// ==================== PROTECT MIDDLEWARE - FIXED VERSION ====================
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
@@ -570,17 +571,8 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    // Try cache first - 5 second cache for user data
-    const cacheKey = `user_${token.substring(0, 20)}`;
-    let user = userCache.get(cacheKey);
-    
-    if (!user) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      user = await User.findById(decoded.id).select('-password').lean();
-      if (user) {
-        userCache.set(cacheKey, user, 5); // Cache for 5 seconds
-      }
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password').lean();
     
     if (!user) {
       return res.status(401).json({ 
@@ -598,7 +590,15 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // 🔥 CRITICAL: Attach user to request
     req.user = user;
+    
+    // 🔥 CRITICAL: Remove any userId from request body (prevents spoofing)
+    if (req.body && req.body.userId) {
+      console.warn(`⚠️ SECURITY: Attempt to override userId from IP ${req.ip}`);
+      delete req.body.userId;
+    }
+    
     next();
 
   } catch (error) {
@@ -611,14 +611,6 @@ const protect = async (req, res, next) => {
       });
     }
 
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token',
-        code: 'INVALID_TOKEN'
-      });
-    }
-
     console.error('Protect middleware error:', error);
     return res.status(401).json({
       success: false,
@@ -627,7 +619,6 @@ const protect = async (req, res, next) => {
     });
   }
 };
-
 
 
 
@@ -5030,6 +5021,10 @@ app.post('/api/users/change-password', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
@@ -5045,7 +5040,20 @@ app.post('/api/users/fund', adminProtect, [
   const { userId, amount } = req.body;
   const note = req.body.note || `Admin funding of ${amount}`;
   
-  console.log(`📥 Funding request: User: ${userId}, Amount: ${amount}, Note: ${note}`);
+  // 🔥 CRITICAL: Check for duplicate funding in last 30 seconds
+  const recentFunding = await Transaction.findOne({
+    userId: userId,
+    type: 'credit',
+    amount: amount,
+    createdAt: { $gt: new Date(Date.now() - 30 * 1000) }
+  });
+  
+  if (recentFunding) {
+    return res.status(400).json({
+      success: false,
+      message: 'Duplicate funding detected. Please wait before trying again.'
+    });
+  }
   
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -5054,11 +5062,8 @@ app.post('/api/users/fund', adminProtect, [
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
-      console.log(`❌ User ${userId} not found`);
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
-    console.log(`👤 User found: ${user.email}, Current balance: ${user.walletBalance}`);
     
     const balanceBefore = user.walletBalance;
     user.walletBalance += amount;
@@ -5066,14 +5071,11 @@ app.post('/api/users/fund', adminProtect, [
     
     await user.save({ session });
     
-    console.log(`💰 New balance: ${balanceAfter}`);
-    
-    // FIXED: Change 'successful' to 'Successful'
     await createTransaction(
       userId,
       amount,
       'credit',
-      'Successful', // ← CHANGE THIS LINE - Capital 'S'
+      'Successful',
       note,
       balanceBefore,
       balanceAfter,
@@ -5083,29 +5085,26 @@ app.post('/api/users/fund', adminProtect, [
     );
     
     await session.commitTransaction();
-    console.log(`✅ Successfully funded user ${user.email}`);
     
     res.json({ 
       success: true, 
       message: `Successfully funded user ${user.email} with ${amount}`, 
       newBalance: balanceAfter,
-      userId: userId,
-      transactionId: Date.now().toString()
+      userId: userId
     });
     
   } catch (error) {
     await session.abortTransaction();
-    console.error('❌ Error funding user:', error);
-    console.error('Error details:', error.message);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal Server Error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('Error funding user:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   } finally {
     session.endSession();
   }
 });
+
+
+
+
 // @desc    Get transaction statistics (Admin only)
 // @route   GET /api/transactions/statistics
 // @access  Private/Admin
@@ -10352,15 +10351,20 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 // @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES (UPDATED)
 // @route   POST /api/wallet/top-up
 // @access  Public (called by virtual-account-backend)
-app.post('/api/wallet/top-up', async (req, res) => {
+// @desc    Top up wallet from virtual account / PayStack webhook
+// @route   POST /api/wallet/top-up
+// @access  PRIVATE - Requires authentication!
+app.post('/api/wallet/top-up', protect, async (req, res) => {
   console.log('MAIN BACKEND: Wallet top-up request received', req.body);
 
-  const { userId, amount, reference, source = 'paystack_funding' } = req.body;
+  // 🔥 CRITICAL: Use authenticated user ID, NOT from request body
+  const userId = req.user._id;
+  const { amount, reference, source = 'paystack_funding' } = req.body;
 
-  if (!userId || !reference || amount === undefined) {
+  if (!reference || amount === undefined) {
     return res.status(400).json({
       success: false,
-      message: 'userId, amount, and reference are required'
+      message: 'amount and reference are required'
     });
   }
 
@@ -10392,17 +10396,10 @@ app.post('/api/wallet/top-up', async (req, res) => {
         throw new Error('ALREADY_PROCESSED');
       }
 
-      // Delete any failed/pending duplicates
-      await Transaction.deleteMany({
-        reference,
-        status: { $ne: 'Successful' }
-      }).session(session);
-
       const balanceBefore = user.walletBalance;
       user.walletBalance += amountInNaira;
       await user.save({ session });
 
-      // Create main wallet transaction with isDeposit flag
       await Transaction.create([{
         userId,
         type: 'Wallet Funding',
@@ -10416,106 +10413,20 @@ app.post('/api/wallet/top-up', async (req, res) => {
         metadata: { 
           source: 'webhook', 
           processedAt: new Date(),
-          isDeposit: true, // Mark as deposit for referral bonus tracking
+          isDeposit: true,
           depositAmount: amountInNaira,
           reference: reference,
           paymentMethod: source.includes('paystack') ? 'paystack' : 'virtual_account',
           transactionType: 'wallet_funding'
         }
       }], { session });
-
-      console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
-
-          // ================================================
-      // 🔥 DEPOSIT BONUS SYSTEM: Check and award first deposit bonus
-      // ================================================
-      try {
-        // ✅ Check for ANY successful deposit
-        const previousDeposits = await Transaction.countDocuments({
-          userId: userId,
-          type: 'Wallet Funding',
-          status: 'Successful',
-          'metadata.isDeposit': true,
-          _id: { $ne: existing?._id }
-        }).session(session);
-        
-        console.log(`🔍 Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
-        
-        if (previousDeposits === 0) {
-          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira})`);
-          
-          // ✅ Award first deposit bonus (₦200 if deposit ≥ ₦5,000)
-          const depositBonusAwarded = await awardFirstDepositBonus(userId, amountInNaira, session);
-          console.log(`✅ First deposit bonus result: ${depositBonusAwarded ? 'AWARDED' : 'NOT AWARDED'}`);
-          
-          // ✅ Update notification based on bonus
-          if (depositBonusAwarded) {
-            await Notification.create([{
-              recipient: userId,
-              title: "First Deposit Bonus! 🎉",
-              message: `You received ₦200 bonus for your first deposit of ₦${amountInNaira}!`,
-              type: 'deposit_bonus',
-              isRead: false,
-              metadata: {
-                amount: amountInNaira,
-                bonus: 200,
-                newBalance: user.walletBalance,
-                newCommissionBalance: user.commissionBalance || 0,
-                isFirstDeposit: true,
-                reference: reference,
-                bonusType: 'first_deposit'
-              }
-            }], { session });
-          } else {
-            await Notification.create([{
-              recipient: userId,
-              title: "Wallet Credited 💰",
-              message: `₦${amountInNaira} added to your wallet. Deposit ₦${(5000 - amountInNaira).toFixed(2)} more to unlock ₦200 first deposit bonus!`,
-              type: 'wallet_credit',
-              isRead: false,
-              metadata: {
-                amount: amountInNaira,
-                newBalance: user.walletBalance,
-                reference: reference,
-                isDeposit: true,
-                isFirstDeposit: true,
-                bonusEligible: false,
-                minimumRequired: 5000,
-                neededAmount: 5000 - amountInNaira
-              }
-            }], { session });
-          }
-        } else {
-          console.log(`ℹ️ Not first deposit (${previousDeposits} previous deposits), no bonus`);
-          
-          // Create regular deposit notification
-          await Notification.create([{
-            recipient: userId,
-            title: "Wallet Credited 💰",
-            message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
-            type: 'wallet_credit',
-            isRead: false,
-            metadata: {
-              amount: amountInNaira,
-              newBalance: user.walletBalance,
-              reference: reference,
-              isDeposit: true,
-              isFirstDeposit: false
-            }
-          }], { session });
-        }
-      } catch (bonusError) {
-        console.error('⚠️ Error processing deposit bonuses:', bonusError);
-        // Don't fail the main transaction if bonus processing fails
-      }
     });
 
-    // Get updated user info to return commission balance
     const updatedUser = await User.findById(userId);
     
     return res.json({
       success: true,
-      newBalance: null, // Flutter reads from local storage
+      newBalance: updatedUser.walletBalance,
       amount: amountInNaira,
       commissionBalance: updatedUser?.commissionBalance || 0,
       message: 'Wallet funded successfully'
@@ -10533,7 +10444,6 @@ app.post('/api/wallet/top-up', async (req, res) => {
     }
 
     console.error('MAIN TOP-UP ERROR:', error);
-    console.error('Error stack:', error.stack);
     return res.status(500).json({
       success: false,
       message: 'Funding failed'
