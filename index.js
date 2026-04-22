@@ -1,6 +1,3 @@
-
-
-
 // --- File: index.js ---
 const express = require('express');
 const fetch = require("node-fetch");
@@ -4721,10 +4718,12 @@ app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => 
       });
     }
     
+    // ✅ FIXED: Use header authentication, NOT Basic Auth
     const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-      auth: {
-        username: vtpassApiKey,
-        password: vtpassSecretKey
+      headers: {
+        'api-key': vtpassApiKey,
+        'secret-key': vtpassSecretKey,
+        'Content-Type': 'application/json'
       },
       timeout: 10000
     });
@@ -4740,6 +4739,7 @@ app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => 
     
   } catch (error) {
     console.error('Error fetching VTpass balance:', error.message);
+    console.error('Response data:', error.response?.data);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch VTpass balance',
@@ -4747,7 +4747,6 @@ app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => 
     });
   }
 });
-
 
 
 
@@ -8432,18 +8431,21 @@ app.post('/api/vtpass/proxy', protect, async (req, res) => {
     }
 
     // === 5. Check VTpass Wallet Balance BEFORE calling VTpass ===
-    console.log('💰 Checking VTpass wallet balance before transaction...');
-    try {
-      const vtpassApiKey = process.env.VTPASS_API_KEY;
-      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-      
-      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-        auth: {
-          username: vtpassApiKey,
-          password: vtpassSecretKey
-        },
-        timeout: 10000
-      });
+   // === 5. Check VTpass Wallet Balance BEFORE calling VTpass ===
+console.log('💰 Checking VTpass wallet balance before transaction...');
+try {
+  const vtpassApiKey = process.env.VTPASS_API_KEY;
+  const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+  
+  // ✅ FIXED: Use header authentication, NOT Basic Auth
+  const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+    headers: {
+      'api-key': vtpassApiKey,
+      'secret-key': vtpassSecretKey,
+      'Content-Type': 'application/json'
+    },
+    timeout: 10000
+  });
 
       const vtpassBalance = balanceResponse.data.contents?.balance || 0;
       console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
