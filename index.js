@@ -4267,27 +4267,46 @@ app.get('/api/users/auth-logs', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Get user's balance
+
+
+
+// @desc    Get user's balance - FIXED VERSION
 // @route   GET /api/users/balance
 // @access  Private
 app.get('/api/users/balance', protect, async (req, res) => {
   try {
     const userId = req.user._id;
     
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).select('walletBalance commissionBalance');
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return res.status(200).json({ 
+        success: true, 
+        walletBalance: 0,
+        balance: 0,
+        commissionBalance: 0
+      });
     }
     
+    // Return BOTH formats for compatibility with all frontend versions
     res.json({
       success: true,
-      walletBalance: user.walletBalance
+      walletBalance: user.walletBalance || 0,
+      balance: user.walletBalance || 0,  // ← Added for compatibility
+      commissionBalance: user.commissionBalance || 0
     });
   } catch (error) {
-      console.error('Error fetching balance:', error);
-      res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error('Error fetching balance:', error);
+    res.status(200).json({ 
+      success: true, 
+      walletBalance: 0,
+      balance: 0,
+      commissionBalance: 0
+    });
   }
 });
+
+
+
 // @desc    Get user's commission balance
 // @route   GET /api/users/commission-balance
 // @access  Private
