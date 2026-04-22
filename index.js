@@ -4811,16 +4811,16 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
 });
 
 
-/// @desc    Get ALL users without pagination (Admin only - for transactions)
+// @desc    Get ALL users without pagination (Admin only - for transactions)
 // @route   GET /api/admin/all-users
 // @access  Private/Admin
 app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    // ✅ Only get essential fields, no password, use lean() for speed
+    // ✅ Get ALL needed fields for admin panel
     const users = await User.find({})
-      .select('_id fullName email phone isAdmin')
+      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt')
       .lean()
       .maxTimeMS(8000);
     
@@ -4836,7 +4836,6 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 
 
 
