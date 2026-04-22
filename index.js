@@ -672,6 +672,109 @@ const checkServiceEnabled = (serviceKey) => {
 
 
 
+
+
+
+// ==================== APP VERSION CHECK ENDPOINT ====================
+// @desc    Check if app needs update
+// @route   GET /api/app/version
+// @access  Public
+app.get('/api/app/version', async (req, res) => {
+  try {
+    // Get platform from query parameter (ios/android)
+    const platform = req.query.platform || 'android';
+    const currentVersion = req.query.version || '1.0.0';
+    
+    // Define minimum required versions
+    const versions = {
+      android: {
+        minimum: '1.2.0',      // Minimum version that still works
+        latest: '1.3.0',       // Latest available version
+        updateUrl: 'https://play.google.com/store/apps/details?id=com.dalabapay.official',
+        whatsNew: [
+          '🎉 New CableTV Bill Payment Feature',
+          '⚡ Faster transaction processing',
+          '🔒 Enhanced security with biometric login',
+          '📱 Improved UI/UX for better experience',
+          '🐛 Bug fixes and performance improvements'
+        ],
+        isRequired: false,      // Set to true for mandatory update
+        releaseDate: '2024-01-15'
+      },
+      ios: {
+        minimum: '1.2.0',
+        latest: '1.3.0',
+        updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
+        whatsNew: [
+          '🎉 New Electricity Bill Payment Feature',
+          '⚡ Faster transaction processing',
+          '🔒 Enhanced security with Face ID',
+          '📱 Improved UI/UX for better experience',
+          '🐛 Bug fixes and performance improvements'
+        ],
+        isRequired: false,
+        releaseDate: '2024-01-15'
+      }
+    };
+    
+    const platformVersions = versions[platform] || versions.android;
+    const minimumVersion = platformVersions.minimum;
+    const latestVersion = platformVersions.latest;
+    
+    // Compare versions
+    const needsUpdate = compareVersions(currentVersion, latestVersion) < 0;
+    const isMinimumVersion = compareVersions(currentVersion, minimumVersion) >= 0;
+    const isRequired = !isMinimumVersion || platformVersions.isRequired;
+    
+    res.json({
+      success: true,
+      data: {
+        needsUpdate: needsUpdate,
+        isRequired: isRequired,
+        currentVersion: currentVersion,
+        minimumVersion: minimumVersion,
+        latestVersion: latestVersion,
+        updateUrl: platformVersions.updateUrl,
+        whatsNew: platformVersions.whatsNew,
+        releaseDate: platformVersions.releaseDate,
+        forceUpdateMessage: isRequired ? 
+          'A new version is available. Please update to continue using the app.' : 
+          'A new version is available. Update for better experience.'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Version check error:', error);
+    res.json({
+      success: true,
+      data: {
+        needsUpdate: false,
+        isRequired: false,
+        message: 'Version check failed'
+      }
+    });
+  }
+});
+
+// Helper function to compare versions
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+  
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const num1 = parts1[i] || 0;
+    const num2 = parts2[i] || 0;
+    
+    if (num1 !== num2) {
+      return num1 - num2;
+    }
+  }
+  return 0;
+}
+
+
+
+
 // @desc    Validate referral code (REF format only)
 // @route   GET /api/referral/validate/:code
 // @access  Public
