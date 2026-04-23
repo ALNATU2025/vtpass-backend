@@ -4048,31 +4048,38 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 
 
-
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
 // @desc    Verify transaction PIN for LOGIN (No authentication required)
 // @route   POST /api/auth/verify-pin-for-login
-// @access  Public (for re-authentication)
-app.post('/api/auth/verify-pin-for-login', [
-  body('userId').notEmpty().withMessage('User ID is required'),
-  body('transactionPin').notEmpty().withMessage('PIN is required')
-], async (req, res) => {
+// @access  Public (for re-authentication when session expired)
+app.post('/api/auth/verify-pin-for-login', async (req, res) => {
   try {
     const { userId, transactionPin } = req.body;
 
+    console.log('🔐 PIN Login attempt for user:', userId);
+
+    // Validate required fields
+    if (!userId || !transactionPin) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID and PIN are required'
+      });
+    }
+
     // Validate PIN format
-    if (!transactionPin || !/^\d{6}$/.test(transactionPin)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'PIN must be exactly 6 digits' 
+    if (!/^\d{6}$/.test(transactionPin)) {
+      return res.status(400).json({
+        success: false,
+        message: 'PIN must be exactly 6 digits'
       });
     }
 
     // Find user
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
       });
     }
 
@@ -4080,13 +4087,13 @@ app.post('/api/auth/verify-pin-for-login', [
     if (!user.transactionPin || !user.transactionPinSet) {
       return res.status(400).json({
         success: false,
-        message: 'Transaction PIN not set'
+        message: 'Transaction PIN not set. Please set up your PIN first.'
       });
     }
 
     const now = new Date();
 
-    // Check lockout
+    // Check if account is locked
     if (user.pinLockedUntil && user.pinLockedUntil > now) {
       const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
       return res.status(429).json({
@@ -4099,8 +4106,10 @@ app.post('/api/auth/verify-pin-for-login', [
     const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
 
     if (!isPinMatch) {
+      // Increment failed attempts
       user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
 
+      // Lock after 3 failed attempts
       if (user.failedPinAttempts >= 3) {
         user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
       }
@@ -4109,31 +4118,38 @@ app.post('/api/auth/verify-pin-for-login', [
 
       const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
 
-      return res.status(400).json({
+      return res.status(401).json({
         success: false,
         message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`,
         attemptsRemaining: remainingAttempts
       });
     }
 
-    // ✅ SUCCESS - Reset failed attempts
+    // ✅ PIN SUCCESSFUL - Reset failed attempts
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     await user.save();
 
-    // ✅ Generate NEW tokens for the user (since they're logging back in)
+    // ✅ USE YOUR EXISTING JWT_SECRET DIRECTLY
+    const jwtSecret = process.env.JWT_SECRET;
+    
+    console.log('🔐 Generating token with JWT_SECRET length:', jwtSecret.length);
+
+    // Generate NEW tokens
     const token = jwt.sign(
       { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
+      jwtSecret,
       { expiresIn: '7d' }
     );
 
+    // Use the same secret for refresh token (or create a separate one)
     const refreshToken = jwt.sign(
       { id: user._id },
-      process.env.JWT_REFRESH_SECRET,
+      jwtSecret,
       { expiresIn: '30d' }
     );
 
+    // Return success with new tokens and user data
     return res.json({
       success: true,
       message: 'PIN verified successfully',
@@ -4143,22 +4159,24 @@ app.post('/api/auth/verify-pin-for-login', [
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
-        walletBalance: user.walletBalance,
-        commissionBalance: user.commissionBalance,
+        walletBalance: user.walletBalance || 0,
+        commissionBalance: user.commissionBalance || 0,
         transactionPinSet: true,
-        biometricEnabled: user.biometricEnabled || false
+        biometricEnabled: user.biometricEnabled || false,
+        role: user.role || 'user',
+        isAdmin: user.isAdmin || false,
+        isActive: user.isActive !== false
       }
     });
 
   } catch (error) {
     console.error('Error verifying PIN for login:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal Server Error' 
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error. Please try again later.'
     });
   }
 });
-
 
 
 
