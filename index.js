@@ -4046,6 +4046,123 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 
 
+
+
+
+// @desc    Verify transaction PIN for LOGIN (No authentication required)
+// @route   POST /api/auth/verify-pin-for-login
+// @access  Public (for re-authentication)
+app.post('/api/auth/verify-pin-for-login', [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('transactionPin').notEmpty().withMessage('PIN is required')
+], async (req, res) => {
+  try {
+    const { userId, transactionPin } = req.body;
+
+    // Validate PIN format
+    if (!transactionPin || !/^\d{6}$/.test(transactionPin)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'PIN must be exactly 6 digits' 
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Check if PIN is set
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction PIN not set'
+      });
+    }
+
+    const now = new Date();
+
+    // Check lockout
+    if (user.pinLockedUntil && user.pinLockedUntil > now) {
+      const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
+      return res.status(429).json({
+        success: false,
+        message: `Too many failed attempts. Account locked for ${minutesRemaining} minutes.`
+      });
+    }
+
+    // Verify PIN
+    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+
+    if (!isPinMatch) {
+      user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+      }
+
+      await user.save();
+
+      const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`,
+        attemptsRemaining: remainingAttempts
+      });
+    }
+
+    // ✅ SUCCESS - Reset failed attempts
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    await user.save();
+
+    // ✅ Generate NEW tokens for the user (since they're logging back in)
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    return res.json({
+      success: true,
+      message: 'PIN verified successfully',
+      token: token,
+      refreshToken: refreshToken,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        transactionPinSet: true,
+        biometricEnabled: user.biometricEnabled || false
+      }
+    });
+
+  } catch (error) {
+    console.error('Error verifying PIN for login:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+
+
+
+
 // Get latest 100 transactions (for admin page)
 app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
   try {
