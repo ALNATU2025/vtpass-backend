@@ -4117,7 +4117,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
     await user.save();
 
     // ✅ FIX: Get JWT secret (try multiple possible environment variable names)
-    const jwtSecret = process.env.JWT_SECRET || 
+   const jwtSecret = process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 
                       process.env.JWT_KEY || 
                       process.env.SECRET_KEY ||
                       'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
