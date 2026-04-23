@@ -4049,16 +4049,12 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 
 // ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
-// @desc    Verify transaction PIN for LOGIN (No authentication required)
-// @route   POST /api/auth/verify-pin-for-login
-// @access  Public (for re-authentication when session expired)
 app.post('/api/auth/verify-pin-for-login', async (req, res) => {
   try {
     const { userId, transactionPin } = req.body;
 
     console.log('🔐 PIN Login attempt for user:', userId);
 
-    // Validate required fields
     if (!userId || !transactionPin) {
       return res.status(400).json({
         success: false,
@@ -4066,7 +4062,6 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // Validate PIN format
     if (!/^\d{6}$/.test(transactionPin)) {
       return res.status(400).json({
         success: false,
@@ -4074,7 +4069,6 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // Find user
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -4083,17 +4077,15 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // Check if PIN is set
     if (!user.transactionPin || !user.transactionPinSet) {
       return res.status(400).json({
         success: false,
-        message: 'Transaction PIN not set. Please set up your PIN first.'
+        message: 'Transaction PIN not set.'
       });
     }
 
     const now = new Date();
 
-    // Check if account is locked
     if (user.pinLockedUntil && user.pinLockedUntil > now) {
       const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
       return res.status(429).json({
@@ -4102,22 +4094,16 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // Verify PIN
     const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
 
     if (!isPinMatch) {
-      // Increment failed attempts
       user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
-
-      // Lock after 3 failed attempts
       if (user.failedPinAttempts >= 3) {
         user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
       }
-
       await user.save();
 
       const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
-
       return res.status(401).json({
         success: false,
         message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`,
@@ -4125,31 +4111,35 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // ✅ PIN SUCCESSFUL - Reset failed attempts
+    // ✅ PIN SUCCESSFUL
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     await user.save();
 
-    // ✅ USE YOUR EXISTING JWT_SECRET DIRECTLY
-    const jwtSecret = process.env.JWT_SECRET;
+    // ✅ FIX: Get JWT secret (try multiple possible environment variable names)
+    const jwtSecret = process.env.JWT_SECRET || 
+                      process.env.JWT_KEY || 
+                      process.env.SECRET_KEY ||
+                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
     
-    console.log('🔐 Generating token with JWT_SECRET length:', jwtSecret.length);
+    console.log('🔐 JWT Secret length:', jwtSecret.length);
+    console.log('🔐 JWT Secret first 10 chars:', jwtSecret.substring(0, 10));
 
-    // Generate NEW tokens
+    // Generate tokens
     const token = jwt.sign(
       { id: user._id, email: user.email },
       jwtSecret,
       { expiresIn: '7d' }
     );
 
-    // Use the same secret for refresh token (or create a separate one)
     const refreshToken = jwt.sign(
       { id: user._id },
       jwtSecret,
       { expiresIn: '30d' }
     );
 
-    // Return success with new tokens and user data
+    console.log('✅ Tokens generated successfully');
+
     return res.json({
       success: true,
       message: 'PIN verified successfully',
@@ -4177,7 +4167,6 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
     });
   }
 });
-
 
 
 
