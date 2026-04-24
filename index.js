@@ -3487,6 +3487,9 @@ app.post('/api/users/reset-password', [
   }
 });
 
+
+
+
 // @desc    Set up transaction PIN
 // @route   POST /api/users/set-transaction-pin
 // @access  Private
@@ -3513,16 +3516,7 @@ app.post('/api/users/set-transaction-pin', protect, [
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Debug current state
-    console.log('📊 Before setting PIN:', {
-      hasExistingPin: !!user.transactionPin,
-      pinLength: user.transactionPin ? user.transactionPin.length : 0,
-      transactionPinSet: user.transactionPinSet
-    });
-
-    // Check if PIN is already set
     if (user.transactionPin) {
-      console.log('⚠️ PIN already set for user:', userId);
       return res.status(400).json({ 
         success: false, 
         message: 'Transaction PIN is already set. Use change PIN endpoint instead.',
@@ -3530,26 +3524,28 @@ app.post('/api/users/set-transaction-pin', protect, [
       });
     }
 
-    // ✅ FIX: Save the RAW PIN, let Mongoose pre-save hook hash it
-    user.transactionPin = pin; // Save raw 6-digit PIN
+    // Save the PIN
+    user.transactionPin = pin;
     user.transactionPinSet = true;
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     
-    // This will trigger the pre-save hook in User model
     await user.save();
 
-    console.log(`✅ 6-digit PIN set successfully for user: ${userId}`);
-    console.log('📊 After setting PIN:', {
-      hasPin: !!user.transactionPin,
-      pinLength: user.transactionPin.length,
-      transactionPinSet: user.transactionPinSet
-    });
+    console.log(`✅ PIN set successfully for user: ${userId}`);
 
+    // ✅ CRITICAL FIX: Return the user object with transactionPinSet
     res.json({ 
       success: true, 
       message: '6-digit Transaction PIN set successfully',
-      transactionPinSet: true
+      transactionPinSet: true,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        transactionPinSet: true,
+        biometricEnabled: user.biometricEnabled || false
+      }
     });
     
   } catch (error) {
@@ -3557,7 +3553,6 @@ app.post('/api/users/set-transaction-pin', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 
 
 
