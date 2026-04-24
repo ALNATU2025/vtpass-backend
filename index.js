@@ -458,13 +458,22 @@ const connectDB = async () => {
 connectDB();
 
 // JWT Token Generation - INCREASE EXPIRATION
+// JWT Token Generation - USE SAME SECRET FOR BOTH
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '24h' }); // Changed from 1h to 24h
+  // ✅ Use the same secret as refresh token endpoint
+  const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
+                    process.env.JWT_SECRET || 
+                    'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+  return jwt.sign({ id }, jwtSecret, { expiresIn: '24h' });
 };
 
-// Generate Refresh Token
+// Generate Refresh Token - USE SAME SECRET
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '30d' }); // 30 days
+  // ✅ Use the same secret as generateToken
+  const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
+                    process.env.JWT_SECRET || 
+                    'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+  return jwt.sign({ id }, jwtSecret, { expiresIn: '30d' });
 };
 
 // ✅ Add this check after dotenv.config()
@@ -558,6 +567,7 @@ const autoRefreshToken = async (req, res, next) => {
 
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
 // ==================== PROTECT MIDDLEWARE - WITH CACHING ====================
+// FINAL PROTECT MIDDLEWARE — FIXED VERSION
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
@@ -570,12 +580,17 @@ const protect = async (req, res, next) => {
   }
 
   try {
+    // ✅ Use the SAME secret logic as token generation
+    const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
+                      process.env.JWT_SECRET || 
+                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+    
     // Try cache first - 5 second cache for user data
     const cacheKey = `user_${token.substring(0, 20)}`;
     let user = userCache.get(cacheKey);
     
     if (!user) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, jwtSecret);
       user = await User.findById(decoded.id).select('-password').lean();
       if (user) {
         userCache.set(cacheKey, user, 5); // Cache for 5 seconds
@@ -614,7 +629,7 @@ const protect = async (req, res, next) => {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token',
+        message: 'Invalid token signature',
         code: 'INVALID_TOKEN'
       });
     }
@@ -627,7 +642,6 @@ const protect = async (req, res, next) => {
     });
   }
 };
-
 
 
 
@@ -3058,13 +3072,12 @@ async function resetFailedLoginAttempts(userId) {
 
 
 
-// @desc    Refresh access token - FINAL BULLETPROOF VERSION
+// @desc    Refresh access token - FIXED VERSION
 // @route   POST /api/users/refresh-token
 // @access  Public (MUST be public!)
 app.post('/api/users/refresh-token', async (req, res) => {
   const { refreshToken } = req.body;
 
-  // 1. Must have refresh token
   if (!refreshToken || typeof refreshToken !== 'string') {
     return res.status(401).json({
       success: false,
@@ -3074,10 +3087,16 @@ app.post('/api/users/refresh-token', async (req, res) => {
   }
 
   try {
-    // 2. Verify refresh token
-    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    // ✅ Use the SAME secret logic
+    const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
+                      process.env.JWT_SECRET || 
+                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
     
-    // 3. Find user
+    console.log('🔄 Refresh token verification');
+    
+    // Verify refresh token
+    const decoded = jwt.verify(refreshToken, jwtSecret);
+    
     const user = await User.findById(decoded.id);
     if (!user) {
       return res.status(401).json({
@@ -3087,7 +3106,6 @@ app.post('/api/users/refresh-token', async (req, res) => {
       });
     }
 
-    // 4. CRITICAL: Compare stored refresh token
     if (user.refreshToken !== refreshToken) {
       console.log('Invalid refresh token attempt for user:', user.email);
       return res.status(401).json({
@@ -3097,17 +3115,15 @@ app.post('/api/users/refresh-token', async (req, res) => {
       });
     }
 
-    // 5. Generate new tokens
+    // Generate new tokens using the SAME secret
     const newAccessToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
-    // 6. Update refresh token in DB (token rotation)
     user.refreshToken = newRefreshToken;
     await user.save();
 
     console.log('Token refreshed successfully for:', user.email);
 
-    // 7. Send new tokens
     res.json({
       success: true,
       message: 'Token refreshed successfully',
@@ -3135,12 +3151,11 @@ app.post('/api/users/refresh-token', async (req, res) => {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        message: 'Invalid refresh token',
+        message: 'Invalid refresh token signature. Please login again.',
         code: 'INVALID_REFRESH_TOKEN'
       });
     }
 
-    // Any other error
     return res.status(401).json({
       success: false,
       message: 'Refresh token invalid',
@@ -3148,6 +3163,10 @@ app.post('/api/users/refresh-token', async (req, res) => {
     });
   }
 });
+
+
+
+
 
 // @desc    Logout user
 // @route   POST /api/users/logout
