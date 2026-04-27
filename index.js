@@ -3576,8 +3576,12 @@ app.post('/api/users/set-transaction-pin', protect, [
       });
     }
 
-    // Save the PIN
-    user.transactionPin = pin;
+    // ✅ FIX: Hash the PIN before saving
+    const salt = await bcrypt.genSalt(12);
+    const hashedPin = await bcrypt.hash(pin, salt);
+    
+    // Save the HASHED PIN
+    user.transactionPin = hashedPin;  // ← CHANGE THIS LINE
     user.transactionPinSet = true;
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
@@ -3586,7 +3590,6 @@ app.post('/api/users/set-transaction-pin', protect, [
 
     console.log(`✅ PIN set successfully for user: ${userId}`);
 
-    // ✅ CRITICAL FIX: Return the user object with transactionPinSet
     res.json({ 
       success: true, 
       message: '6-digit Transaction PIN set successfully',
