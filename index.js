@@ -129,23 +129,24 @@ setInterval(() => {
   }
 }, 30000);
 
-app.options('/api/users/set-transaction-pin', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-refresh-token');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.sendStatus(204);
-});
+
 
 // 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-refresh-token', 'x-commission-usage', 'Transaction-PIN'],
-  credentials: true,
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
+// FIXED CORS CONFIGURATION - COPY THIS EXACTLY
+app.use((req, res, next) => {
+  // Allow ALL origins for web
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-refresh-token, x-commission-usage, Transaction-PIN, Accept, Origin, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight requests immediately
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 // 6. ADD REQUEST LOGGING FOR DEBUGGING
 app.use((req, res, next) => {
