@@ -2527,7 +2527,8 @@ app.post('/api/users/register', [
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // 6. Create user with referral tracking
-       const user = new User({
+          // 6. Create user with referral tracking - NO VIRTUAL ACCOUNT CREATED HERE
+    const user = new User({
       fullName: fullName.trim(),
       email: normalizedEmail,
       phone: phone.trim(),
@@ -2545,13 +2546,8 @@ app.post('/api/users/register', [
       isAdmin: false,
       isActive: true,
       emailVerified: true,
-        virtualAccount: {
-        assigned: false,
-        bankName: null,
-        accountNumber: null,
-        accountName: null,
-        reference: `PENDING_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-      }
+      // CRITICAL: Set virtualAccount to null - no virtual account during registration
+      virtualAccount: null
     });
 
     const newUser = await user.save({ session });
@@ -2685,71 +2681,7 @@ app.post('/api/users/register', [
     });
 
     // 14. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY
-    setTimeout(async () => {
-      try {
-        console.log(`🔄 [REGISTER-BG] Creating virtual account for: ${newUser.email}`);
-        
-        const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
-        const nameParts = newUser.fullName.trim().split(' ');
-        const firstName = nameParts[0];
-        const lastName = nameParts.slice(1).join(' ') || firstName;
-        
-        const response = await axios.post(
-          `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
-          {
-            userId: newUser._id.toString(),
-            email: newUser.email,
-            firstName: firstName,
-            lastName: lastName,
-            phone: newUser.phone,
-            preferredBank: 'wema-bank'
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            timeout: 30000
-          }
-        );
-        
-        if (response.data.success) {
-          console.log(`✅ [REGISTER-BG] Virtual account created successfully for ${newUser.email}`);
-          
-                    await User.findByIdAndUpdate(newUser._id, {
-            'virtualAccount.assigned': true,
-            'virtualAccount.bankName': response.data.bankName,
-            'virtualAccount.accountNumber': response.data.accountNumber,
-            'virtualAccount.accountName': response.data.accountName,
-            'virtualAccount.reference': response.data.customerCode || `REF_${Date.now()}`
-          });
-          
-          console.log(`💾 [REGISTER-BG] Updated user ${newUser.email} with virtual account details`);
-          
-          // Create success notification
-          try {
-            await Notification.create({
-              recipient: newUser._id,
-              title: "Virtual Account Created! 🏦",
-              message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
-              type: 'account',
-              isRead: false,
-              metadata: {
-                event: 'virtual_account_created',
-                accountNumber: response.data.accountNumber,
-                bankName: response.data.bankName,
-                timestamp: new Date()
-              }
-            });
-          } catch (notificationError) {
-            console.error('❌ Error creating virtual account notification:', notificationError);
-          }
-        }
-        
-      } catch (error) {
-        console.error(`❌ [REGISTER-BG] Failed to create virtual account:`, error.message);
-      }
-    }, 5000);
+   
     
   } catch (error) {
     await session.abortTransaction();
@@ -2780,6 +2712,104 @@ app.post('/api/users/register', [
       success: false, 
       message: 'Registration failed. Please try again.',
       slogan: 'Smart Life, Fast Pay'
+    });
+  }
+});
+
+
+// @desc    Create virtual account for user (called when user wants to fund wallet)
+// @route   POST /api/virtual-account/create
+// @access  Private
+app.post('/api/virtual-account/create', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if virtual account already exists and has account number
+    if (user.virtualAccount && user.virtualAccount.assigned && user.virtualAccount.accountNumber) {
+      return res.json({
+        success: true,
+        message: 'Virtual account already exists',
+        virtualAccount: user.virtualAccount,
+        alreadyExists: true
+      });
+    }
+    
+    console.log(`🔄 Creating virtual account for user: ${user.email}`);
+    
+    const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
+    const nameParts = user.fullName.trim().split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || firstName;
+    
+    const response = await axios.post(
+      `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
+      {
+        userId: user._id.toString(),
+        email: user.email,
+        firstName: firstName,
+        lastName: lastName,
+        phone: user.phone,
+        preferredBank: 'wema-bank'
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    
+    if (response.data.success) {
+      console.log(`✅ Virtual account created successfully for ${user.email}`);
+      
+      user.virtualAccount = {
+        assigned: true,
+        bankName: response.data.bankName,
+        accountNumber: response.data.accountNumber,
+        accountName: response.data.accountName,
+        reference: response.data.customerCode || `REF_${Date.now()}`
+      };
+      
+      await user.save();
+      
+      // Create notification
+      try {
+        await Notification.create({
+          recipient: user._id,
+          title: "Virtual Account Created! 🏦",
+          message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
+          type: 'account',
+          isRead: false,
+          metadata: {
+            event: 'virtual_account_created',
+            accountNumber: response.data.accountNumber,
+            bankName: response.data.bankName
+          }
+        });
+      } catch (notificationError) {
+        console.error('❌ Error creating virtual account notification:', notificationError);
+      }
+      
+      return res.json({
+        success: true,
+        message: 'Virtual account created successfully',
+        virtualAccount: user.virtualAccount
+      });
+    }
+    
+    throw new Error(response.data.message || 'Failed to create virtual account');
+    
+  } catch (error) {
+    console.error('❌ Virtual account creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create virtual account. Please try again later.'
     });
   }
 });
