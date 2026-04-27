@@ -4244,32 +4244,7 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
 
 
 
-// TEMPORARY: Force clear all refresh tokens - Add this BEFORE your 404 handler
-app.post('/api/admin/clear-all-refresh-tokens', protect, async (req, res) => {
-  // Only admin can call this
-  if (!req.user.isAdmin) {
-    return res.status(403).json({ success: false, message: 'Admin access required' });
-  }
-  
-  try {
-    // Clear ALL refresh tokens from the database
-    const result = await User.updateMany(
-      {}, 
-      { $set: { refreshToken: null } }
-    );
-    
-    console.log(`✅ Cleared ${result.modifiedCount} refresh tokens from database`);
-    
-    res.json({
-      success: true,
-      message: `Cleared ${result.modifiedCount} refresh tokens. All users must login again.`,
-      clearedCount: result.modifiedCount
-    });
-  } catch (error) {
-    console.error('Error clearing tokens:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+
 
 
 
