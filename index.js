@@ -5966,7 +5966,20 @@ app.get('/api/transactions/recent', adminProtect, async (req, res) => {
 });
 
 
-
+// DEBUG: Verify JWT secrets are loaded correctly
+app.get('/api/debug/jwt-secrets', (req, res) => {
+  res.json({
+    success: true,
+    jwtSecretConfigured: !!process.env.JWT_SECRET,
+    jwtSecretLength: process.env.JWT_SECRET?.length || 0,
+    jwtSecretPreview: process.env.JWT_SECRET?.substring(0, 20) + '...',
+    refreshSecretConfigured: !!process.env.REFRESH_TOKEN_SECRET,
+    refreshSecretLength: process.env.REFRESH_TOKEN_SECRET?.length || 0,
+    refreshSecretPreview: process.env.REFRESH_TOKEN_SECRET?.substring(0, 20) + '...',
+    environment: process.env.NODE_ENV || 'not set',
+    message: 'Secrets should be 64 hex chars (32 bytes)'
+  });
+});
 
 
 
