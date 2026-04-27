@@ -129,6 +129,14 @@ setInterval(() => {
   }
 }, 30000);
 
+app.options('/api/users/set-transaction-pin', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-refresh-token');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(204);
+});
+
 // 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
 app.use(cors({
   origin: '*',
