@@ -12102,6 +12102,19 @@ app.get('/api/users/referral-stats/:userId', protect, async (req, res) => {
   }
 });
 
+
+// Add this ONE line anywhere in your index.js (before the 404 handler)
+app.get('/api/me', protect, (req, res) => {
+  res.json({
+    userId: req.user._id,
+    email: req.user.email,
+    name: req.user.fullName,
+    balance: req.user.walletBalance
+  });
+});
+
+
+
 // @desc    Debug endpoint to check user status
 // @route   GET /api/debug/user-status
 // @access  Private
