@@ -459,22 +459,33 @@ connectDB();
 
 // JWT Token Generation - INCREASE EXPIRATION
 // JWT Token Generation - USE SAME SECRET FOR BOTH
+// JWT Token Generation - FIXED VERSION
 const generateToken = (id) => {
-  // ✅ Use the same secret as refresh token endpoint
-  const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
-                    process.env.JWT_SECRET || 
-                    'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+  // ✅ Use ONLY JWT_SECRET, not REFRESH_TOKEN_SECRET
+  const jwtSecret = process.env.JWT_SECRET;
+  
+  if (!jwtSecret) {
+    console.error('❌ JWT_SECRET is not set!');
+    throw new Error('JWT_SECRET not configured');
+  }
+  
   return jwt.sign({ id }, jwtSecret, { expiresIn: '24h' });
 };
 
-// Generate Refresh Token - USE SAME SECRET
+// Generate Refresh Token - FIXED VERSION
 const generateRefreshToken = (id) => {
-  // ✅ Use the same secret as generateToken
-  const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
-                    process.env.JWT_SECRET || 
-                    'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
-  return jwt.sign({ id }, jwtSecret, { expiresIn: '30d' });
+  // ✅ Refresh token uses REFRESH_TOKEN_SECRET
+  const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+  
+  if (!refreshSecret) {
+    console.error('❌ REFRESH_TOKEN_SECRET is not set!');
+    throw new Error('REFRESH_TOKEN_SECRET not configured');
+  }
+  
+  return jwt.sign({ id }, refreshSecret, { expiresIn: '30d' });
 };
+
+
 
 // ✅ Add this check after dotenv.config()
 if (!process.env.JWT_SECRET) {
@@ -568,10 +579,12 @@ const autoRefreshToken = async (req, res, next) => {
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
 // ==================== PROTECT MIDDLEWARE - WITH CACHING ====================
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
+// ==================== PROTECT MIDDLEWARE - FIXED VERSION ====================
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
+    console.log('❌ No token provided');
     return res.status(401).json({
       success: false,
       message: 'No token provided. Please log in.',
@@ -580,24 +593,24 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    // ✅ Use the SAME secret logic as token generation
-    const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
-                      process.env.JWT_SECRET || 
-                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+    // ✅ CRITICAL FIX: Use JWT_SECRET for verification (NOT refresh token secret)
+    const jwtSecret = process.env.JWT_SECRET;
     
-    // Try cache first - 5 second cache for user data
-    const cacheKey = `user_${token.substring(0, 20)}`;
-    let user = userCache.get(cacheKey);
-    
-    if (!user) {
-      const decoded = jwt.verify(token, jwtSecret);
-      user = await User.findById(decoded.id).select('-password').lean();
-      if (user) {
-        userCache.set(cacheKey, user, 5); // Cache for 5 seconds
-      }
+    if (!jwtSecret) {
+      console.error('❌ JWT_SECRET not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error'
+      });
     }
     
+    const decoded = jwt.verify(token, jwtSecret);
+    console.log('✅ Token verified for user ID:', decoded.id);
+    
+    const user = await User.findById(decoded.id).select('-password').lean();
+    
     if (!user) {
+      console.log('❌ User not found for ID:', decoded.id);
       return res.status(401).json({ 
         success: false, 
         message: 'User not found', 
@@ -606,6 +619,7 @@ const protect = async (req, res, next) => {
     }
     
     if (!user.isActive) {
+      console.log('❌ Account deactivated for user:', user.email);
       return res.status(401).json({ 
         success: false, 
         message: 'Account deactivated', 
@@ -613,28 +627,30 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // Attach user to request
     req.user = user;
+    req.userId = user._id;
     next();
 
   } catch (error) {
+    console.error('❌ Protect middleware error:', error.name, error.message);
+    
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
-        message: 'Token expired. Please refresh token.',
-        code: 'TOKEN_EXPIRED',
-        requiresRefresh: true
+        message: 'Token expired. Please login again.',
+        code: 'TOKEN_EXPIRED'
       });
     }
 
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token signature',
+        message: 'Invalid token. Please login again.',
         code: 'INVALID_TOKEN'
       });
     }
 
-    console.error('Protect middleware error:', error);
     return res.status(401).json({
       success: false,
       message: 'Authentication failed',
