@@ -3103,15 +3103,22 @@ app.post('/api/users/refresh-token', async (req, res) => {
   }
 
   try {
-    // ✅ Use the SAME secret logic
-    const jwtSecret = process.env.REFRESH_TOKEN_SECRET || 
-                      process.env.JWT_SECRET || 
-                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+    // ✅ CRITICAL FIX: Use ONLY REFRESH_TOKEN_SECRET, no fallback to JWT_SECRET
+    const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
     
-    console.log('🔄 Refresh token verification');
+    if (!refreshSecret) {
+      console.error('❌ REFRESH_TOKEN_SECRET is not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error',
+        code: 'CONFIG_ERROR'
+      });
+    }
     
-    // Verify refresh token
-    const decoded = jwt.verify(refreshToken, jwtSecret);
+    console.log('🔄 Refresh token verification using REFRESH_TOKEN_SECRET');
+    
+    // Verify refresh token with REFRESH_TOKEN_SECRET only
+    const decoded = jwt.verify(refreshToken, refreshSecret);
     
     const user = await User.findById(decoded.id);
     if (!user) {
@@ -3131,7 +3138,7 @@ app.post('/api/users/refresh-token', async (req, res) => {
       });
     }
 
-    // Generate new tokens using the SAME secret
+    // Generate new tokens
     const newAccessToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
@@ -3179,7 +3186,6 @@ app.post('/api/users/refresh-token', async (req, res) => {
     });
   }
 });
-
 
 
 
@@ -4079,6 +4085,7 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 
 // ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
 app.post('/api/auth/verify-pin-for-login', async (req, res) => {
   try {
     const { userId, transactionPin } = req.body;
@@ -4139,27 +4146,42 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       });
     }
 
-    // ✅ PIN SUCCESSFUL
+    // ✅ PIN SUCCESSFUL - Reset failed attempts
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
     await user.save();
 
-    const jwtSecret = process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 
-                      process.env.JWT_KEY || 
-                      process.env.SECRET_KEY ||
-                      'c8fac2b96bddd852f748044385960b0e6fd3d48de9143152e9506b987a140e5d2f97d08ea64ede8ec1e8ca3746fbb4112357eaac6de01308537e0b61500c4ede';
+    // ✅ CRITICAL FIX: Use JWT_SECRET for access token, REFRESH_TOKEN_SECRET for refresh token
+    const jwtSecret = process.env.JWT_SECRET;
+    const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+    
+    if (!jwtSecret || !refreshSecret) {
+      console.error('❌ JWT secrets not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error'
+      });
+    }
 
+    // Create access token with JWT_SECRET (shorter expiry)
     const token = jwt.sign(
       { id: user._id, email: user.email },
       jwtSecret,
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
+    // Create refresh token with REFRESH_TOKEN_SECRET (longer expiry)
     const refreshToken = jwt.sign(
       { id: user._id },
-      jwtSecret,
+      refreshSecret,
       { expiresIn: '30d' }
     );
+
+    // Store refresh token in database
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    console.log(`✅ PIN login successful for user: ${user.email}`);
 
     return res.json({
       success: true,
@@ -4188,7 +4210,6 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
     });
   }
 });
-
 
 
 // Get latest 100 transactions (for admin page)
