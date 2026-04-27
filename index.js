@@ -4578,6 +4578,30 @@ app.get('/api/users/commission-balance', protect, async (req, res) => {
 });
 
 
+// @desc    Get a specific user
+// @route   GET /api/users/:userId
+// @access  Private
+app.get('/api/users/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
 
 
 
@@ -4900,28 +4924,7 @@ app.post('/api/users/upload-profile-image', protect, upload.single('profileImage
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-// @desc    Get a specific user
-// @route   GET /api/users/:userId
-// @access  Private
-app.get('/api/users/:userId', protect, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-    
-    const user = await User.findById(userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    res.json({ success: true, user });
-  } catch (error) {
-    console.error('Error fetching user:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-});
+
 
 
 
