@@ -226,6 +226,7 @@ lastCommissionAwarded: {
 
     
       // Virtual Account fields
+    // Virtual Account fields - REMOVED unique constraints to prevent null duplicate errors
     virtualAccount: {
       assigned: { 
         type: Boolean, 
@@ -237,9 +238,8 @@ lastCommissionAwarded: {
       },
       accountNumber: { 
         type: String, 
-        unique: true, 
-        sparse: true,
-        default: null
+        default: null,
+        index: false
       },
       accountName: { 
         type: String, 
@@ -247,9 +247,8 @@ lastCommissionAwarded: {
       },
       reference: { 
         type: String, 
-        unique: true, 
-        sparse: true,
-        default: null
+        default: null,
+        index: false
       },
     },
   },
