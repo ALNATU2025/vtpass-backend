@@ -202,18 +202,37 @@ setInterval(() => {
 
 // 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
 // FIXED CORS CONFIGURATION - COPY THIS EXACTLY
+a// ==================== COMPLETE CORS FIX ====================
 app.use((req, res, next) => {
-  // Allow ALL origins for web
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-refresh-token, x-commission-usage, Transaction-PIN, Accept, Origin, X-Requested-With');
+  // IMPORTANT: Allow all origins for mobile apps
+  const origin = req.headers.origin;
+  
+  // Allow all origins - mobile apps don't have same-origin policy issues
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD');
+  res.header('Access-Control-Allow-Headers', [
+    'Content-Type',
+    'Authorization', 
+    'x-refresh-token',
+    'x-commission-usage',
+    'Transaction-PIN',
+    'Accept',
+    'Origin',
+    'X-Requested-With',
+    'X-Client-Version',
+    'User-Agent',
+    'x-new-token',
+    'x-new-refresh-token'
+  ].join(', '));
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Max-Age', '86400');
+  res.header('Access-Control-Expose-Headers', 'x-new-token, x-new-refresh-token');
   
   // Handle preflight requests immediately
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
+    return res.status(204).end();
   }
+  
   next();
 });
 
@@ -4849,7 +4868,7 @@ app.get('/api/admin/transaction/:id/receipts', adminProtect, async (req, res) =>
 
 
 
-// ==================== ENHANCED DISPUTE ENDPOINTS ====================
+// ==================== DISPUTE ENDPOINTS - COMPLETE FIXED VERSION ====================
 
 // @desc    Get user's disputes with transaction details
 // @route   GET /api/disputes/my-disputes
@@ -4860,7 +4879,6 @@ app.get('/api/disputes/my-disputes', protect, async (req, res) => {
       .populate('transactionId', 'reference amount type status createdAt')
       .sort({ createdAt: -1 });
     
-    // Get unread count for badge
     const pendingCount = await Dispute.countDocuments({ 
       userId: req.user._id, 
       status: { $in: ['pending', 'under_review'] } 
@@ -4878,6 +4896,7 @@ app.get('/api/disputes/my-disputes', protect, async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Error in my-disputes:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -4890,13 +4909,25 @@ app.post('/api/disputes/create', protect, async (req, res) => {
   session.startTransaction();
   
   try {
+    console.log('📝 CREATE DISPUTE REQUEST:', JSON.stringify(req.body, null, 2));
+    
     const { 
-      transactionId, type, reason, description, amount,
-      expectedResolution, contactedSupport, preferredContactMethod, priority 
+      transactionId, 
+      type, 
+      reason, 
+      description, 
+      amount 
     } = req.body;
     
+    // Validate required fields
+    if (!transactionId || !type || !reason) {
+      throw new Error('Transaction ID, type, and reason are required');
+    }
+    
     const transaction = await Transaction.findById(transactionId).session(session);
-    if (!transaction) throw new Error('Transaction not found');
+    if (!transaction) {
+      throw new Error('Transaction not found');
+    }
     
     // Verify user owns this transaction
     if (transaction.userId.toString() !== req.user._id.toString()) {
@@ -4913,7 +4944,7 @@ app.post('/api/disputes/create', protect, async (req, res) => {
       throw new Error('You already have an open dispute for this transaction');
     }
     
-    // Create dispute with enhanced fields
+    // Create dispute
     const dispute = new Dispute({
       transactionId,
       userId: req.user._id,
@@ -4926,71 +4957,57 @@ app.post('/api/disputes/create', protect, async (req, res) => {
         note: `Dispute created by user: ${req.user.fullName}`,
         adminId: null,
         createdAt: new Date()
-      }],
-      // Enhanced fields
-      expectedResolution: expectedResolution || '',
-      contactedSupport: contactedSupport || false,
-      preferredContactMethod: preferredContactMethod || 'email',
-      priority: priority || 'medium'
+      }]
     });
     
     await dispute.save({ session });
     await session.commitTransaction();
     
+    console.log('✅ Dispute created successfully:', dispute._id);
+    
     // Notify admins
-    const adminUsers = await User.find({ isAdmin: true }).select('_id');
-    for (const admin of adminUsers) {
-      await Notification.create({
-        recipient: admin._id,
-        title: "🔄 New Dispute Filed",
-        message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
-        type: 'dispute',
-        isRead: false,
-        metadata: { 
-          disputeId: dispute._id, 
-          transactionId: transaction._id,
-          priority: priority || 'medium'
-        }
-      });
+    try {
+      const adminUsers = await User.find({ isAdmin: true }).select('_id');
+      for (const admin of adminUsers) {
+        await Notification.create({
+          recipient: admin._id,
+          title: "🔄 New Dispute Filed",
+          message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
+          type: 'dispute',
+          isRead: false,
+          metadata: { 
+            disputeId: dispute._id, 
+            transactionId: transaction._id
+          }
+        });
+      }
+    } catch (notifError) {
+      console.error('Admin notification error:', notifError);
     }
     
     res.json({
       success: true,
       message: 'Dispute filed successfully. Our team will review it within 24-48 hours.',
-      dispute
+      dispute: {
+        _id: dispute._id,
+        transactionId: dispute.transactionId,
+        type: dispute.type,
+        reason: dispute.reason,
+        description: dispute.description,
+        amount: dispute.amount,
+        status: dispute.status,
+        createdAt: dispute.createdAt
+      }
     });
   } catch (error) {
     await session.abortTransaction();
-    res.status(400).json({ success: false, message: error.message });
+    console.error('❌ Create dispute error:', error.message);
+    res.status(400).json({ 
+      success: false, 
+      message: error.message 
+    });
   } finally {
     session.endSession();
-  }
-});
-
-// @desc    Get dispute statistics for admin dashboard
-// @route   GET /api/admin/dispute-stats
-// @access  Private/Admin
-app.get('/api/admin/dispute-stats', adminProtect, async (req, res) => {
-  try {
-    const stats = {
-      total: await Dispute.countDocuments(),
-      pending: await Dispute.countDocuments({ status: 'pending' }),
-      underReview: await Dispute.countDocuments({ status: 'under_review' }),
-      investigating: await Dispute.countDocuments({ status: 'investigating' }),
-      resolved: await Dispute.countDocuments({ status: 'resolved' }),
-      rejected: await Dispute.countDocuments({ status: 'rejected' }),
-      escalated: await Dispute.countDocuments({ status: 'escalated' }),
-      byPriority: {
-        urgent: await Dispute.countDocuments({ priority: 'urgent', status: { $nin: ['resolved', 'rejected'] } }),
-        high: await Dispute.countDocuments({ priority: 'high', status: { $nin: ['resolved', 'rejected'] } }),
-        medium: await Dispute.countDocuments({ priority: 'medium', status: { $nin: ['resolved', 'rejected'] } }),
-        low: await Dispute.countDocuments({ priority: 'low', status: { $nin: ['resolved', 'rejected'] } })
-      }
-    };
-    
-    res.json({ success: true, stats });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -5016,9 +5033,130 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
       } : null
     });
   } catch (error) {
+    console.error('Check dispute error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+
+
+
+
+
+
+
+
+
+
+
+// ==================== SCREENSHOT UPLOAD ENDPOINT ====================
+const multer = require('multer');
+const path = require('path');
+
+// Configure multer for screenshot uploads
+const screenshotStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, 'uploads', 'disputes');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'dispute-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const uploadScreenshot = multer({ 
+  storage: screenshotStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error('Only image files are allowed'));
+  }
+});
+
+// Upload evidence for dispute
+app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('screenshot'), async (req, res) => {
+  try {
+    const { transactionId, type } = req.body;
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    // Find the dispute and add evidence
+    const dispute = await Dispute.findOneAndUpdate(
+      { 
+        transactionId: transactionId,
+        userId: req.user._id 
+      },
+      { 
+        $push: { 
+          evidence: `/uploads/disputes/${file.filename}` 
+        } 
+      },
+      { new: true }
+    );
+    
+    if (!dispute) {
+      // If no dispute found, create one with evidence
+      const transaction = await Transaction.findById(transactionId);
+      if (!transaction) {
+        return res.status(404).json({ success: false, message: 'Transaction not found' });
+      }
+      
+      const newDispute = new Dispute({
+        transactionId: transactionId,
+        userId: req.user._id,
+        type: 'bank_transfer_proof',
+        reason: 'Bank transfer screenshot uploaded',
+        amount: transaction.amount,
+        status: 'pending',
+        evidence: [`/uploads/disputes/${file.filename}`],
+        adminNotes: [{
+          note: `Evidence uploaded by user: ${req.user.fullName}`,
+          adminId: null,
+          createdAt: new Date()
+        }]
+      });
+      
+      await newDispute.save();
+      
+      return res.json({
+        success: true,
+        message: 'Evidence uploaded and dispute created',
+        evidencePath: `/uploads/disputes/${file.filename}`
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Evidence uploaded successfully',
+      evidencePath: `/uploads/disputes/${file.filename}`
+    });
+    
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+
+
+
+
+
 
 // @desc    Get all disputes with filters (Admin)
 // @route   GET /api/admin/disputes
