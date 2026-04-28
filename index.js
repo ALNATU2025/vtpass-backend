@@ -202,7 +202,7 @@ setInterval(() => {
 
 // 5. ADD CORS FIX FOR MOBILE APPS (app is now defined!)
 // FIXED CORS CONFIGURATION - COPY THIS EXACTLY
-a// ==================== COMPLETE CORS FIX ====================
+// ==================== COMPLETE CORS FIX ====================
 app.use((req, res, next) => {
   // IMPORTANT: Allow all origins for mobile apps
   const origin = req.headers.origin;
