@@ -4347,53 +4347,96 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 // ==================== ADMIN REFUND & DISPUTE ENDPOINTS ====================
 
 // GET all pending/failed transactions
+// GET all pending/failed transactions - FIXED to exclude resolved ones
 app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
-    let query = { status: { $in: ['Pending', 'Failed'] } };
+    // Base query for pending/failed transactions
+    let query = { 
+      status: { $in: ['Pending', 'Failed'] },
+      // Exclude transactions that have been refunded
+      status: { $ne: 'Refunded' },
+      // Exclude transactions that have been resolved via dispute
+      $or: [
+        { isResolved: { $ne: true } },
+        { isResolved: { $exists: false } }
+      ]
+    };
+    
     if (status && status !== 'all') {
       query.status = status === 'pending' ? 'Pending' : 'Failed';
     }
     
-    const transactions = await Transaction.find(query)
+    // Get all pending/failed transactions
+    let transactions = await Transaction.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .populate('userId', 'fullName email phone');
     
-    const transactionsWithDisputes = await Promise.all(transactions.map(async (tx) => {
-      const disputes = await Dispute.find({ 
+    // Filter out transactions that have resolved disputes or refunds
+    const transactionsWithStatus = await Promise.all(transactions.map(async (tx) => {
+      const txObj = tx.toObject();
+      
+      // Check for resolved disputes
+      const resolvedDispute = await Dispute.findOne({ 
         transactionId: tx._id, 
-        status: { $in: ['pending', 'under_review'] } 
+        status: 'resolved' 
       });
+      
+      // Check for completed refunds
+      const completedRefund = await Refund.findOne({ 
+        originalTransactionId: tx._id, 
+        status: 'completed' 
+      });
+      
+      // Check for pending/open disputes
+      const openDisputes = await Dispute.find({ 
+        transactionId: tx._id, 
+        status: { $in: ['pending', 'under_review', 'investigating'] } 
+      });
+      
+      // Check for pending refunds
       const pendingRefund = await Refund.findOne({ 
         originalTransactionId: tx._id, 
         status: { $in: ['pending', 'approved'] } 
       });
-      const txObj = tx.toObject();
-      txObj.disputes = disputes;
-      txObj.hasPendingRefund = !!pendingRefund;
-      txObj.canUpdate = disputes.length === 0 && !pendingRefund;
+      
+      // Mark if transaction has been resolved
+      const isResolved = !!(resolvedDispute || completedRefund);
+      const hasOpenDispute = openDisputes.length > 0;
+      const hasPendingRefund = !!pendingRefund;
+      
+      txObj.disputes = openDisputes;
+      txObj.hasPendingRefund = hasPendingRefund;
+      txObj.hasOpenDispute = hasOpenDispute;
+      txObj.isResolved = isResolved;
+      txObj.canUpdate = !isResolved && !hasOpenDispute && !hasPendingRefund;
+      txObj.shouldShowInList = !isResolved; // Only show if NOT resolved
+      
       return txObj;
     }));
     
+    // Filter out resolved transactions from the list
+    const filteredTransactions = transactionsWithStatus.filter(tx => !tx.isResolved);
+    
     const total = await Transaction.countDocuments(query);
-    const pendingCount = await Transaction.countDocuments({ status: 'Pending' });
-    const failedCount = await Transaction.countDocuments({ status: 'Failed' });
+    const pendingCount = await Transaction.countDocuments({ status: 'Pending', isResolved: { $ne: true } });
+    const failedCount = await Transaction.countDocuments({ status: 'Failed', isResolved: { $ne: true } });
     const totalAmountAgg = await Transaction.aggregate([
-      { $match: { status: { $in: ['Pending', 'Failed'] } } },
+      { $match: { status: { $in: ['Pending', 'Failed'] }, isResolved: { $ne: true } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     
     res.json({
       success: true,
-      transactions: transactionsWithDisputes,
+      transactions: filteredTransactions,
       pagination: { 
-        total, 
+        total: filteredTransactions.length, 
         page: parseInt(page), 
-        pages: Math.ceil(total / limit), 
+        pages: Math.ceil(filteredTransactions.length / limit), 
         limit: parseInt(limit) 
       },
       stats: { 
@@ -4405,6 +4448,68 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
   } catch (error) {
     console.error('Error in pending-failed-transactions:', error);
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+// @desc    Mark transaction as resolved (when refunded or status updated)
+// @route   POST /api/admin/transaction/:id/mark-resolved
+// @access  Private/Admin
+app.post('/api/admin/transaction/:id/mark-resolved', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { id } = req.params;
+    const { resolutionType, note } = req.body; // resolutionType: 'refund', 'status_update', 'manual'
+    
+    const transaction = await Transaction.findById(id).session(session);
+    if (!transaction) {
+      throw new Error('Transaction not found');
+    }
+    
+    // Mark transaction as resolved
+    transaction.isResolved = true;
+    transaction.resolvedAt = new Date();
+    transaction.resolvedBy = req.user._id;
+    transaction.resolutionType = resolutionType || 'manual';
+    transaction.resolutionNote = note || `Resolved by admin: ${req.user.fullName}`;
+    
+    await transaction.save({ session });
+    
+    // If there's an open dispute, also mark it as resolved
+    const openDispute = await Dispute.findOne({
+      transactionId: transaction._id,
+      status: { $in: ['pending', 'under_review', 'investigating'] }
+    }).session(session);
+    
+    if (openDispute) {
+      openDispute.status = 'resolved';
+      openDispute.resolution = note || 'Transaction resolved by admin';
+      openDispute.resolvedAt = new Date();
+      openDispute.resolvedBy = req.user._id;
+      await openDispute.save({ session });
+    }
+    
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: 'Transaction marked as resolved',
+      transaction: {
+        _id: transaction._id,
+        status: transaction.status,
+        isResolved: transaction.isResolved,
+        resolvedAt: transaction.resolvedAt
+      }
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error marking transaction as resolved:', error);
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
   }
 });
 
@@ -4574,6 +4679,7 @@ app.post('/api/admin/dispute/resolve/:disputeId', adminProtect, async (req, res)
 });
 
 // POST update transaction status
+// POST update transaction status - UPDATED to mark as resolved
 app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -4585,7 +4691,7 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     const transaction = await Transaction.findById(id).session(session);
     if (!transaction) throw new Error('Transaction not found');
     
-    const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending'];
+    const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending', 'Refunded'];
     const normalizedStatus = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).toLowerCase();
     if (!validStatuses.includes(normalizedStatus)) throw new Error('Invalid status value');
     
@@ -4603,6 +4709,16 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     
     const oldStatus = transaction.status;
     transaction.status = normalizedStatus;
+    
+    // ✅ NEW: Mark as resolved if status is Successful or Refunded
+    if (normalizedStatus === 'Successful' || normalizedStatus === 'Refunded') {
+      transaction.isResolved = true;
+      transaction.resolvedAt = new Date();
+      transaction.resolvedBy = req.user._id;
+      transaction.resolutionType = 'status_update';
+      transaction.resolutionNote = adminNote || `Status updated to ${normalizedStatus} by admin`;
+    }
+    
     if (adminNote) transaction.adminNote = adminNote;
     if (resolutionReference) transaction.resolutionReference = resolutionReference;
     transaction.updatedAt = new Date();
@@ -4649,7 +4765,8 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       success: true, 
       message: `Transaction status updated to ${normalizedStatus}`, 
       transaction, 
-      receipt: receiptData 
+      receipt: receiptData,
+      isResolved: transaction.isResolved === true
     });
   } catch (error) {
     await session.abortTransaction();
@@ -4658,6 +4775,7 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     session.endSession();
   }
 });
+
 
 // GET all refunds
 app.get('/api/admin/refunds', adminProtect, async (req, res) => {
