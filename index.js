@@ -4347,29 +4347,36 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 // ==================== ADMIN REFUND & DISPUTE ENDPOINTS ====================
 
 // GET all pending/failed transactions
-// GET all pending/failed transactions - SHOW ALL, then filter resolved in frontend if needed
+// GET all pending/failed transactions - FIXED to include ALL types
 app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, page = 1, limit = 50 } = req.query;
     const skip = (page - 1) * limit;
     
-    // Build query for ALL pending and failed transactions (including resolved)
+    // Build query for ALL pending and failed transactions (case insensitive)
     let query = {
-      status: { $in: ['Pending', 'Failed'] }
+      $or: [
+        { status: { $in: ['Pending', 'pending', 'PENDING'] } },
+        { status: { $in: ['Failed', 'failed', 'FAILED'] } }
+      ]
     };
     
     if (status && status !== 'all') {
-      query.status = status === 'pending' ? 'Pending' : 'Failed';
+      if (status === 'pending') {
+        query = { status: { $in: ['Pending', 'pending', 'PENDING'] } };
+      } else if (status === 'failed') {
+        query = { status: { $in: ['Failed', 'failed', 'FAILED'] } };
+      }
     }
     
-    // Get ALL pending/failed transactions without filtering resolved
+    // Get ALL pending/failed transactions without filtering
     let transactions = await Transaction.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .populate('userId', 'fullName email phone');
     
-    // Check each transaction for disputes and refund status
+    // Process each transaction
     const transactionsWithStatus = await Promise.all(transactions.map(async (tx) => {
       const txObj = tx.toObject();
       
@@ -4397,7 +4404,6 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
         status: { $in: ['pending', 'approved'] } 
       });
       
-      // Mark if transaction has been resolved
       const isResolved = !!(resolvedDispute || completedRefund || tx.isResolved === true);
       const hasOpenDispute = openDisputes.length > 0;
       const hasPendingRefund = !!pendingRefund;
@@ -4407,34 +4413,36 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
       txObj.hasOpenDispute = hasOpenDispute;
       txObj.isResolved = isResolved;
       txObj.canUpdate = !isResolved && !hasOpenDispute && !hasPendingRefund;
-      // Keep all transactions - don't filter here
+      
+      // Format type for display
+      if (txObj.type === 'wallet_funding') {
+        txObj.type = 'Wallet Funding';
+      }
       
       return txObj;
     }));
     
-    // Calculate ALL stats (including resolved)
-    const total = await Transaction.countDocuments({ status: { $in: ['Pending', 'Failed'] } });
-    const pendingCount = await Transaction.countDocuments({ status: 'Pending' });
-    const failedCount = await Transaction.countDocuments({ status: 'Failed' });
+    // Calculate ALL stats
+    const allPending = await Transaction.countDocuments({ status: { $in: ['Pending', 'pending', 'PENDING'] } });
+    const allFailed = await Transaction.countDocuments({ status: { $in: ['Failed', 'failed', 'FAILED'] } });
     const totalAmountAgg = await Transaction.aggregate([
-      { $match: { status: { $in: ['Pending', 'Failed'] } } },
+      { $match: { $or: [{ status: 'Pending' }, { status: 'Failed' }, { status: 'pending' }, { status: 'failed' }] } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     
     res.json({
       success: true,
-      transactions: transactionsWithStatus, // Return ALL transactions
+      transactions: transactionsWithStatus,
       pagination: { 
-        total: total, 
+        total: allPending + allFailed, 
         page: parseInt(page), 
-        pages: Math.ceil(total / limit), 
+        pages: Math.ceil((allPending + allFailed) / limit), 
         limit: parseInt(limit) 
       },
       stats: { 
-        pending: pendingCount, 
-        failed: failedCount, 
-        totalAmount: totalAmountAgg[0]?.total || 0,
-        resolved: transactionsWithStatus.filter(tx => tx.isResolved).length
+        pending: allPending, 
+        failed: allFailed, 
+        totalAmount: totalAmountAgg[0]?.total || 0 
       }
     });
   } catch (error) {
@@ -4442,7 +4450,6 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
 
 
 
