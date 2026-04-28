@@ -4348,87 +4348,121 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // GET all pending/failed transactions
 // GET all pending/failed transactions - FIXED to include ALL types
+// GET all pending/failed transactions - FIXED to include failed
 app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res) => {
   try {
     const { status, page = 1, limit = 50 } = req.query;
     const skip = (page - 1) * limit;
     
-    // Build query for ALL pending and failed transactions (case insensitive)
-    let query = {
-      $or: [
-        { status: { $in: ['Pending', 'pending', 'PENDING'] } },
-        { status: { $in: ['Failed', 'failed', 'FAILED'] } }
-      ]
-    };
+    console.log('🔍 Received request with status filter:', status);
+    
+    // Build query - include BOTH pending and failed
+    let query = {};
     
     if (status && status !== 'all') {
+      // If specific filter is applied
       if (status === 'pending') {
         query = { status: { $in: ['Pending', 'pending', 'PENDING'] } };
       } else if (status === 'failed') {
         query = { status: { $in: ['Failed', 'failed', 'FAILED'] } };
       }
+    } else {
+      // Default: return BOTH pending AND failed
+      query = {
+        $or: [
+          { status: { $in: ['Pending', 'pending', 'PENDING'] } },
+          { status: { $in: ['Failed', 'failed', 'FAILED'] } }
+        ]
+      };
     }
     
-    // Get ALL pending/failed transactions without filtering
+    console.log('🔍 MongoDB Query:', JSON.stringify(query));
+    
+    // Get transactions with user population
     let transactions = await Transaction.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('userId', 'fullName email phone');
+      .populate('userId', 'fullName email phone isAdmin');
     
-    // Process each transaction
+    console.log(`📊 Found ${transactions.length} transactions matching query`);
+    
+    // Process transactions to add user data and display info
     const transactionsWithStatus = await Promise.all(transactions.map(async (tx) => {
       const txObj = tx.toObject();
       
-      // Check for resolved disputes
-      const resolvedDispute = await Dispute.findOne({ 
-        transactionId: tx._id, 
-        status: 'resolved' 
-      });
+      // Add user data from populated userId
+      if (tx.userId) {
+        txObj.user = {
+          _id: tx.userId._id,
+          fullName: tx.userId.fullName || 'Unknown User',
+          email: tx.userId.email || 'No email',
+          phone: tx.userId.phone || 'N/A',
+          isAdmin: tx.userId.isAdmin || false
+        };
+      } else {
+        txObj.user = {
+          fullName: 'Unknown User',
+          email: 'No email',
+          phone: 'N/A',
+          isAdmin: false
+        };
+      }
       
-      // Check for completed refunds
-      const completedRefund = await Refund.findOne({ 
-        originalTransactionId: tx._id, 
-        status: 'completed' 
-      });
+      // Fix type for display
+      if (txObj.type === 'wallet_funding') {
+        txObj.type = 'Wallet Funding';
+      }
       
-      // Check for pending/open disputes
+      // Normalize status for display
+      const statusLower = (txObj.status || '').toLowerCase();
+      if (statusLower === 'pending') {
+        txObj.status = 'Pending';
+      } else if (statusLower === 'failed') {
+        txObj.status = 'Failed';
+      }
+      
+      // Check for disputes and refunds
       const openDisputes = await Dispute.find({ 
         transactionId: tx._id, 
         status: { $in: ['pending', 'under_review', 'investigating'] } 
       });
       
-      // Check for pending refunds
       const pendingRefund = await Refund.findOne({ 
         originalTransactionId: tx._id, 
         status: { $in: ['pending', 'approved'] } 
       });
       
-      const isResolved = !!(resolvedDispute || completedRefund || tx.isResolved === true);
-      const hasOpenDispute = openDisputes.length > 0;
-      const hasPendingRefund = !!pendingRefund;
-      
       txObj.disputes = openDisputes;
-      txObj.hasPendingRefund = hasPendingRefund;
-      txObj.hasOpenDispute = hasOpenDispute;
-      txObj.isResolved = isResolved;
-      txObj.canUpdate = !isResolved && !hasOpenDispute && !hasPendingRefund;
+      txObj.hasPendingRefund = !!pendingRefund;
+      txObj.hasOpenDispute = openDisputes.length > 0;
+      txObj.isResolved = tx.isResolved === true;
       
-      // Format type for display
-      if (txObj.type === 'wallet_funding') {
-        txObj.type = 'Wallet Funding';
-      }
+      console.log(`📝 Transaction ${txObj._id}: status=${txObj.status}, original=${tx.status}`);
       
       return txObj;
     }));
     
-    // Calculate ALL stats
-    const allPending = await Transaction.countDocuments({ status: { $in: ['Pending', 'pending', 'PENDING'] } });
-    const allFailed = await Transaction.countDocuments({ status: { $in: ['Failed', 'failed', 'FAILED'] } });
+    // Get accurate counts from database
+    const allPending = await Transaction.countDocuments({ 
+      status: { $in: ['Pending', 'pending', 'PENDING'] } 
+    });
+    const allFailed = await Transaction.countDocuments({ 
+      status: { $in: ['Failed', 'failed', 'FAILED'] } 
+    });
     const totalAmountAgg = await Transaction.aggregate([
-      { $match: { $or: [{ status: 'Pending' }, { status: 'Failed' }, { status: 'pending' }, { status: 'failed' }] } },
+      { 
+        $match: { 
+          $or: [
+            { status: { $in: ['Pending', 'pending', 'PENDING'] } },
+            { status: { $in: ['Failed', 'failed', 'FAILED'] } }
+          ] 
+        } 
+      },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
+    
+    console.log(`📊 Final stats - Pending: ${allPending}, Failed: ${allFailed}`);
     
     res.json({
       success: true,
