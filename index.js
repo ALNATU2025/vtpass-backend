@@ -4347,35 +4347,29 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 // ==================== ADMIN REFUND & DISPUTE ENDPOINTS ====================
 
 // GET all pending/failed transactions
-// GET all pending/failed transactions - FIXED to exclude resolved ones
-// GET all pending/failed transactions - FIXED to exclude resolved ones
+// GET all pending/failed transactions - SHOW ALL, then filter resolved in frontend if needed
 app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
     
-    // Build query - exclude resolved transactions
+    // Build query for ALL pending and failed transactions (including resolved)
     let query = {
-      status: { $in: ['Pending', 'Failed'] },
-      // Exclude transactions that have been resolved
-      $or: [
-        { isResolved: { $ne: true } },
-        { isResolved: { $exists: false } }
-      ]
+      status: { $in: ['Pending', 'Failed'] }
     };
     
     if (status && status !== 'all') {
       query.status = status === 'pending' ? 'Pending' : 'Failed';
     }
     
-    // Get all pending/failed transactions
+    // Get ALL pending/failed transactions without filtering resolved
     let transactions = await Transaction.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .populate('userId', 'fullName email phone');
     
-    // Check each transaction for disputes and refunds
+    // Check each transaction for disputes and refund status
     const transactionsWithStatus = await Promise.all(transactions.map(async (tx) => {
       const txObj = tx.toObject();
       
@@ -4413,53 +4407,34 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
       txObj.hasOpenDispute = hasOpenDispute;
       txObj.isResolved = isResolved;
       txObj.canUpdate = !isResolved && !hasOpenDispute && !hasPendingRefund;
-      txObj.shouldShowInList = !isResolved;
+      // Keep all transactions - don't filter here
       
       return txObj;
     }));
     
-    // Filter out resolved transactions
-    const filteredTransactions = transactionsWithStatus.filter(tx => !tx.isResolved);
-    
-    // Calculate stats (excluding resolved)
-    const total = await Transaction.countDocuments({
-      status: { $in: ['Pending', 'Failed'] },
-      isResolved: { $ne: true }
-    });
-    
-    const pendingCount = await Transaction.countDocuments({ 
-      status: 'Pending', 
-      isResolved: { $ne: true } 
-    });
-    
-    const failedCount = await Transaction.countDocuments({ 
-      status: 'Failed', 
-      isResolved: { $ne: true } 
-    });
-    
+    // Calculate ALL stats (including resolved)
+    const total = await Transaction.countDocuments({ status: { $in: ['Pending', 'Failed'] } });
+    const pendingCount = await Transaction.countDocuments({ status: 'Pending' });
+    const failedCount = await Transaction.countDocuments({ status: 'Failed' });
     const totalAmountAgg = await Transaction.aggregate([
-      { 
-        $match: { 
-          status: { $in: ['Pending', 'Failed'] }, 
-          isResolved: { $ne: true } 
-        } 
-      },
+      { $match: { status: { $in: ['Pending', 'Failed'] } } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     
     res.json({
       success: true,
-      transactions: filteredTransactions,
+      transactions: transactionsWithStatus, // Return ALL transactions
       pagination: { 
-        total: filteredTransactions.length, 
+        total: total, 
         page: parseInt(page), 
-        pages: Math.ceil(filteredTransactions.length / limit), 
+        pages: Math.ceil(total / limit), 
         limit: parseInt(limit) 
       },
       stats: { 
         pending: pendingCount, 
         failed: failedCount, 
-        totalAmount: totalAmountAgg[0]?.total || 0 
+        totalAmount: totalAmountAgg[0]?.total || 0,
+        resolved: transactionsWithStatus.filter(tx => tx.isResolved).length
       }
     });
   } catch (error) {
