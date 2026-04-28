@@ -98,6 +98,20 @@ const transactionSchema = new mongoose.Schema({
         message: String
     },
 
+// Add these fields to your Transaction schema
+isResolved: { 
+  type: Boolean, 
+  default: false,
+  index: true 
+},
+resolvedAt: Date,
+resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+resolutionType: { 
+  type: String, 
+  enum: ['refund', 'status_update', 'manual', 'dispute_resolved'] 
+},
+resolutionNote: String,
+
 
 
 
