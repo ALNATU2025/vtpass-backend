@@ -4849,9 +4849,9 @@ app.get('/api/admin/transaction/:id/receipts', adminProtect, async (req, res) =>
 
 
 
-// ==================== USER DISPUTE ENDPOINTS ====================
+// ==================== ENHANCED DISPUTE ENDPOINTS ====================
 
-// @desc    Get user's own disputes
+// @desc    Get user's disputes with transaction details
 // @route   GET /api/disputes/my-disputes
 // @access  Private
 app.get('/api/disputes/my-disputes', protect, async (req, res) => {
@@ -4860,16 +4860,29 @@ app.get('/api/disputes/my-disputes', protect, async (req, res) => {
       .populate('transactionId', 'reference amount type status createdAt')
       .sort({ createdAt: -1 });
     
+    // Get unread count for badge
+    const pendingCount = await Dispute.countDocuments({ 
+      userId: req.user._id, 
+      status: { $in: ['pending', 'under_review'] } 
+    });
+    
     res.json({
       success: true,
-      disputes: disputes
+      disputes: disputes,
+      pendingCount: pendingCount,
+      stats: {
+        total: disputes.length,
+        pending: await Dispute.countDocuments({ userId: req.user._id, status: 'pending' }),
+        resolved: await Dispute.countDocuments({ userId: req.user._id, status: 'resolved' }),
+        rejected: await Dispute.countDocuments({ userId: req.user._id, status: 'rejected' })
+      }
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// @desc    User creates a dispute
+// @desc    Create dispute (User)
 // @route   POST /api/disputes/create
 // @access  Private
 app.post('/api/disputes/create', protect, async (req, res) => {
@@ -4877,7 +4890,10 @@ app.post('/api/disputes/create', protect, async (req, res) => {
   session.startTransaction();
   
   try {
-    const { transactionId, type, reason, description, amount } = req.body;
+    const { 
+      transactionId, type, reason, description, amount,
+      expectedResolution, contactedSupport, preferredContactMethod, priority 
+    } = req.body;
     
     const transaction = await Transaction.findById(transactionId).session(session);
     if (!transaction) throw new Error('Transaction not found');
@@ -4887,14 +4903,17 @@ app.post('/api/disputes/create', protect, async (req, res) => {
       throw new Error('You can only dispute your own transactions');
     }
     
-    // Check if open dispute already exists
+    // Check for existing open dispute
     const existingDispute = await Dispute.findOne({
       transactionId,
-      status: { $in: ['pending', 'under_review'] }
+      status: { $in: ['pending', 'under_review', 'investigating'] }
     }).session(session);
     
-    if (existingDispute) throw new Error('You already have an open dispute for this transaction');
+    if (existingDispute) {
+      throw new Error('You already have an open dispute for this transaction');
+    }
     
+    // Create dispute with enhanced fields
     const dispute = new Dispute({
       transactionId,
       userId: req.user._id,
@@ -4907,28 +4926,37 @@ app.post('/api/disputes/create', protect, async (req, res) => {
         note: `Dispute created by user: ${req.user.fullName}`,
         adminId: null,
         createdAt: new Date()
-      }]
+      }],
+      // Enhanced fields
+      expectedResolution: expectedResolution || '',
+      contactedSupport: contactedSupport || false,
+      preferredContactMethod: preferredContactMethod || 'email',
+      priority: priority || 'medium'
     });
     
     await dispute.save({ session });
     await session.commitTransaction();
     
-    // Notify admin (create notification)
+    // Notify admins
     const adminUsers = await User.find({ isAdmin: true }).select('_id');
     for (const admin of adminUsers) {
       await Notification.create({
         recipient: admin._id,
-        title: "🔄 New Dispute Created",
-        message: `User ${req.user.fullName} created a dispute for transaction ${transaction.reference}`,
+        title: "🔄 New Dispute Filed",
+        message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
         type: 'dispute',
         isRead: false,
-        metadata: { disputeId: dispute._id, transactionId: transaction._id }
+        metadata: { 
+          disputeId: dispute._id, 
+          transactionId: transaction._id,
+          priority: priority || 'medium'
+        }
       });
     }
     
     res.json({
       success: true,
-      message: 'Dispute created successfully. Our team will review it shortly.',
+      message: 'Dispute filed successfully. Our team will review it within 24-48 hours.',
       dispute
     });
   } catch (error) {
@@ -4939,20 +4967,102 @@ app.post('/api/disputes/create', protect, async (req, res) => {
   }
 });
 
-// @desc    Get dispute status for a transaction
-// @route   GET /api/disputes/transaction/:transactionId
+// @desc    Get dispute statistics for admin dashboard
+// @route   GET /api/admin/dispute-stats
+// @access  Private/Admin
+app.get('/api/admin/dispute-stats', adminProtect, async (req, res) => {
+  try {
+    const stats = {
+      total: await Dispute.countDocuments(),
+      pending: await Dispute.countDocuments({ status: 'pending' }),
+      underReview: await Dispute.countDocuments({ status: 'under_review' }),
+      investigating: await Dispute.countDocuments({ status: 'investigating' }),
+      resolved: await Dispute.countDocuments({ status: 'resolved' }),
+      rejected: await Dispute.countDocuments({ status: 'rejected' }),
+      escalated: await Dispute.countDocuments({ status: 'escalated' }),
+      byPriority: {
+        urgent: await Dispute.countDocuments({ priority: 'urgent', status: { $nin: ['resolved', 'rejected'] } }),
+        high: await Dispute.countDocuments({ priority: 'high', status: { $nin: ['resolved', 'rejected'] } }),
+        medium: await Dispute.countDocuments({ priority: 'medium', status: { $nin: ['resolved', 'rejected'] } }),
+        low: await Dispute.countDocuments({ priority: 'low', status: { $nin: ['resolved', 'rejected'] } })
+      }
+    };
+    
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Check if transaction has active dispute
+// @route   GET /api/disputes/check/:transactionId
 // @access  Private
-app.get('/api/disputes/transaction/:transactionId', protect, async (req, res) => {
+app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
   try {
     const dispute = await Dispute.findOne({
       transactionId: req.params.transactionId,
-      userId: req.user._id
-    }).sort({ createdAt: -1 });
+      userId: req.user._id,
+      status: { $in: ['pending', 'under_review', 'investigating'] }
+    });
     
     res.json({
       success: true,
-      hasDispute: !!dispute,
-      dispute: dispute
+      hasActiveDispute: !!dispute,
+      dispute: dispute ? {
+        id: dispute._id,
+        status: dispute.status,
+        type: dispute.type,
+        createdAt: dispute.createdAt
+      } : null
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Get all disputes with filters (Admin)
+// @route   GET /api/admin/disputes
+// @access  Private/Admin
+app.get('/api/admin/disputes', adminProtect, async (req, res) => {
+  try {
+    const { status, priority, page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    let query = {};
+    if (status && status !== 'all') query.status = status;
+    if (priority && priority !== 'all') query.priority = priority;
+    
+    const disputes = await Dispute.find(query)
+      .populate('transactionId', 'reference amount type status createdAt')
+      .populate('userId', 'fullName email phone')
+      .populate('resolvedBy', 'fullName email')
+      .sort({ 
+        priority: -1,  // urgent first
+        createdAt: -1 
+      })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Dispute.countDocuments(query);
+    
+    const stats = {
+      pending: await Dispute.countDocuments({ status: 'pending' }),
+      underReview: await Dispute.countDocuments({ status: 'under_review' }),
+      resolved: await Dispute.countDocuments({ status: 'resolved' }),
+      rejected: await Dispute.countDocuments({ status: 'rejected' }),
+      escalated: await Dispute.countDocuments({ status: 'escalated' })
+    };
+    
+    res.json({ 
+      success: true, 
+      disputes, 
+      stats, 
+      pagination: { 
+        total, 
+        page: parseInt(page), 
+        pages: Math.ceil(total / limit), 
+        limit: parseInt(limit) 
+      } 
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
