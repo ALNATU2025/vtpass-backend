@@ -4487,6 +4487,48 @@ app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res)
 
 
 
+
+// DEBUG: Check pending/failed transactions details
+app.get('/api/admin/debug-pending-failed', adminProtect, async (req, res) => {
+  try {
+    const pendingCount = await Transaction.countDocuments({ status: { $in: ['Pending', 'pending', 'PENDING'] } });
+    const failedCount = await Transaction.countDocuments({ status: { $in: ['Failed', 'failed', 'FAILED'] } });
+    
+    const pendingSample = await Transaction.find({ status: { $in: ['Pending', 'pending', 'PENDING'] } })
+      .limit(5)
+      .select('status reference amount type');
+    
+    const failedSample = await Transaction.find({ status: { $in: ['Failed', 'failed', 'FAILED'] } })
+      .limit(5)
+      .select('status reference amount type');
+    
+    // Also get the actual query result count for the endpoint
+    const endpointQuery = {
+      $or: [
+        { status: { $in: ['Pending', 'pending', 'PENDING'] } },
+        { status: { $in: ['Failed', 'failed', 'FAILED'] } }
+      ]
+    };
+    const endpointCount = await Transaction.countDocuments(endpointQuery);
+    
+    res.json({
+      success: true,
+      pendingCount,
+      failedCount,
+      endpointTotalCount: endpointCount,
+      pendingSample,
+      failedSample,
+      message: 'Debug data'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+});
+
+
+
+
 // POST update transaction status - UPDATED to mark as resolved
 app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
   const session = await mongoose.startSession();
