@@ -4845,6 +4845,126 @@ app.get('/api/admin/transaction/:id/receipts', adminProtect, async (req, res) =>
 
 
 
+
+
+
+
+// ==================== USER DISPUTE ENDPOINTS ====================
+
+// @desc    Get user's own disputes
+// @route   GET /api/disputes/my-disputes
+// @access  Private
+app.get('/api/disputes/my-disputes', protect, async (req, res) => {
+  try {
+    const disputes = await Dispute.find({ userId: req.user._id })
+      .populate('transactionId', 'reference amount type status createdAt')
+      .sort({ createdAt: -1 });
+    
+    res.json({
+      success: true,
+      disputes: disputes
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    User creates a dispute
+// @route   POST /api/disputes/create
+// @access  Private
+app.post('/api/disputes/create', protect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { transactionId, type, reason, description, amount } = req.body;
+    
+    const transaction = await Transaction.findById(transactionId).session(session);
+    if (!transaction) throw new Error('Transaction not found');
+    
+    // Verify user owns this transaction
+    if (transaction.userId.toString() !== req.user._id.toString()) {
+      throw new Error('You can only dispute your own transactions');
+    }
+    
+    // Check if open dispute already exists
+    const existingDispute = await Dispute.findOne({
+      transactionId,
+      status: { $in: ['pending', 'under_review'] }
+    }).session(session);
+    
+    if (existingDispute) throw new Error('You already have an open dispute for this transaction');
+    
+    const dispute = new Dispute({
+      transactionId,
+      userId: req.user._id,
+      type,
+      reason,
+      description: description || '',
+      amount: amount || transaction.amount,
+      status: 'pending',
+      adminNotes: [{
+        note: `Dispute created by user: ${req.user.fullName}`,
+        adminId: null,
+        createdAt: new Date()
+      }]
+    });
+    
+    await dispute.save({ session });
+    await session.commitTransaction();
+    
+    // Notify admin (create notification)
+    const adminUsers = await User.find({ isAdmin: true }).select('_id');
+    for (const admin of adminUsers) {
+      await Notification.create({
+        recipient: admin._id,
+        title: "🔄 New Dispute Created",
+        message: `User ${req.user.fullName} created a dispute for transaction ${transaction.reference}`,
+        type: 'dispute',
+        isRead: false,
+        metadata: { disputeId: dispute._id, transactionId: transaction._id }
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Dispute created successfully. Our team will review it shortly.',
+      dispute
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+// @desc    Get dispute status for a transaction
+// @route   GET /api/disputes/transaction/:transactionId
+// @access  Private
+app.get('/api/disputes/transaction/:transactionId', protect, async (req, res) => {
+  try {
+    const dispute = await Dispute.findOne({
+      transactionId: req.params.transactionId,
+      userId: req.user._id
+    }).sort({ createdAt: -1 });
+    
+    res.json({
+      success: true,
+      hasDispute: !!dispute,
+      dispute: dispute
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+
+
 // Get latest transactions with FULL balance data (for admin page)
 app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
   try {
