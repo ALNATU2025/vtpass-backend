@@ -5050,8 +5050,8 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
 
 
 // ==================== SCREENSHOT UPLOAD ENDPOINT ====================
-const multer = require('multer');
-const path = require('path');
+
+
 
 // Configure multer for screenshot uploads
 const screenshotStorage = multer.diskStorage({
