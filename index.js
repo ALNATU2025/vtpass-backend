@@ -4845,10 +4845,10 @@ app.get('/api/admin/transaction/:id/receipts', adminProtect, async (req, res) =>
 
 
 
-// Get latest 100 transactions (for admin page)
+// Get latest transactions with FULL balance data (for admin page)
 app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 100, 200);
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
     
     const transactions = await Transaction.find()
       .sort({ createdAt: -1 })
@@ -4875,10 +4875,57 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
       }, {});
     }
     
-    const result = transactions.map(tx => ({
-      ...tx,
-      user: userMap[tx.userId?.toString()] || null
-    }));
+    // Process each transaction to ensure balance data is included
+    const result = transactions.map(tx => {
+      // ✅ CRITICAL FIX: Ensure balanceBefore and balanceAfter are included
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      // Parse balanceBefore
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        if (typeof tx.balanceBefore === 'number') {
+          balanceBefore = tx.balanceBefore;
+        } else if (typeof tx.balanceBefore === 'string') {
+          balanceBefore = parseFloat(tx.balanceBefore) || 0;
+        } else if (typeof tx.balanceBefore === 'object') {
+          balanceBefore = 0;
+        }
+      }
+      
+      // Parse balanceAfter
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        if (typeof tx.balanceAfter === 'number') {
+          balanceAfter = tx.balanceAfter;
+        } else if (typeof tx.balanceAfter === 'string') {
+          balanceAfter = parseFloat(tx.balanceAfter) || 0;
+        } else if (typeof tx.balanceAfter === 'object') {
+          balanceAfter = 0;
+        }
+      }
+      
+      // If balance data is missing, try to calculate from transaction type
+      if (balanceBefore === 0 && balanceAfter === 0 && tx.amount) {
+        const amount = parseFloat(tx.amount) || 0;
+        const type = (tx.type || '').toLowerCase();
+        const isCredit = type === 'credit' || 
+                        type === 'wallet_funding' ||
+                        type === 'refund credit' ||
+                        tx.isCommission === true;
+        
+        if (isCredit) {
+          balanceAfter = amount;
+        } else {
+          balanceBefore = amount;
+        }
+      }
+      
+      return {
+        ...tx,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        user: userMap[tx.userId?.toString()] || null
+      };
+    });
     
     res.json({
       success: true,
@@ -4887,6 +4934,104 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
       returned: result.length
     });
   } catch (error) {
+    console.error('Error in latest-transactions:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+// Get ALL transactions with complete balance data (paginated)
+app.get('/api/admin/all-transactions-with-balance', adminProtect, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const skip = (page - 1) * limit;
+    const status = req.query.status;
+    
+    let query = {};
+    if (status && status !== 'all') {
+      query.status = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+    }
+    
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Transaction.countDocuments(query)
+    ]);
+    
+    // Get all user IDs from transactions
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id && id !== 'system'))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    // Process transactions to ensure balance data is always present
+    const processedTransactions = transactions.map(tx => {
+      // CRITICAL: Ensure balanceBefore and balanceAfter are ALWAYS numbers
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        if (typeof tx.balanceBefore === 'number') {
+          balanceBefore = tx.balanceBefore;
+        } else if (typeof tx.balanceBefore === 'string') {
+          balanceBefore = parseFloat(tx.balanceBefore) || 0;
+        } else if (typeof tx.balanceBefore === 'object') {
+          balanceBefore = 0;
+        }
+      }
+      
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        if (typeof tx.balanceAfter === 'number') {
+          balanceAfter = tx.balanceAfter;
+        } else if (typeof tx.balanceAfter === 'string') {
+          balanceAfter = parseFloat(tx.balanceAfter) || 0;
+        } else if (typeof tx.balanceAfter === 'object') {
+          balanceAfter = 0;
+        }
+      }
+      
+      return {
+        ...tx,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        user: userMap[tx.userId?.toString()] || {
+          fullName: tx.userNameSnapshot || 'System',
+          email: tx.userEmailSnapshot || 'system@transaction',
+          phone: 'N/A'
+        }
+      };
+    });
+    
+    res.json({
+      success: true,
+      transactions: processedTransactions,
+      total: total,
+      page: page,
+      limit: limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('Error in all-transactions-with-balance:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
