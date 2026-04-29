@@ -5377,7 +5377,7 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
 
 
 // Create upload directories if they don't exist
-const uploadsDir = path.join(__dirname, 'uploads');
+// const uploadsDir = path.join(__dirname, 'uploads');
 const disputesDir = path.join(__dirname, 'uploads', 'disputes');
 
 // This creates the folder automatically
