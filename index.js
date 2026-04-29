@@ -5384,7 +5384,7 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
 // ==================== SCREENSHOT UPLOAD ENDPOINT (Already in your index.js - VERIFY THIS EXISTS) ====================
 
 // Create upload directories if they don't exist
-const uploadsDir = path.join(__dirname, 'uploads');
+//const uploadsDir = path.join(__dirname, 'uploads');
 const disputesDir = path.join(__dirname, 'uploads', 'disputes');
 
 if (!fs.existsSync(uploadsDir)) {
