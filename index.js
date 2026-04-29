@@ -5376,25 +5376,37 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
 // ==================== SCREENSHOT UPLOAD ENDPOINT ====================
 
 
+// Create upload directories if they don't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+const disputesDir = path.join(__dirname, 'uploads', 'disputes');
 
-// Configure multer for screenshot uploads
+// This creates the folder automatically
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory');
+}
+if (!fs.existsSync(disputesDir)) {
+  fs.mkdirSync(disputesDir, { recursive: true });
+  console.log('✅ Created disputes upload directory');
+}
+
+// Configure multer storage
 const screenshotStorage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, 'uploads', 'disputes');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
+    cb(null, disputesDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'dispute-' + uniqueSuffix + path.extname(file.originalname));
+    const ext = path.extname(file.originalname);
+    const filename = 'dispute-' + uniqueSuffix + ext;
+    console.log('📁 Saving file as:', filename);
+    cb(null, filename);
   }
 });
 
 const uploadScreenshot = multer({ 
   storage: screenshotStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -5406,45 +5418,64 @@ const uploadScreenshot = multer({
   }
 });
 
-// Upload evidence for dispute
+// UPLOAD EVIDENCE ENDPOINT - COMPLETE FIXED VERSION
 app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('screenshot'), async (req, res) => {
   try {
-    const { transactionId, type } = req.body;
+    console.log('📸 ========== UPLOAD EVIDENCE ==========');
+    console.log('Request body:', req.body);
+    console.log('File received:', req.file);
+    
+    const { transactionId, disputeId } = req.body;
     const file = req.file;
     
     if (!file) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
     
-    // Find the dispute and add evidence
-    const dispute = await Dispute.findOneAndUpdate(
-      { 
+    const evidencePath = `/uploads/disputes/${file.filename}`;
+    console.log('📁 Evidence path:', evidencePath);
+    
+    let dispute = null;
+    
+    // If disputeId is provided, use it
+    if (disputeId) {
+      dispute = await Dispute.findById(disputeId);
+      console.log('🔍 Looking for dispute by ID:', disputeId);
+    }
+    
+    // If no dispute found by ID, try by transactionId
+    if (!dispute && transactionId) {
+      dispute = await Dispute.findOne({ 
         transactionId: transactionId,
         userId: req.user._id 
-      },
-      { 
-        $push: { 
-          evidence: `/uploads/disputes/${file.filename}` 
-        } 
-      },
-      { new: true }
-    );
+      });
+      console.log('🔍 Looking for dispute by transactionId:', transactionId);
+    }
     
-    if (!dispute) {
-      // If no dispute found, create one with evidence
+    if (dispute) {
+      // Add evidence to existing dispute
+      if (!dispute.evidence) dispute.evidence = [];
+      dispute.evidence.push(evidencePath);
+      dispute.updatedAt = new Date();
+      await dispute.save();
+      console.log('✅ Evidence added to existing dispute:', dispute._id);
+      console.log('📊 Evidence array now has:', dispute.evidence.length, 'items');
+    } else {
+      // Create new dispute with evidence
       const transaction = await Transaction.findById(transactionId);
       if (!transaction) {
         return res.status(404).json({ success: false, message: 'Transaction not found' });
       }
       
-      const newDispute = new Dispute({
+      dispute = new Dispute({
         transactionId: transactionId,
         userId: req.user._id,
         type: 'bank_transfer_proof',
         reason: 'Bank transfer screenshot uploaded',
+        description: 'User uploaded bank transfer screenshot as evidence',
         amount: transaction.amount,
         status: 'pending',
-        evidence: [`/uploads/disputes/${file.filename}`],
+        evidence: [evidencePath],
         adminNotes: [{
           note: `Evidence uploaded by user: ${req.user.fullName}`,
           adminId: null,
@@ -5452,28 +5483,25 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
         }]
       });
       
-      await newDispute.save();
-      
-      return res.json({
-        success: true,
-        message: 'Evidence uploaded and dispute created',
-        evidencePath: `/uploads/disputes/${file.filename}`
-      });
+      await dispute.save();
+      console.log('✅ New dispute created with evidence:', dispute._id);
     }
     
     res.json({
       success: true,
       message: 'Evidence uploaded successfully',
-      evidencePath: `/uploads/disputes/${file.filename}`
+      evidencePath: evidencePath,
+      disputeId: dispute._id,
+      evidenceCount: dispute.evidence.length
     });
     
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('❌ Upload error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// Serve uploaded files
+// Serve static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
