@@ -5410,10 +5410,12 @@ const screenshotStorage = multer.diskStorage({
   }
 });
 
+// Make sure this is correct
 const uploadScreenshot = multer({ 
   storage: screenshotStorage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
+    console.log('📸 Filtering file:', file.originalname, file.mimetype);
     const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
@@ -5425,16 +5427,19 @@ const uploadScreenshot = multer({
 });
 
 // ==================== UPLOAD EVIDENCE ENDPOINT ====================
+// ==================== SCREENSHOT UPLOAD ENDPOINT - FIXED ====================
 app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('screenshot'), async (req, res) => {
   try {
     console.log('📸 ========== UPLOAD EVIDENCE ==========');
     console.log('Request body:', req.body);
     console.log('File received:', req.file);
+    console.log('User ID:', req.user._id);
     
     const { transactionId, disputeId } = req.body;
     const file = req.file;
     
     if (!file) {
+      console.log('❌ No file in request');
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
     
@@ -5446,7 +5451,7 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
     // If disputeId is provided, use it
     if (disputeId) {
       dispute = await Dispute.findById(disputeId);
-      console.log('🔍 Looking for dispute by ID:', disputeId);
+      console.log('🔍 Looking for dispute by ID:', disputeId, dispute ? 'Found' : 'Not found');
     }
     
     // If no dispute found by ID, try by transactionId
@@ -5455,7 +5460,7 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
         transactionId: transactionId,
         userId: req.user._id 
       });
-      console.log('🔍 Looking for dispute by transactionId:', transactionId);
+      console.log('🔍 Looking for dispute by transactionId:', transactionId, dispute ? 'Found' : 'Not found');
     }
     
     if (dispute) {
@@ -5466,10 +5471,23 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
       await dispute.save();
       console.log('✅ Evidence added to existing dispute:', dispute._id);
       console.log('📊 Evidence array now has:', dispute.evidence.length, 'items');
+      
+      return res.json({
+        success: true,
+        message: 'Evidence uploaded successfully',
+        evidencePath: evidencePath,
+        disputeId: dispute._id,
+        evidenceCount: dispute.evidence.length
+      });
     } else {
       // Create new dispute with evidence
       const transaction = await Transaction.findById(transactionId);
       if (!transaction) {
+        console.log('❌ Transaction not found:', transactionId);
+        // Delete the uploaded file since we can't use it
+        try {
+          fs.unlinkSync(file.path);
+        } catch(e) {}
         return res.status(404).json({ success: false, message: 'Transaction not found' });
       }
       
@@ -5491,18 +5509,19 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
       
       await dispute.save();
       console.log('✅ New dispute created with evidence:', dispute._id);
+      
+      return res.json({
+        success: true,
+        message: 'Evidence uploaded successfully',
+        evidencePath: evidencePath,
+        disputeId: dispute._id,
+        evidenceCount: dispute.evidence.length
+      });
     }
-    
-    res.json({
-      success: true,
-      message: 'Evidence uploaded successfully',
-      evidencePath: evidencePath,
-      disputeId: dispute._id,
-      evidenceCount: dispute.evidence.length
-    });
     
   } catch (error) {
     console.error('❌ Upload error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ success: false, message: error.message });
   }
 });
