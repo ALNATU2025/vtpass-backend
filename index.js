@@ -5290,24 +5290,29 @@ app.post('/api/disputes/create', protect, async (req, res) => {
     console.log('✅ Dispute created successfully:', dispute._id);
     
     // Notify admins
-    try {
-      const adminUsers = await User.find({ isAdmin: true }).select('_id');
-      for (const admin of adminUsers) {
-        await Notification.create({
-          recipient: admin._id,
-          title: "🔄 New Dispute Filed",
-          message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
-          type: 'dispute',
-          isRead: false,
-          metadata: { 
-            disputeId: dispute._id, 
-            transactionId: transaction._id
-          }
-        });
+  // Notify admins
+try {
+  const adminUsers = await User.find({ isAdmin: true }).select('_id');
+  if (adminUsers.length > 0) {
+    await Notification.insertMany(adminUsers.map(admin => ({
+      recipient: admin._id,
+      title: "🔄 New Dispute Filed",
+      message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
+      type: 'announcement',  // ← CHANGE THIS - use 'announcement' instead of 'dispute'
+      isRead: false,
+      metadata: { 
+        disputeId: dispute._id, 
+        transactionId: transaction._id,
+        userName: req.user.fullName,
+        transactionRef: transaction.reference
       }
-    } catch (notifError) {
-      console.error('Admin notification error:', notifError);
-    }
+    })));
+    console.log(`✅ Notified ${adminUsers.length} admins about new dispute`);
+  }
+} catch (notifError) {
+  console.error('Admin notification error:', notifError);
+  // Don't fail the request - just log the error
+}
     
     res.json({
       success: true,
