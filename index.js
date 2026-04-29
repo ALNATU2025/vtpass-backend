@@ -5381,11 +5381,12 @@ app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
 // ==================== SCREENSHOT UPLOAD ENDPOINT ====================
 
 
+// ==================== SCREENSHOT UPLOAD ENDPOINT (Already in your index.js - VERIFY THIS EXISTS) ====================
+
 // Create upload directories if they don't exist
-// const uploadsDir = path.join(__dirname, 'uploads');
+const uploadsDir = path.join(__dirname, 'uploads');
 const disputesDir = path.join(__dirname, 'uploads', 'disputes');
 
-// This creates the folder automatically
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   console.log('✅ Created uploads directory');
@@ -5395,7 +5396,7 @@ if (!fs.existsSync(disputesDir)) {
   console.log('✅ Created disputes upload directory');
 }
 
-// Configure multer storage
+// Configure multer storage for screenshots
 const screenshotStorage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, disputesDir);
@@ -5411,7 +5412,7 @@ const screenshotStorage = multer.diskStorage({
 
 const uploadScreenshot = multer({ 
   storage: screenshotStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -5423,7 +5424,7 @@ const uploadScreenshot = multer({
   }
 });
 
-// UPLOAD EVIDENCE ENDPOINT - COMPLETE FIXED VERSION
+// ==================== UPLOAD EVIDENCE ENDPOINT ====================
 app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('screenshot'), async (req, res) => {
   try {
     console.log('📸 ========== UPLOAD EVIDENCE ==========');
