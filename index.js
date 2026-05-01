@@ -5397,6 +5397,7 @@ if (!fs.existsSync(disputesDir)) {
 }
 
 // Configure multer storage for screenshots
+// Configure multer storage for screenshots
 const screenshotStorage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, disputesDir);
@@ -5410,19 +5411,30 @@ const screenshotStorage = multer.diskStorage({
   }
 });
 
-// Make sure this is correct
+// ✅ FIXED: Accept more MIME types including application/octet-stream
 const uploadScreenshot = multer({ 
   storage: screenshotStorage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     console.log('📸 Filtering file:', file.originalname, file.mimetype);
-    const allowedTypes = /jpeg|jpg|png|gif/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    if (extname && mimetype) {
+    
+    // Get file extension from filename
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif'];
+    const isValidExtension = allowedExtensions.includes(ext);
+    
+    // Check if MIME type is allowed OR if extension is valid (for octet-stream case)
+    const allowedMimeTypes = /jpeg|jpg|png|gif/;
+    const isValidMimeType = allowedMimeTypes.test(file.mimetype);
+    
+    // Accept if either MIME type is valid OR extension is valid (for octet-stream)
+    if (isValidMimeType || isValidExtension) {
+      console.log('✅ File accepted');
       return cb(null, true);
     }
-    cb(new Error('Only image files are allowed'));
+    
+    console.log('❌ File rejected - invalid type');
+    cb(new Error('Only image files are allowed (jpg, jpeg, png, gif)'));
   }
 });
 
