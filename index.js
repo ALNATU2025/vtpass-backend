@@ -815,8 +815,8 @@ app.get('/api/app/version', async (req, res) => {
     // Define minimum required versions
     const versions = {
       android: {
-        minimum: '1.2.0',      // Minimum version that still works
-        latest: '1.3.0',       // Latest available version
+          minimum: '1.3.0',      // ← Change from 1.2.0 to 1.3.0
+          latest: '1.4.0',       // ← Change from 1.3.0 to 1.4.0
         updateUrl: 'https://play.google.com/store/apps/details?id=com.dalabapay.official',
         whatsNew: [
           '🎉 New CableTV Bill Payment Feature',
@@ -826,11 +826,11 @@ app.get('/api/app/version', async (req, res) => {
           '🐛 Bug fixes and performance improvements'
         ],
         isRequired: false,      // Set to true for mandatory update
-        releaseDate: '2024-01-15'
+        releaseDate: '2025-05-7'
       },
       ios: {
-        minimum: '1.2.0',
-        latest: '1.3.0',
+         minimum: '1.3.0',
+        latest: '1.4.0',
         updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
         whatsNew: [
           '🎉 New Electricity Bill Payment Feature',
@@ -840,7 +840,7 @@ app.get('/api/app/version', async (req, res) => {
           '🐛 Bug fixes and performance improvements'
         ],
         isRequired: false,
-        releaseDate: '2024-01-15'
+        releaseDate: '2026-05-7'
       }
     };
     
