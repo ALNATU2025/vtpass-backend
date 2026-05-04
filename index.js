@@ -4486,6 +4486,7 @@ app.get('/api/admin/debug-pending-failed', adminProtect, async (req, res) => {
 
 
 // POST update transaction status - CORRECTED (NO BALANCE CHANGES)
+// POST update transaction status - ALLOW EVEN WITH DISPUTES
 app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -4501,21 +4502,13 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     const normalizedStatus = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).toLowerCase();
     if (!validStatuses.includes(normalizedStatus)) throw new Error('Invalid status value');
     
-    const unresolvedDisputes = await Dispute.findOne({ 
-      transactionId: transaction._id, 
-      status: { $in: ['pending', 'under_review', 'investigating'] } 
-    }).session(session);
-    if (unresolvedDisputes) throw new Error('Cannot update transaction with unresolved disputes');
+    // ✅ REMOVED: Dispute check - Admin can update status even with unresolved disputes
     
-    const pendingRefund = await Refund.findOne({ 
-      originalTransactionId: transaction._id, 
-      status: { $in: ['pending', 'approved'] } 
-    }).session(session);
-    if (pendingRefund) throw new Error('Cannot update transaction with pending refund request');
+    // ✅ REMOVED: Pending refund check - Admin can update status even with pending refunds
     
     const oldStatus = transaction.status;
     
-    // ✅ UPDATE ONLY STATUS - NO BALANCE CHANGES
+    // UPDATE ONLY STATUS - NO BALANCE CHANGES
     transaction.status = normalizedStatus;
     
     // MARK AS RESOLVED if status is Successful, Completed, or Refunded
@@ -4525,14 +4518,31 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       transaction.resolvedBy = req.user._id;
       transaction.resolutionType = 'status_update';
       transaction.resolutionNote = adminNote || `Status updated from ${oldStatus} to ${normalizedStatus} by admin`;
+      
+      // ✅ ALSO resolve any open disputes automatically
+      await Dispute.updateMany(
+        { transactionId: transaction._id, status: { $in: ['pending', 'under_review', 'investigating'] } },
+        { 
+          status: 'resolved', 
+          resolution: `Transaction resolved - Status changed to ${normalizedStatus} by admin`,
+          resolvedAt: new Date(),
+          resolvedBy: req.user._id,
+          adminNotes: {
+            note: `Dispute auto-resolved when admin changed status to ${normalizedStatus}`,
+            adminId: req.user._id,
+            createdAt: new Date()
+          }
+        },
+        { session }
+      );
+      console.log('✅ Disputes auto-resolved with status change');
     }
     
     if (adminNote) transaction.adminNote = adminNote;
     if (resolutionReference) transaction.resolutionReference = resolutionReference;
     transaction.updatedAt = new Date();
     
-    // ✅ DELETED: The bad balance update code is REMOVED
-    // DO NOT update wallet balance when status changes
+    // ✅ NO BALANCE UPDATE - Status changes don't affect wallet
     
     await transaction.save({ session });
     
@@ -4563,32 +4573,20 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     });
     await receipt.save({ session });
     
-    // If transaction is resolved, also resolve any open disputes (NO REFUND)
-    if (transaction.isResolved) {
-      await Dispute.updateMany(
-        { transactionId: transaction._id, status: { $in: ['pending', 'under_review', 'investigating'] } },
-        { 
-          status: 'resolved', 
-          resolution: `Transaction resolved - Status changed to ${normalizedStatus}. NOTE: This is a status update only, not a refund.`,
-          resolvedAt: new Date(),
-          resolvedBy: req.user._id
-        },
-        { session }
-      );
-    }
-    
     await session.commitTransaction();
     
-    console.log(`✅ Transaction ${id}: ${oldStatus} → ${normalizedStatus} (No balance change)`);
+    console.log(`✅ Transaction ${id}: ${oldStatus} → ${normalizedStatus} (Status updated despite disputes)`);
     
     res.json({ 
       success: true, 
-      message: `Transaction status updated to ${normalizedStatus}`, 
+      message: `Transaction status updated to ${normalizedStatus}`,
       transaction, 
       receipt: receiptData,
       isResolved: transaction.isResolved === true,
-      note: "Status update only - No refund was processed"
+      disputesAutoResolved: true,
+      note: "Status update completed - Disputes were auto-resolved"
     });
+    
   } catch (error) {
     await session.abortTransaction();
     console.error('Update status error:', error);
