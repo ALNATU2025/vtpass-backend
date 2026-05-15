@@ -13271,11 +13271,12 @@ app.post('/api/wallet/top-up', async (req, res) => {
 
       console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
 
-          // ================================================
+                    // ================================================
       // 🔥 DEPOSIT BONUS SYSTEM: Check and award first deposit bonus
+      // NEW RULE: Minimum ₦1,000 to qualify (changed from ₦5,000)
       // ================================================
       try {
-        // ✅ Check for ANY successful deposit
+        // Check for ANY successful deposit
         const previousDeposits = await Transaction.countDocuments({
           userId: userId,
           type: 'Wallet Funding',
@@ -13284,16 +13285,15 @@ app.post('/api/wallet/top-up', async (req, res) => {
           _id: { $ne: existing?._id }
         }).session(session);
         
-        console.log(`🔍 Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
+        console.log(`🔍 [REFERRAL] Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
         
         if (previousDeposits === 0) {
-          console.log(`🎉 FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira})`);
+          console.log(`🎉 [REFERRAL] FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira})`);
           
-          // ✅ Award first deposit bonus (₦200 if deposit ≥ ₦5,000)
+          // ✅ Award first deposit bonus (₦200 if deposit ≥ ₦1,000)
           const depositBonusAwarded = await awardFirstDepositBonus(userId, amountInNaira, session);
-          console.log(`✅ First deposit bonus result: ${depositBonusAwarded ? 'AWARDED' : 'NOT AWARDED'}`);
+          console.log(`✅ [REFERRAL] First deposit bonus result: ${depositBonusAwarded ? 'AWARDED' : 'NOT AWARDED'}`);
           
-          // ✅ Update notification based on bonus
           if (depositBonusAwarded) {
             await Notification.create([{
               recipient: userId,
@@ -13311,11 +13311,11 @@ app.post('/api/wallet/top-up', async (req, res) => {
                 bonusType: 'first_deposit'
               }
             }], { session });
-          } else {
+          } else if (amountInNaira < 1000) {
             await Notification.create([{
               recipient: userId,
-              title: "Wallet Credited 💰",
-              message: `₦${amountInNaira} added to your wallet. Deposit ₦${(5000 - amountInNaira).toFixed(2)} more to unlock ₦200 first deposit bonus!`,
+              title: "Deposit to Unlock Welcome Bonus 💰",
+              message: `₦${amountInNaira} added to your wallet. Deposit ₦${(1000 - amountInNaira).toFixed(2)} more to unlock ₦200 welcome bonus!`,
               type: 'wallet_credit',
               isRead: false,
               metadata: {
@@ -13325,13 +13325,13 @@ app.post('/api/wallet/top-up', async (req, res) => {
                 isDeposit: true,
                 isFirstDeposit: true,
                 bonusEligible: false,
-                minimumRequired: 5000,
-                neededAmount: 5000 - amountInNaira
+                minimumRequired: 1000,
+                neededAmount: 1000 - amountInNaira
               }
             }], { session });
           }
         } else {
-          console.log(`ℹ️ Not first deposit (${previousDeposits} previous deposits), no bonus`);
+          console.log(`ℹ️ [REFERRAL] Not first deposit (${previousDeposits} previous deposits), no bonus`);
           
           // Create regular deposit notification
           await Notification.create([{
@@ -13350,7 +13350,7 @@ app.post('/api/wallet/top-up', async (req, res) => {
           }], { session });
         }
       } catch (bonusError) {
-        console.error('⚠️ Error processing deposit bonuses:', bonusError);
+        console.error('⚠️ [REFERRAL] Error processing deposit bonuses:', bonusError);
         // Don't fail the main transaction if bonus processing fails
       }
     });
