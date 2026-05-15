@@ -3021,7 +3021,7 @@ try {
       console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
     }
 
-    // 11. Update referrer's stats if applicable
+     // 11. Update referrer's stats if applicable
     if (referrerId) {
       await User.findByIdAndUpdate(referrerId, {
         $inc: { referralCount: 1 }
@@ -3029,25 +3029,25 @@ try {
       console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
       
       // Create notification for referrer
-// Create notification for referrer
-try {
-  await Notification.create([{
-    recipient: referrerId,
-    title: "New Referral! 🎊",
-    message: `${newUser.fullName} joined DalabaPay using your referral code! You'll earn ₦200 when they make their first deposit of ₦1,000+.`,
-    type: 'account',
-    isRead: false,
-    metadata: {
-      event: 'new_referral',
-      referredUserId: newUser._id,
-      referredUserName: newUser.fullName,
-      bonusPending: true,
-      requiredDeposit: 1000
+      try {
+        await Notification.create([{
+          recipient: referrerId,
+          title: "New Referral! 🎊",
+          message: `${newUser.fullName} joined DalabaPay using your referral code! You'll earn ₦200 when they make their first deposit of ₦1,000+.`,
+          type: 'account',
+          isRead: false,
+          metadata: {
+            event: 'new_referral',
+            referredUserId: newUser._id,
+            referredUserName: newUser.fullName,
+            bonusPending: true,
+            requiredDeposit: 1000
+          }
+        }], { session });
+      } catch (referrerNotificationError) {
+        console.error('Error creating referrer notification:', referrerNotificationError);
+      }
     }
-  }], { session });
-} catch (referrerNotificationError) {
-  console.error('Error creating referrer notification:', referrerNotificationError);
-}
 
     // 12. Clear OTP after successful registration
     otpStore.delete(normalizedEmail);
@@ -3081,9 +3081,6 @@ try {
       token,
       refreshToken
     });
-
-    // 14. CREATE VIRTUAL ACCOUNT ASYNCHRONOUSLY
-   
     
   } catch (error) {
     await session.abortTransaction();
@@ -3117,7 +3114,6 @@ try {
     });
   }
 });
-
 
 // @desc    Create virtual account for user (called when user wants to fund wallet)
 // @route   POST /api/virtual-account/create
