@@ -3000,21 +3000,22 @@ app.post('/api/users/register', [
     newUser.refreshToken = refreshToken;
     await newUser.save({ session });
 
-    // 10. Create PERSONAL welcome notification
-    try {
-      await Notification.create([{
-        recipient: newUser._id,
-        title: "Welcome to DalabaPay! 🎉",
-        message: `Hi ${newUser.fullName}, welcome to DalabaPay! You've received ₦200 welcome bonus for registering with a referral code!`,
-        type: 'account',
-        isRead: false,
-        metadata: {
-          event: 'registration',
-          userId: newUser._id,
-          welcomeBonusReceived: true,
-          bonusAmount: 200
-        }
-      }], { session });
+   // 10. Create PERSONAL welcome notification
+try {
+  await Notification.create([{
+    recipient: newUser._id,
+    title: "Welcome to DalabaPay! 🎉",
+    message: `Hi ${newUser.fullName}, welcome to DalabaPay! Make your first deposit of ₦1,000 or more to unlock your ₦200 welcome bonus and earn your referrer ₦200!`,
+    type: 'account',
+    isRead: false,
+    metadata: {
+      event: 'registration',
+      userId: newUser._id,
+      welcomeBonusReceived: false,
+      bonusRequirement: 1000,
+      message: 'Deposit ₦1,000+ to unlock welcome bonus'
+    }
+  }], { session });
       console.log(`📨 [REGISTER] Personal welcome notification created for ${newUser.email}`);
     } catch (notificationError) {
       console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
@@ -3028,24 +3029,25 @@ app.post('/api/users/register', [
       console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
       
       // Create notification for referrer
-      try {
-        await Notification.create([{
-          recipient: referrerId,
-          title: "New Referral! 🎊 + ₦200 Bonus!",
-          message: `${newUser.fullName} joined DalabaPay using your referral code! You've earned ₦200 referral bonus!`,
-          type: 'account',
-          isRead: false,
-          metadata: {
-            event: 'new_referral',
-            referredUserId: newUser._id,
-            referredUserName: newUser.fullName,
-            bonusAwarded: 200
-          }
-        }], { session });
-      } catch (referrerNotificationError) {
-        console.error('Error creating referrer notification:', referrerNotificationError);
-      }
+// Create notification for referrer
+try {
+  await Notification.create([{
+    recipient: referrerId,
+    title: "New Referral! 🎊",
+    message: `${newUser.fullName} joined DalabaPay using your referral code! You'll earn ₦200 when they make their first deposit of ₦1,000+.`,
+    type: 'account',
+    isRead: false,
+    metadata: {
+      event: 'new_referral',
+      referredUserId: newUser._id,
+      referredUserName: newUser.fullName,
+      bonusPending: true,
+      requiredDeposit: 1000
     }
+  }], { session });
+} catch (referrerNotificationError) {
+  console.error('Error creating referrer notification:', referrerNotificationError);
+}
 
     // 12. Clear OTP after successful registration
     otpStore.delete(normalizedEmail);
