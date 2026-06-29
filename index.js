@@ -1102,482 +1102,6 @@ app.get('/api/referral/validate/:code', async (req, res) => {
 
 
 
-// ==================== INTERNATIONAL AIRTIME ROUTES ====================
-
-// @desc    Get International Airtime Countries
-// @route   GET /api/international-airtime/countries
-// @access  Private
-app.get('/api/international-airtime/countries', protect, async (req, res) => {
-  try {
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    const cacheKey = 'int_airtime_countries';
-    const cachedData = cache.get(cacheKey);
-    
-    if (cachedData) {
-      return res.json({
-        success: true,
-        countries: cachedData,
-        source: 'cache'
-      });
-    }
-    
-    const response = await axios.get(
-      'https://vtpass.com/api/get-international-airtime-countries',
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-    
-    if (response.data && response.data.content && response.data.content.countries) {
-      const countries = response.data.content.countries;
-      cache.set(cacheKey, countries, 3600); // Cache for 1 hour
-      
-      return res.json({
-        success: true,
-        countries: countries,
-        source: 'vtpass_live'
-      });
-    } else {
-      throw new Error('Invalid response from VTpass');
-    }
-  } catch (error) {
-    console.error('Error fetching international countries:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch countries',
-      error: error.message
-    });
-  }
-});
-
-// @desc    Get International Airtime Product Types
-// @route   GET /api/international-airtime/product-types/:countryCode
-// @access  Private
-app.get('/api/international-airtime/product-types/:countryCode', protect, async (req, res) => {
-  try {
-    const { countryCode } = req.params;
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    const cacheKey = `int_product_types_${countryCode}`;
-    const cachedData = cache.get(cacheKey);
-    
-    if (cachedData) {
-      return res.json({
-        success: true,
-        productTypes: cachedData,
-        source: 'cache'
-      });
-    }
-    
-    const response = await axios.get(
-      `https://vtpass.com/api/get-international-airtime-product-types?code=${countryCode}`,
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-    
-    if (response.data && response.data.content) {
-      const productTypes = response.data.content;
-      cache.set(cacheKey, productTypes, 3600);
-      
-      return res.json({
-        success: true,
-        productTypes: productTypes,
-        source: 'vtpass_live'
-      });
-    } else {
-      throw new Error('Invalid response from VTpass');
-    }
-  } catch (error) {
-    console.error('Error fetching product types:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch product types',
-      error: error.message
-    });
-  }
-});
-
-// @desc    Get International Airtime Operators
-// @route   GET /api/international-airtime/operators
-// @access  Private
-app.get('/api/international-airtime/operators', protect, async (req, res) => {
-  try {
-    const { countryCode, productTypeId } = req.query;
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    if (!countryCode || !productTypeId) {
-      return res.status(400).json({
-        success: false,
-        message: 'countryCode and productTypeId are required'
-      });
-    }
-    
-    const cacheKey = `int_operators_${countryCode}_${productTypeId}`;
-    const cachedData = cache.get(cacheKey);
-    
-    if (cachedData) {
-      return res.json({
-        success: true,
-        operators: cachedData,
-        source: 'cache'
-      });
-    }
-    
-    const response = await axios.get(
-      `https://vtpass.com/api/get-international-airtime-operators?code=${countryCode}&product_type_id=${productTypeId}`,
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-    
-    if (response.data && response.data.content) {
-      const operators = response.data.content;
-      cache.set(cacheKey, operators, 3600);
-      
-      return res.json({
-        success: true,
-        operators: operators,
-        source: 'vtpass_live'
-      });
-    } else {
-      throw new Error('Invalid response from VTpass');
-    }
-  } catch (error) {
-    console.error('Error fetching operators:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch operators',
-      error: error.message
-    });
-  }
-});
-
-// @desc    Get International Airtime Variations
-// @route   GET /api/international-airtime/variations
-// @access  Private
-app.get('/api/international-airtime/variations', protect, async (req, res) => {
-  try {
-    const { operatorId, productTypeId } = req.query;
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    if (!operatorId || !productTypeId) {
-      return res.status(400).json({
-        success: false,
-        message: 'operatorId and productTypeId are required'
-      });
-    }
-    
-    const cacheKey = `int_variations_${operatorId}_${productTypeId}`;
-    const cachedData = cache.get(cacheKey);
-    
-    if (cachedData) {
-      return res.json({
-        success: true,
-        variations: cachedData,
-        source: 'cache'
-      });
-    }
-    
-    const response = await axios.get(
-      `https://vtpass.com/api/service-variations?serviceID=foreign-airtime&operator_id=${operatorId}&product_type_id=${productTypeId}`,
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-    
-    if (response.data && response.data.content && response.data.content.variations) {
-      const variations = response.data.content.variations;
-      cache.set(cacheKey, variations, 1800); // Cache for 30 minutes
-      
-      return res.json({
-        success: true,
-        variations: variations,
-        serviceName: response.data.content.ServiceName || 'International Airtime',
-        source: 'vtpass_live'
-      });
-    } else {
-      throw new Error('Invalid response from VTpass');
-    }
-  } catch (error) {
-    console.error('Error fetching variations:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch variations',
-      error: error.message
-    });
-  }
-});
-
-// @desc    Purchase International Airtime
-// @route   POST /api/international-airtime/purchase
-// @access  Private
-app.post('/api/international-airtime/purchase', 
-  protect, 
-  verifyTransactionAuth,
-  checkServiceEnabled('isAirtimeEnabled'),
-  [
-    body('operatorId').notEmpty().withMessage('Operator ID is required'),
-    body('countryCode').notEmpty().withMessage('Country code is required'),
-    body('productTypeId').notEmpty().withMessage('Product type ID is required'),
-    body('variationCode').notEmpty().withMessage('Variation code is required'),
-    body('phoneNumber').notEmpty().withMessage('Phone number is required'),
-    body('amount').isFloat({ min: 1 }).withMessage('Amount must be at least 1'),
-    body('email').optional().isEmail().withMessage('Invalid email format')
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: errors.array()[0].msg 
-      });
-    }
-
-    console.log('🌍 International Airtime Purchase Request');
-    console.log('📦 Request Body:', req.body);
-
-    const {
-      operatorId,
-      countryCode,
-      productTypeId,
-      variationCode,
-      phoneNumber,
-      amount,
-      email,
-      currency = 'USD',
-      customerName
-    } = req.body;
-
-    const userId = req.user._id;
-    const reference = generateRequestId();
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      // Get user
-      const user = await User.findById(userId).session(session);
-      if (!user) {
-        await session.abortTransaction();
-        return res.status(404).json({ success: false, message: 'User not found' });
-      }
-
-      // Check balance
-      if (user.walletBalance < amount) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
-          code: 'INSUFFICIENT_BALANCE'
-        });
-      }
-
-      // Deduct balance
-      const balanceBefore = user.walletBalance;
-      user.walletBalance -= amount;
-      const balanceAfter = user.walletBalance;
-      await user.save({ session });
-
-      // Prepare VTpass payload
-      const vtpassPayload = {
-        request_id: reference,
-        serviceID: 'foreign-airtime',
-        billersCode: phoneNumber,
-        variation_code: variationCode,
-        phone: phoneNumber,
-        operator_id: operatorId,
-        country_code: countryCode,
-        product_type_id: productTypeId,
-        email: email || user.email,
-        amount: amount.toString()
-      };
-
-      console.log('📡 Calling VTpass API:', vtpassPayload);
-
-      // Call VTpass API
-      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
-
-      console.log('📦 VTpass Response:', JSON.stringify(vtpassResult, null, 2));
-
-      let transactionStatus = 'Failed';
-      let vtpassData = vtpassResult.data || {};
-      let responseDescription = vtpassResult.data?.response_description || 'Transaction failed';
-
-      // Handle successful response
-      if (vtpassResult.success && vtpassResult.data?.code === '000') {
-        transactionStatus = 'Successful';
-        responseDescription = vtpassResult.data.response_description || 'Transaction successful';
-        
-        // Calculate and add commission
-        await calculateAndAddCommission(userId, amount, 'international-airtime', session)
-          .catch(err => console.log('⚠️ International airtime commission calculation failed:', err.message));
-
-        // Create notification
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "International Airtime Purchase Successful 🌍",
-            message: `Your international airtime purchase of ${amount} ${currency} for ${phoneNumber} was completed successfully.`,
-            type: 'transaction',
-            isRead: false,
-            metadata: {
-              phone: phoneNumber,
-              amount: amount,
-              countryCode: countryCode,
-              operatorId: operatorId
-            }
-          });
-        } catch (notificationError) {
-          console.error('Error creating notification:', notificationError);
-        }
-      } else if (vtpassResult.data?.code === '019') {
-        // Duplicate transaction - check if already successful
-        const existingTx = await Transaction.findOne({
-          $or: [
-            { reference: reference },
-            { 'metadata.request_id': reference }
-          ]
-        }).session(session);
-
-        if (existingTx && existingTx.status === 'Successful') {
-          transactionStatus = 'Successful';
-          responseDescription = 'Transaction already completed';
-        }
-      }
-
-      // Create transaction record
-      const transaction = await createTransaction(
-        userId,
-        amount,
-        'International Airtime Purchase',
-        transactionStatus,
-        `International airtime for ${phoneNumber} (${countryCode})`,
-        balanceBefore,
-        balanceAfter,
-        session,
-        false,
-        req.authenticationMethod,
-        reference,
-        {
-          phone: phoneNumber,
-          countryCode: countryCode,
-          operatorId: operatorId,
-          productTypeId: productTypeId,
-          variationCode: variationCode,
-          currency: currency,
-          customerName: customerName,
-          vtpassResponse: vtpassData,
-          userDebited: true
-        }
-      );
-
-      await session.commitTransaction();
-
-      // Prepare response
-      const responseData = {
-        success: transactionStatus === 'Successful',
-        message: responseDescription,
-        transactionId: transaction._id,
-        reference: reference,
-        newBalance: balanceAfter,
-        phoneNumber: phoneNumber,
-        amount: amount,
-        currency: currency,
-        countryCode: countryCode,
-        status: transactionStatus,
-        vtpassResponse: vtpassData,
-        userDebited: true
-      };
-
-      if (transactionStatus === 'Successful') {
-        return res.json(responseData);
-      } else {
-        return res.status(400).json(responseData);
-      }
-
-    } catch (error) {
-      await session.abortTransaction();
-      console.error('❌ Error in international airtime purchase:', error);
-      
-      res.status(500).json({
-        success: false,
-        message: 'Failed to process international airtime purchase',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
-    } finally {
-      session.endSession();
-    }
-  }
-);
-
-// @desc    Get International Airtime Transaction Status
-// @route   POST /api/international-airtime/requery
-// @access  Private
-app.post('/api/international-airtime/requery', protect, [
-  body('requestId').notEmpty().withMessage('Request ID is required')
-], async (req, res) => {
-  try {
-    const { requestId } = req.body;
-    
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    const response = await axios.post(
-      'https://vtpass.com/api/requery',
-      { request_id: requestId },
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-    
-    if (response.data) {
-      return res.json({
-        success: true,
-        data: response.data
-      });
-    } else {
-      throw new Error('Invalid response from VTpass');
-    }
-  } catch (error) {
-    console.error('Error querying transaction:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to query transaction status',
-      error: error.message
-    });
-  }
-});
 
 
 
@@ -15977,6 +15501,485 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
     });
   }
 });
+
+
+// ==================== INTERNATIONAL AIRTIME ROUTES ====================
+
+// @desc    Get International Airtime Countries
+// @route   GET /api/international-airtime/countries
+// @access  Private
+app.get('/api/international-airtime/countries', protect, async (req, res) => {
+  try {
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    const cacheKey = 'int_airtime_countries';
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        countries: cachedData,
+        source: 'cache'
+      });
+    }
+    
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    if (response.data && response.data.content && response.data.content.countries) {
+      const countries = response.data.content.countries;
+      cache.set(cacheKey, countries, 3600); // Cache for 1 hour
+      
+      return res.json({
+        success: true,
+        countries: countries,
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error('Invalid response from VTpass');
+    }
+  } catch (error) {
+    console.error('Error fetching international countries:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch countries',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Product Types
+// @route   GET /api/international-airtime/product-types/:countryCode
+// @access  Private
+app.get('/api/international-airtime/product-types/:countryCode', protect, async (req, res) => {
+  try {
+    const { countryCode } = req.params;
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    const cacheKey = `int_product_types_${countryCode}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        productTypes: cachedData,
+        source: 'cache'
+      });
+    }
+    
+    const response = await axios.get(
+      `https://vtpass.com/api/get-international-airtime-product-types?code=${countryCode}`,
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    if (response.data && response.data.content) {
+      const productTypes = response.data.content;
+      cache.set(cacheKey, productTypes, 3600);
+      
+      return res.json({
+        success: true,
+        productTypes: productTypes,
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error('Invalid response from VTpass');
+    }
+  } catch (error) {
+    console.error('Error fetching product types:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch product types',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Operators
+// @route   GET /api/international-airtime/operators
+// @access  Private
+app.get('/api/international-airtime/operators', protect, async (req, res) => {
+  try {
+    const { countryCode, productTypeId } = req.query;
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    if (!countryCode || !productTypeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'countryCode and productTypeId are required'
+      });
+    }
+    
+    const cacheKey = `int_operators_${countryCode}_${productTypeId}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        operators: cachedData,
+        source: 'cache'
+      });
+    }
+    
+    const response = await axios.get(
+      `https://vtpass.com/api/get-international-airtime-operators?code=${countryCode}&product_type_id=${productTypeId}`,
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    if (response.data && response.data.content) {
+      const operators = response.data.content;
+      cache.set(cacheKey, operators, 3600);
+      
+      return res.json({
+        success: true,
+        operators: operators,
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error('Invalid response from VTpass');
+    }
+  } catch (error) {
+    console.error('Error fetching operators:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch operators',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Variations
+// @route   GET /api/international-airtime/variations
+// @access  Private
+app.get('/api/international-airtime/variations', protect, async (req, res) => {
+  try {
+    const { operatorId, productTypeId } = req.query;
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    if (!operatorId || !productTypeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'operatorId and productTypeId are required'
+      });
+    }
+    
+    const cacheKey = `int_variations_${operatorId}_${productTypeId}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        variations: cachedData,
+        source: 'cache'
+      });
+    }
+    
+    const response = await axios.get(
+      `https://vtpass.com/api/service-variations?serviceID=foreign-airtime&operator_id=${operatorId}&product_type_id=${productTypeId}`,
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    if (response.data && response.data.content && response.data.content.variations) {
+      const variations = response.data.content.variations;
+      cache.set(cacheKey, variations, 1800); // Cache for 30 minutes
+      
+      return res.json({
+        success: true,
+        variations: variations,
+        serviceName: response.data.content.ServiceName || 'International Airtime',
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error('Invalid response from VTpass');
+    }
+  } catch (error) {
+    console.error('Error fetching variations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch variations',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Purchase International Airtime
+// @route   POST /api/international-airtime/purchase
+// @access  Private
+app.post('/api/international-airtime/purchase', 
+  protect, 
+  verifyTransactionAuth,
+  checkServiceEnabled('isAirtimeEnabled'),
+  [
+    body('operatorId').notEmpty().withMessage('Operator ID is required'),
+    body('countryCode').notEmpty().withMessage('Country code is required'),
+    body('productTypeId').notEmpty().withMessage('Product type ID is required'),
+    body('variationCode').notEmpty().withMessage('Variation code is required'),
+    body('phoneNumber').notEmpty().withMessage('Phone number is required'),
+    body('amount').isFloat({ min: 1 }).withMessage('Amount must be at least 1'),
+    body('email').optional().isEmail().withMessage('Invalid email format')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: errors.array()[0].msg 
+      });
+    }
+
+    console.log('🌍 International Airtime Purchase Request');
+    console.log('📦 Request Body:', req.body);
+
+    const {
+      operatorId,
+      countryCode,
+      productTypeId,
+      variationCode,
+      phoneNumber,
+      amount,
+      email,
+      currency = 'USD',
+      customerName
+    } = req.body;
+
+    const userId = req.user._id;
+    const reference = generateRequestId();
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Get user
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // Check balance
+      if (user.walletBalance < amount) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+
+      // Deduct balance
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= amount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+
+      // Prepare VTpass payload
+      const vtpassPayload = {
+        request_id: reference,
+        serviceID: 'foreign-airtime',
+        billersCode: phoneNumber,
+        variation_code: variationCode,
+        phone: phoneNumber,
+        operator_id: operatorId,
+        country_code: countryCode,
+        product_type_id: productTypeId,
+        email: email || user.email,
+        amount: amount.toString()
+      };
+
+      console.log('📡 Calling VTpass API:', vtpassPayload);
+
+      // Call VTpass API
+      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+      console.log('📦 VTpass Response:', JSON.stringify(vtpassResult, null, 2));
+
+      let transactionStatus = 'Failed';
+      let vtpassData = vtpassResult.data || {};
+      let responseDescription = vtpassResult.data?.response_description || 'Transaction failed';
+
+      // Handle successful response
+      if (vtpassResult.success && vtpassResult.data?.code === '000') {
+        transactionStatus = 'Successful';
+        responseDescription = vtpassResult.data.response_description || 'Transaction successful';
+        
+        // Calculate and add commission
+        await calculateAndAddCommission(userId, amount, 'international-airtime', session)
+          .catch(err => console.log('⚠️ International airtime commission calculation failed:', err.message));
+
+        // Create notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "International Airtime Purchase Successful 🌍",
+            message: `Your international airtime purchase of ${amount} ${currency} for ${phoneNumber} was completed successfully.`,
+            type: 'transaction',
+            isRead: false,
+            metadata: {
+              phone: phoneNumber,
+              amount: amount,
+              countryCode: countryCode,
+              operatorId: operatorId
+            }
+          });
+        } catch (notificationError) {
+          console.error('Error creating notification:', notificationError);
+        }
+      } else if (vtpassResult.data?.code === '019') {
+        // Duplicate transaction - check if already successful
+        const existingTx = await Transaction.findOne({
+          $or: [
+            { reference: reference },
+            { 'metadata.request_id': reference }
+          ]
+        }).session(session);
+
+        if (existingTx && existingTx.status === 'Successful') {
+          transactionStatus = 'Successful';
+          responseDescription = 'Transaction already completed';
+        }
+      }
+
+      // Create transaction record
+      const transaction = await createTransaction(
+        userId,
+        amount,
+        'International Airtime Purchase',
+        transactionStatus,
+        `International airtime for ${phoneNumber} (${countryCode})`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        req.authenticationMethod,
+        reference,
+        {
+          phone: phoneNumber,
+          countryCode: countryCode,
+          operatorId: operatorId,
+          productTypeId: productTypeId,
+          variationCode: variationCode,
+          currency: currency,
+          customerName: customerName,
+          vtpassResponse: vtpassData,
+          userDebited: true
+        }
+      );
+
+      await session.commitTransaction();
+
+      // Prepare response
+      const responseData = {
+        success: transactionStatus === 'Successful',
+        message: responseDescription,
+        transactionId: transaction._id,
+        reference: reference,
+        newBalance: balanceAfter,
+        phoneNumber: phoneNumber,
+        amount: amount,
+        currency: currency,
+        countryCode: countryCode,
+        status: transactionStatus,
+        vtpassResponse: vtpassData,
+        userDebited: true
+      };
+
+      if (transactionStatus === 'Successful') {
+        return res.json(responseData);
+      } else {
+        return res.status(400).json(responseData);
+      }
+
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('❌ Error in international airtime purchase:', error);
+      
+      res.status(500).json({
+        success: false,
+        message: 'Failed to process international airtime purchase',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
+// @desc    Get International Airtime Transaction Status
+// @route   POST /api/international-airtime/requery
+// @access  Private
+app.post('/api/international-airtime/requery', protect, [
+  body('requestId').notEmpty().withMessage('Request ID is required')
+], async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    const response = await axios.post(
+      'https://vtpass.com/api/requery',
+      { request_id: requestId },
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    if (response.data) {
+      return res.json({
+        success: true,
+        data: response.data
+      });
+    } else {
+      throw new Error('Invalid response from VTpass');
+    }
+  } catch (error) {
+    console.error('Error querying transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to query transaction status',
+      error: error.message
+    });
+  }
+});
+
 
 
 
