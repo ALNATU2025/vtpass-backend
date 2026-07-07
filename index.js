@@ -15982,8 +15982,140 @@ app.post('/api/international-airtime/requery', protect, [
 
 
 
+// Add this BEFORE your /api/international-airtime/countries route
+app.get('/api/international-airtime/debug', protect, async (req, res) => {
+  try {
+    // Check if credentials are loaded
+    const apiKey = process.env.VTPASS_API_KEY;
+    const secretKey = process.env.VTPASS_SECRET_KEY;
+    
+    // Test the VTpass API directly
+    const testResponse = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': apiKey,
+          'secret-key': secretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    res.json({
+      success: true,
+      credentials: {
+        apiKeyExists: !!apiKey,
+        apiKeyLength: apiKey?.length || 0,
+        secretKeyExists: !!secretKey,
+        secretKeyLength: secretKey?.length || 0
+      },
+      vtpassResponse: testResponse.data,
+      statusCode: testResponse.status
+    });
+  } catch (error) {
+    console.error('Debug error:', error.message);
+    res.json({
+      success: false,
+      error: error.message,
+      response: error.response?.data,
+      statusCode: error.response?.status
+    });
+  }
+});
 
 
+// @desc    Get International Airtime Countries
+// @route   GET /api/international-airtime/countries
+// @access  Private
+app.get('/api/international-airtime/countries', protect, async (req, res) => {
+  try {
+    // ✅ Get credentials with fallbacks
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    // ✅ Check credentials
+    if (!vtpassApiKey || !vtpassSecretKey) {
+      console.error('❌ VTpass credentials not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'VTpass API credentials not configured',
+        error: 'Missing VTPASS_API_KEY or VTPASS_SECRET_KEY environment variables'
+      });
+    }
+    
+    // ✅ Cache key
+    const cacheKey = 'int_airtime_countries';
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      console.log('📦 Returning cached countries');
+      return res.json({
+        success: true,
+        countries: cachedData,
+        source: 'cache'
+      });
+    }
+    
+    console.log('🌍 Fetching countries from VTpass API...');
+    
+    // ✅ Make the API call with proper error handling
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    
+    console.log('📡 VTpass response status:', response.status);
+    
+    // ✅ Check response structure
+    if (response.data && response.data.content && response.data.content.countries) {
+      const countries = response.data.content.countries;
+      console.log(`✅ Found ${countries.length} countries`);
+      
+      // Cache for 1 hour
+      cache.set(cacheKey, countries, 3600);
+      
+      return res.json({
+        success: true,
+        countries: countries,
+        source: 'vtpass_live',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.error('❌ Invalid response from VTpass:', response.data);
+      throw new Error('Invalid response structure from VTpass API');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error fetching international countries:', error.message);
+    
+    // ✅ Provide detailed error information
+    let errorMessage = 'Failed to fetch countries';
+    let errorDetails = error.message;
+    
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+      errorDetails = error.response.data?.message || error.response.statusText || error.message;
+    } else if (error.request) {
+      errorDetails = 'No response received from VTpass API - check network connectivity';
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: errorMessage,
+      error: errorDetails,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 
 
