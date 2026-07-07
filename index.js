@@ -15556,13 +15556,26 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
 // @access  Private
 app.get('/api/international-airtime/countries', protect, async (req, res) => {
   try {
+    // ✅ Get credentials with fallbacks
     const vtpassApiKey = process.env.VTPASS_API_KEY;
     const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
     
+    // ✅ Check credentials
+    if (!vtpassApiKey || !vtpassSecretKey) {
+      console.error('❌ VTpass credentials not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'VTpass API credentials not configured',
+        error: 'Missing VTPASS_API_KEY or VTPASS_SECRET_KEY environment variables'
+      });
+    }
+    
+    // ✅ Cache key
     const cacheKey = 'int_airtime_countries';
     const cachedData = cache.get(cacheKey);
     
     if (cachedData) {
+      console.log('📦 Returning cached countries');
       return res.json({
         success: true,
         countries: cachedData,
@@ -15570,6 +15583,9 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
       });
     }
     
+    console.log('🌍 Fetching countries from VTpass API...');
+    
+    // ✅ Make the API call with proper error handling
     const response = await axios.get(
       'https://vtpass.com/api/get-international-airtime-countries',
       {
@@ -15578,32 +15594,54 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
           'secret-key': vtpassSecretKey,
           'Content-Type': 'application/json'
         },
-        timeout: 15000
+        timeout: 30000
       }
     );
     
+    console.log('📡 VTpass response status:', response.status);
+    
+    // ✅ Check response structure
     if (response.data && response.data.content && response.data.content.countries) {
       const countries = response.data.content.countries;
-      cache.set(cacheKey, countries, 3600); // Cache for 1 hour
+      console.log(`✅ Found ${countries.length} countries`);
+      
+      // Cache for 1 hour
+      cache.set(cacheKey, countries, 3600);
       
       return res.json({
         success: true,
         countries: countries,
-        source: 'vtpass_live'
+        source: 'vtpass_live',
+        timestamp: new Date().toISOString()
       });
     } else {
-      throw new Error('Invalid response from VTpass');
+      console.error('❌ Invalid response from VTpass:', response.data);
+      throw new Error('Invalid response structure from VTpass API');
     }
+    
   } catch (error) {
-    console.error('Error fetching international countries:', error);
+    console.error('❌ Error fetching international countries:', error.message);
+    
+    // ✅ Provide detailed error information
+    let errorMessage = 'Failed to fetch countries';
+    let errorDetails = error.message;
+    
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+      errorDetails = error.response.data?.message || error.response.statusText || error.message;
+    } else if (error.request) {
+      errorDetails = 'No response received from VTpass API - check network connectivity';
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch countries',
-      error: error.message
+      message: errorMessage,
+      error: errorDetails,
+      timestamp: new Date().toISOString()
     });
   }
 });
-
 // @desc    Get International Airtime Product Types
 // @route   GET /api/international-airtime/product-types/:countryCode
 // @access  Private
@@ -16070,98 +16108,6 @@ app.get('/api/international-airtime/debug', protect, async (req, res) => {
   }
 });
 
-
-// @desc    Get International Airtime Countries
-// @route   GET /api/international-airtime/countries
-// @access  Private
-app.get('/api/international-airtime/countries', protect, async (req, res) => {
-  try {
-    // ✅ Get credentials with fallbacks
-    const vtpassApiKey = process.env.VTPASS_API_KEY;
-    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    // ✅ Check credentials
-    if (!vtpassApiKey || !vtpassSecretKey) {
-      console.error('❌ VTpass credentials not configured');
-      return res.status(500).json({
-        success: false,
-        message: 'VTpass API credentials not configured',
-        error: 'Missing VTPASS_API_KEY or VTPASS_SECRET_KEY environment variables'
-      });
-    }
-    
-    // ✅ Cache key
-    const cacheKey = 'int_airtime_countries';
-    const cachedData = cache.get(cacheKey);
-    
-    if (cachedData) {
-      console.log('📦 Returning cached countries');
-      return res.json({
-        success: true,
-        countries: cachedData,
-        source: 'cache'
-      });
-    }
-    
-    console.log('🌍 Fetching countries from VTpass API...');
-    
-    // ✅ Make the API call with proper error handling
-    const response = await axios.get(
-      'https://vtpass.com/api/get-international-airtime-countries',
-      {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      }
-    );
-    
-    console.log('📡 VTpass response status:', response.status);
-    
-    // ✅ Check response structure
-    if (response.data && response.data.content && response.data.content.countries) {
-      const countries = response.data.content.countries;
-      console.log(`✅ Found ${countries.length} countries`);
-      
-      // Cache for 1 hour
-      cache.set(cacheKey, countries, 3600);
-      
-      return res.json({
-        success: true,
-        countries: countries,
-        source: 'vtpass_live',
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      console.error('❌ Invalid response from VTpass:', response.data);
-      throw new Error('Invalid response structure from VTpass API');
-    }
-    
-  } catch (error) {
-    console.error('❌ Error fetching international countries:', error.message);
-    
-    // ✅ Provide detailed error information
-    let errorMessage = 'Failed to fetch countries';
-    let errorDetails = error.message;
-    
-    if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response data:', error.response.data);
-      errorDetails = error.response.data?.message || error.response.statusText || error.message;
-    } else if (error.request) {
-      errorDetails = 'No response received from VTpass API - check network connectivity';
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: errorMessage,
-      error: errorDetails,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
 
 
 
