@@ -10104,6 +10104,52 @@ app.post('/api/vtpass/data/purchase',
 
 
 
+// @desc    Debug: Get International Airtime Countries (NO AUTH)
+// @route   GET /api/international-airtime/countries-public
+// @access  Public - FOR TESTING ONLY
+app.get('/api/international-airtime/countries-public', async (req, res) => {
+  try {
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    
+    res.json({
+      success: true,
+      countries: response.data.content?.countries || [],
+      source: 'vtpass_live'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 // @desc    Verify electricity meter number - FIXED VERSION
