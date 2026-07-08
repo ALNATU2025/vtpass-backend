@@ -15596,9 +15596,9 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
 // @route   GET /api/international-airtime/countries
 // @access  Private
 app.get('/api/international-airtime/countries', protect, async (req, res) => {
+  console.log('🌍 INTERNATIONAL COUNTRIES ENDPOINT HIT');
+  
   try {
-    console.log('🌍 Fetching international countries...');
-    
     // Try cache first
     const cacheKey = 'int_airtime_countries';
     const cachedData = cache.get(cacheKey);
@@ -15611,43 +15611,72 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
         source: 'cache'
       });
     }
-    
-    // ✅ GET request to VTpass
-    const vtpassResult = await callVtpassApi('/get-international-airtime-countries', {}, {}, 'GET');
-    
-    console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
-    
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.content && vtpassResult.data.content.countries) {
-      const countries = vtpassResult.data.content.countries;
-      console.log(`✅ Found ${countries.length} countries`);
-      
-      // Cache for 1 hour
-      cache.set(cacheKey, countries, 3600);
-      
+
+    console.log('🚀 Calling LIVE VTpass API for international countries...');
+
+    // ✅ EXACTLY like Data Plans - direct axios.get with headers
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    // ✅ EXACTLY like Data Plans - check response_description
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      // Return empty array but success: true (like Data Plans)
       return res.json({
         success: true,
-        countries: countries,
-        source: 'vtpass_live',
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      const errorMsg = vtpassResult.message || 'Invalid response from VTpass API';
-      console.error('❌ Invalid response from VTpass:', errorMsg);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch countries',
-        error: errorMsg,
-        countries: []
+        countries: [],
+        source: 'vtpass_error',
+        note: 'VTpass error: ' + vtpassData.response_description
       });
     }
+
+    // Process the countries
+    const countries = vtpassData.content?.countries || [];
     
+    console.log(`✅ Found ${countries.length} countries`);
+
+    if (!countries || countries.length === 0) {
+      return res.json({
+        success: true,
+        countries: [],
+        source: 'empty_response',
+        note: 'No countries from VTpass'
+      });
+    }
+
+    // Cache for 1 hour
+    cache.set(cacheKey, countries, 3600);
+
+    res.json({
+      success: true,
+      countries: countries,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
   } catch (error) {
     console.error('❌ Error fetching international countries:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch countries',
-      error: error.message,
-      countries: []
+    
+    // ✅ EXACTLY like Data Plans - return success: true with empty array
+    res.json({
+      success: true,
+      countries: [],
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
     });
   }
 });
@@ -15656,9 +15685,10 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
 // @route   GET /api/international-airtime/product-types/:countryCode
 // @access  Private
 app.get('/api/international-airtime/product-types/:countryCode', protect, async (req, res) => {
+  console.log('📦 INTERNATIONAL PRODUCT TYPES ENDPOINT HIT - countryCode:', req.params.countryCode);
+  
   try {
     const { countryCode } = req.params;
-    console.log(`📦 Fetching product types for country: ${countryCode}`);
     
     const cacheKey = `int_product_types_${countryCode}`;
     const cachedData = cache.get(cacheKey);
@@ -15670,41 +15700,58 @@ app.get('/api/international-airtime/product-types/:countryCode', protect, async 
         source: 'cache'
       });
     }
-    
-    // ✅ GET request with query parameters
-    const vtpassResult = await callVtpassApi('/get-international-airtime-product-types', { code: countryCode }, {}, 'GET');
-    
-    console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
-    
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.content) {
-      const productTypes = vtpassResult.data.content;
-      console.log(`✅ Found ${productTypes.length} product types`);
-      
-      cache.set(cacheKey, productTypes, 3600);
-      
+
+    console.log('🚀 Calling LIVE VTpass API for product types:', countryCode);
+
+    // ✅ EXACTLY like Data Plans - direct axios.get with params
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-product-types',
+      {
+        params: { code: countryCode },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
       return res.json({
         success: true,
-        productTypes: productTypes,
-        source: 'vtpass_live'
-      });
-    } else {
-      const errorMsg = vtpassResult.message || 'Invalid response from VTpass API';
-      console.error('❌ Invalid response from VTpass:', errorMsg);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch product types',
-        error: errorMsg,
-        productTypes: []
+        productTypes: [],
+        source: 'vtpass_error',
+        note: 'VTpass error: ' + vtpassData.response_description
       });
     }
+
+    const productTypes = vtpassData.content || [];
     
+    console.log(`✅ Found ${productTypes.length} product types`);
+
+    cache.set(cacheKey, productTypes, 3600);
+
+    res.json({
+      success: true,
+      productTypes: productTypes,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
   } catch (error) {
-    console.error('Error fetching product types:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch product types',
-      error: error.message,
-      productTypes: []
+    console.error('❌ Error fetching product types:', error.message);
+    res.json({
+      success: true,
+      productTypes: [],
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
     });
   }
 });
@@ -15713,6 +15760,8 @@ app.get('/api/international-airtime/product-types/:countryCode', protect, async 
 // @route   GET /api/international-airtime/operators
 // @access  Private
 app.get('/api/international-airtime/operators', protect, async (req, res) => {
+  console.log('📱 INTERNATIONAL OPERATORS ENDPOINT HIT - query:', req.query);
+  
   try {
     const { countryCode, productTypeId } = req.query;
     
@@ -15722,8 +15771,6 @@ app.get('/api/international-airtime/operators', protect, async (req, res) => {
         message: 'countryCode and productTypeId are required'
       });
     }
-    
-    console.log(`📱 Fetching operators for country: ${countryCode}, productType: ${productTypeId}`);
     
     const cacheKey = `int_operators_${countryCode}_${productTypeId}`;
     const cachedData = cache.get(cacheKey);
@@ -15735,44 +15782,61 @@ app.get('/api/international-airtime/operators', protect, async (req, res) => {
         source: 'cache'
       });
     }
-    
-    // ✅ GET request with query parameters
-    const vtpassResult = await callVtpassApi('/get-international-airtime-operators', {
-      code: countryCode,
-      product_type_id: productTypeId
-    }, {}, 'GET');
-    
-    console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
-    
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.content) {
-      const operators = vtpassResult.data.content;
-      console.log(`✅ Found ${operators.length} operators`);
-      
-      cache.set(cacheKey, operators, 3600);
-      
+
+    console.log('🚀 Calling LIVE VTpass API for operators...');
+
+    // ✅ EXACTLY like Data Plans - direct axios.get with params
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-operators',
+      {
+        params: { 
+          code: countryCode,
+          product_type_id: productTypeId
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
       return res.json({
         success: true,
-        operators: operators,
-        source: 'vtpass_live'
-      });
-    } else {
-      const errorMsg = vtpassResult.message || 'Invalid response from VTpass API';
-      console.error('❌ Invalid response from VTpass:', errorMsg);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch operators',
-        error: errorMsg,
-        operators: []
+        operators: [],
+        source: 'vtpass_error',
+        note: 'VTpass error: ' + vtpassData.response_description
       });
     }
+
+    const operators = vtpassData.content || [];
     
+    console.log(`✅ Found ${operators.length} operators`);
+
+    cache.set(cacheKey, operators, 3600);
+
+    res.json({
+      success: true,
+      operators: operators,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
   } catch (error) {
-    console.error('Error fetching operators:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch operators',
-      error: error.message,
-      operators: []
+    console.error('❌ Error fetching operators:', error.message);
+    res.json({
+      success: true,
+      operators: [],
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
     });
   }
 });
@@ -15781,6 +15845,8 @@ app.get('/api/international-airtime/operators', protect, async (req, res) => {
 // @route   GET /api/international-airtime/variations
 // @access  Private
 app.get('/api/international-airtime/variations', protect, async (req, res) => {
+  console.log('📊 INTERNATIONAL VARIATIONS ENDPOINT HIT - query:', req.query);
+  
   try {
     const { operatorId, productTypeId } = req.query;
     
@@ -15790,8 +15856,6 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
         message: 'operatorId and productTypeId are required'
       });
     }
-    
-    console.log(`📊 Fetching variations for operator: ${operatorId}, productType: ${productTypeId}`);
     
     const cacheKey = `int_variations_${operatorId}_${productTypeId}`;
     const cachedData = cache.get(cacheKey);
@@ -15803,46 +15867,66 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
         source: 'cache'
       });
     }
-    
-    // ✅ GET request with query parameters
-    const vtpassResult = await callVtpassApi('/service-variations', {
-      serviceID: 'foreign-airtime',
-      operator_id: operatorId,
-      product_type_id: productTypeId
-    }, {}, 'GET');
-    
-    console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
-    
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.content && vtpassResult.data.content.variations) {
-      const variations = vtpassResult.data.content.variations;
-      console.log(`✅ Found ${variations.length} variations`);
-      
-      cache.set(cacheKey, variations, 3600);
-      
+
+    console.log('🚀 Calling LIVE VTpass API for variations...');
+
+    // ✅ EXACTLY like Data Plans - direct axios.get with params
+    const response = await axios.get(
+      'https://vtpass.com/api/service-variations',
+      {
+        params: {
+          serviceID: 'foreign-airtime',
+          operator_id: operatorId,
+          product_type_id: productTypeId
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
       return res.json({
         success: true,
-        variations: variations,
-        serviceName: vtpassResult.data.content.ServiceName || 'International Airtime',
-        source: 'vtpass_live'
-      });
-    } else {
-      const errorMsg = vtpassResult.message || 'Invalid response from VTpass API';
-      console.error('❌ Invalid response from VTpass:', errorMsg);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch variations',
-        error: errorMsg,
-        variations: []
+        variations: [],
+        serviceName: 'International Airtime',
+        source: 'vtpass_error',
+        note: 'VTpass error: ' + vtpassData.response_description
       });
     }
+
+    const variations = vtpassData.content?.variations || [];
+    const serviceName = vtpassData.content?.ServiceName || 'International Airtime';
     
+    console.log(`✅ Found ${variations.length} variations`);
+
+    cache.set(cacheKey, variations, 3600);
+
+    res.json({
+      success: true,
+      variations: variations,
+      serviceName: serviceName,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
   } catch (error) {
-    console.error('Error fetching variations:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch variations',
-      error: error.message,
-      variations: []
+    console.error('❌ Error fetching variations:', error.message);
+    res.json({
+      success: true,
+      variations: [],
+      serviceName: 'International Airtime',
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
     });
   }
 });
@@ -15935,7 +16019,7 @@ app.post('/api/international-airtime/purchase',
       
       console.log(`💰 WALLET DEBITED: ₦${amount}`);
 
-      // ✅ POST request to VTpass
+      // ✅ POST request to VTpass (same as Airtime/Data)
       const vtpassResult = await callVtpassApi('/pay', {
         request_id: reference,
         serviceID: 'foreign-airtime',
@@ -15947,7 +16031,7 @@ app.post('/api/international-airtime/purchase',
         product_type_id: productTypeId,
         email: email || user.email,
         amount: amount.toString()
-      }, {}, 'POST');
+      });
 
       console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
 
@@ -16111,10 +16195,9 @@ app.post('/api/international-airtime/requery', protect, [
     
     console.log(`🔍 Requerying international airtime: ${requestId}`);
     
-    // ✅ POST request to VTpass
     const vtpassResult = await callVtpassApi('/requery', {
       request_id: requestId
-    }, {}, 'POST');
+    });
     
     console.log('📡 VTPass Requery Response:', JSON.stringify(vtpassResult, null, 2));
     
@@ -16136,7 +16219,6 @@ app.post('/api/international-airtime/requery', protect, [
     });
   }
 });
-
 
 
 
