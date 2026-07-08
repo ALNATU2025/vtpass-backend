@@ -15645,7 +15645,8 @@ app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactio
 // @route   GET /api/international-airtime/countries
 // @access  Private
 app.get('/api/international-airtime/countries', protect, async (req, res) => {
-  console.log('🌍 INTERNATIONAL COUNTRIES ENDPOINT HIT');
+  console.log('🌍🌍🌍 INTERNATIONAL COUNTRIES ENDPOINT HIT 🌍🌍🌍');
+  console.log('📱 User:', req.user?._id);
   
   try {
     // Try cache first
@@ -15661,7 +15662,7 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
       });
     }
 
-    console.log('🚀 Calling LIVE VTpass API for international countries...');
+    console.log('🚀 Calling LIVE VTpass API...');
 
     const response = await axios.get(
       'https://vtpass.com/api/get-international-airtime-countries',
@@ -15676,6 +15677,7 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
     );
 
     console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
 
     const vtpassData = response.data;
 
@@ -15693,15 +15695,6 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
     
     console.log(`✅ Found ${countries.length} countries`);
 
-    if (!countries || countries.length === 0) {
-      return res.json({
-        success: true,
-        countries: [],
-        source: 'empty_response',
-        note: 'No countries from VTpass'
-      });
-    }
-
     // Cache for 1 hour
     cache.set(cacheKey, countries, 3600);
 
@@ -15713,17 +15706,19 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error fetching international countries:', error.message);
+    console.error('❌ Error:', error.message);
+    console.error('❌ Full error:', error);
     
     res.json({
       success: true,
       countries: [],
       source: 'mock_fallback',
-      timestamp: new Date().toISOString(),
-      note: 'Using empty data due to service unavailability: ' + error.message
+      note: 'Error: ' + error.message
     });
   }
 });
+
+
 
 // @desc    Get International Airtime Product Types
 // @route   GET /api/international-airtime/product-types/:countryCode
