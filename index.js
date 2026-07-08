@@ -15599,6 +15599,16 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
   console.log('🌍 INTERNATIONAL COUNTRIES ENDPOINT HIT');
   
   try {
+    // Check credentials first
+    if (!process.env.VTPASS_API_KEY || !process.env.VTPASS_SECRET_KEY) {
+      console.error('❌ Missing VTpass credentials');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error: Missing VTpass credentials',
+        countries: []
+      });
+    }
+
     // Try cache first
     const cacheKey = 'int_airtime_countries';
     const cachedData = cache.get(cacheKey);
@@ -15614,7 +15624,6 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
 
     console.log('🚀 Calling LIVE VTpass API for international countries...');
 
-    // ✅ EXACTLY like Data Plans - direct axios.get with headers
     const response = await axios.get(
       'https://vtpass.com/api/get-international-airtime-countries',
       {
@@ -15623,23 +15632,22 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
           'api-key': process.env.VTPASS_API_KEY,
           'secret-key': process.env.VTPASS_SECRET_KEY,
         },
-        timeout: 15000
+        timeout: 30000 // Increased timeout
       }
     );
 
-    console.log('📦 LIVE VTpass API response status:', response.status);
+    console.log('📦 VTpass API response status:', response.status);
 
     const vtpassData = response.data;
 
-    // ✅ EXACTLY like Data Plans - check response_description
-    if (vtpassData.response_description !== '000') {
-      console.log('❌ VTpass API error:', vtpassData.response_description);
-      // Return empty array but success: true (like Data Plans)
+    // Check if we got a valid response
+    if (!vtpassData || vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData?.response_description || 'Unknown error');
       return res.json({
         success: true,
         countries: [],
         source: 'vtpass_error',
-        note: 'VTpass error: ' + vtpassData.response_description
+        note: vtpassData?.response_description || 'VTpass API error'
       });
     }
 
@@ -15670,7 +15678,7 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
   } catch (error) {
     console.error('❌ Error fetching international countries:', error.message);
     
-    // ✅ EXACTLY like Data Plans - return success: true with empty array
+    // Always return success: true with empty array as fallback
     res.json({
       success: true,
       countries: [],
@@ -15680,6 +15688,8 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
     });
   }
 });
+
+
 
 // @desc    Get International Airtime Product Types
 // @route   GET /api/international-airtime/product-types/:countryCode
@@ -16231,19 +16241,23 @@ app.post('/api/international-airtime/requery', protect, [
 
 
 // Add this BEFORE your /api/international-airtime/countries route
+// ==================== DEBUG ROUTE - PUT THIS FIRST ====================
 app.get('/api/international-airtime/debug', protect, async (req, res) => {
   try {
-    // Check if credentials are loaded
     const apiKey = process.env.VTPASS_API_KEY;
     const secretKey = process.env.VTPASS_SECRET_KEY;
     
-    // Test the VTpass API directly
+    console.log('🔍 DEBUG: Checking credentials...');
+    console.log('API Key exists:', !!apiKey);
+    console.log('Secret Key exists:', !!secretKey);
+    
+    // Test VTpass API directly
     const testResponse = await axios.get(
       'https://vtpass.com/api/get-international-airtime-countries',
       {
         headers: {
-          'api-key': apiKey,
-          'secret-key': secretKey,
+          'api-key': apiKey || '',
+          'secret-key': secretKey || '',
           'Content-Type': 'application/json'
         },
         timeout: 15000
@@ -16254,15 +16268,15 @@ app.get('/api/international-airtime/debug', protect, async (req, res) => {
       success: true,
       credentials: {
         apiKeyExists: !!apiKey,
-        apiKeyLength: apiKey?.length || 0,
         secretKeyExists: !!secretKey,
+        apiKeyLength: apiKey?.length || 0,
         secretKeyLength: secretKey?.length || 0
       },
       vtpassResponse: testResponse.data,
       statusCode: testResponse.status
     });
   } catch (error) {
-    console.error('Debug error:', error.message);
+    console.error('❌ Debug error:', error.message);
     res.json({
       success: false,
       error: error.message,
