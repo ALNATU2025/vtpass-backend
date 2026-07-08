@@ -10143,6 +10143,58 @@ app.post('/api/vtpass/data/purchase',
 
 
 
+// ==================== PUBLIC DEBUG ROUTE - NO AUTH REQUIRED ====================
+// PUT THIS AT THE VERY TOP OF YOUR ROUTES, BEFORE ANY OTHER ROUTES
+app.get('/api/international-airtime/public-debug', async (req, res) => {
+  console.log('🔍 PUBLIC DEBUG: Checking VTpass connectivity...');
+  
+  try {
+    const apiKey = process.env.VTPASS_API_KEY;
+    const secretKey = process.env.VTPASS_SECRET_KEY;
+    
+    console.log('API Key exists:', !!apiKey);
+    console.log('Secret Key exists:', !!secretKey);
+    
+    // Test VTpass API directly without auth
+    const testResponse = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey || '',
+          'secret-key': secretKey || '',
+        },
+        timeout: 15000
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'VTpass API is reachable',
+      credentials: {
+        apiKeyExists: !!apiKey,
+        secretKeyExists: !!secretKey,
+        apiKeyLength: apiKey?.length || 0,
+        secretKeyLength: secretKey?.length || 0
+      },
+      vtpassResponse: testResponse.data,
+      statusCode: testResponse.status
+    });
+  } catch (error) {
+    console.error('❌ Public debug error:', error.message);
+    res.json({
+      success: false,
+      message: 'VTpass API error',
+      error: error.message,
+      response: error.response?.data,
+      statusCode: error.response?.status
+    });
+  }
+});
+
+
+
+
 // @desc    Debug: Get International Airtime Countries (NO AUTH)
 // @route   GET /api/international-airtime/countries-public
 // @access  Public - FOR TESTING ONLY
@@ -16242,12 +16294,13 @@ app.post('/api/international-airtime/requery', protect, [
 
 // Add this BEFORE your /api/international-airtime/countries route
 // ==================== DEBUG ROUTE - PUT THIS FIRST ====================
+// ==================== PROTECTED DEBUG ROUTE ====================
 app.get('/api/international-airtime/debug', protect, async (req, res) => {
   try {
     const apiKey = process.env.VTPASS_API_KEY;
     const secretKey = process.env.VTPASS_SECRET_KEY;
     
-    console.log('🔍 DEBUG: Checking credentials...');
+    console.log('🔍 DEBUG: User authenticated:', req.user?._id);
     console.log('API Key exists:', !!apiKey);
     console.log('Secret Key exists:', !!secretKey);
     
@@ -16285,7 +16338,6 @@ app.get('/api/international-airtime/debug', protect, async (req, res) => {
     });
   }
 });
-
 
 
 
