@@ -49,6 +49,8 @@ const transactionSchema = new mongoose.Schema({
             'Wallet Funding',
             'Transfer Sent',
             'Transfer Received',
+            'International Airtime Purchase',  // ✅ ADD THIS
+            'International Data Purchase',     // ✅ ADD THIS
             
             // Commission transactions
             'Commission Credit',                  // Generic commission
@@ -64,6 +66,8 @@ const transactionSchema = new mongoose.Schema({
             'Education Commission Credit',
             'Insurance Commission Credit',
             'Wallet Funding Commission Credit',
+            'International-airtime Commission Credit',  // ✅ ADD THIS
+            'International-data Commission Credit',     // ✅ ADD THIS
             'Commission Withdrawal',
             'Commission Debit',
             'Refund Credit',
