@@ -16125,8 +16125,9 @@ app.post('/api/international-airtime/purchase',
         transactionStatus = 'Successful';
         finalBalance = balanceAfter;
 
-        // Calculate and add commission
-        await calculateAndAddCommission(userId, amountInNGN, 'international-airtime', session)
+        // ✅ FIXED: Use 'airtime' instead of 'international-airtime'
+        // This matches the mapping in commissionRoutes.js
+        await calculateAndAddCommission(userId, amountInNGN, 'airtime', session)
           .catch(err => console.log('⚠️ International airtime commission calculation failed:', err.message));
 
         // Create success notification
@@ -16186,7 +16187,7 @@ app.post('/api/international-airtime/purchase',
       const newTransaction = await createTransaction(
         userId,
         amountInNGN,
-        'International Airtime Purchase',
+        'International Airtime Purchase',  // ✅ This matches your enum
         transactionStatus,
         `International airtime for ${phoneNumber} (${countryCode})${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}`,
         balanceBefore,
