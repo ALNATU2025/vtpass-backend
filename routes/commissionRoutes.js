@@ -31,7 +31,37 @@ const withdrawLimiter = rateLimit({
 
 
 
+const getCommissionType = (serviceType) => {
+    // Map service types to their commission credit types
+    const typeMap = {
+        'airtime': 'Airtime Commission Credit',
+        'data': 'Data Commission Credit',
+        'electricity': 'Electricity Commission Credit',
+        'cable': 'Cable TV Commission Credit',
+        'education': 'Education Commission Credit',
+        'insurance': 'Insurance Commission Credit',
+        'wallet_funding': 'Wallet Funding Commission Credit',
+        'transfer': 'Transfer Commission Credit',
+        'international-airtime': 'Airtime Commission Credit',  // ✅ Map to existing enum
+        'international-data': 'Data Commission Credit',        // ✅ Map to existing enum
+        'international_airtime': 'Airtime Commission Credit',  // ✅ Alternative format
+        'international_data': 'Data Commission Credit'         // ✅ Alternative format
+    };
+    
+    return typeMap[serviceType] || 'Commission Credit';
+};
 
+// Also map the main transaction type
+const getTransactionType = (type) => {
+    const typeMap = {
+        'International Airtime Purchase': 'Airtime Purchase',  // ✅ Map to existing
+        'International Data Purchase': 'Data Purchase',        // ✅ Map to existing
+        'International-airtime Commission Credit': 'Airtime Commission Credit',  // ✅ Map to existing
+        'International-data Commission Credit': 'Data Commission Credit'         // ✅ Map to existing
+    };
+    
+    return typeMap[type] || type;
+};
 
 
 // @desc    Get comprehensive referral statistics
