@@ -16096,12 +16096,15 @@ app.post('/api/international-airtime/purchase',
       console.log(`💰 WALLET DEBITED: ₦${amountInNGN}`);
       console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
 
-      // Call VTpass API
+      // ================================================
+      // ✅ FIX: Build VTpass payload with ALL required fields
+      // ================================================
       const vtpassPayload = {
         request_id: requestId,
         serviceID: 'foreign-airtime',
         billersCode: phoneNumber,
         variation_code: variationCode,
+        amount: amount,  // ✅ CRITICAL FIX: amount is required
         phone: phoneNumber,
         operator_id: operatorId,
         country_code: countryCode,
@@ -16109,15 +16112,7 @@ app.post('/api/international-airtime/purchase',
         email: email || user.email || 'customer@example.com'
       };
 
-      console.log('📡 Calling VTpass for International Airtime:', {
-        serviceID: 'foreign-airtime',
-        operator_id: operatorId,
-        country_code: countryCode,
-        product_type_id: productTypeId,
-        variation_code: variationCode,
-        phone: phoneNumber,
-        request_id: requestId
-      });
+      console.log('📡 Calling VTpass for International Airtime with payload:', JSON.stringify(vtpassPayload, null, 2));
 
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
       console.log('📡 VTpass Response:', JSON.stringify(vtpassResult, null, 2));
@@ -16163,6 +16158,7 @@ app.post('/api/international-airtime/purchase',
         // VTpass failed - user is already debited
         transactionStatus = 'Failed';
         console.log(`❌ VTPASS FAILED: User already debited ₦${amountInNGN}, service not delivered`);
+        console.log(`   VTpass Error: ${vtpassResult.data?.response_description || 'Unknown error'}`);
         
         // Create failure notification
         try {
@@ -16177,7 +16173,8 @@ app.post('/api/international-airtime/purchase',
               amount: amount,
               currency: currency,
               countryCode: countryCode,
-              userDebited: true
+              userDebited: true,
+              vtpassError: vtpassResult.data?.response_description || 'Unknown error'
             }
           });
         } catch (notificationError) {
@@ -16209,7 +16206,8 @@ app.post('/api/international-airtime/purchase',
           userDebited: true,
           debitAmount: amountInNGN,
           vtpassDelivered: transactionStatus === 'Successful',
-          vtpassResponse: vtpassResult.data
+          vtpassResponse: vtpassResult.data,
+          vtpassError: vtpassResult.data?.response_description
         }
       );
 
@@ -16234,7 +16232,9 @@ app.post('/api/international-airtime/purchase',
           vtpassResponse: vtpassResult.data
         });
       } else {
-        res.status(400).json({
+        // ✅ FIX: Return 200 with success:false instead of 400
+        // This allows the frontend to handle the error properly
+        res.status(200).json({
           success: false,
           message: `Your wallet was debited ₦${amountInNGN} but international airtime delivery failed. Please contact support.`,
           transactionId: newTransaction._id,
@@ -16248,7 +16248,8 @@ app.post('/api/international-airtime/purchase',
           amountDebited: amountInNGN,
           isFailed: true,
           shouldShowAsFailed: true,
-          vtpassResponse: vtpassResult.data
+          vtpassResponse: vtpassResult.data,
+          vtpassError: vtpassResult.data?.response_description
         });
       }
       
