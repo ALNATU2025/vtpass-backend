@@ -7627,88 +7627,93 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions with cursor pagination
+// @desc    Get all transactions with cursor pagination - OPTIMIZED
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit) || 15, 30);
-    const lastId = req.query.lastId;
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+        const lastId = req.query.lastId;
 
-    console.log('📊 Fetching transactions - lastId:', lastId || 'none', 'limit:', limit);
+        console.log('📊 Fetching transactions - lastId:', lastId || 'none', 'limit:', limit);
 
-    let query = {};
-    if (lastId && lastId !== 'null' && lastId !== 'undefined') {
-      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+        let query = {};
+        if (lastId && lastId !== 'null' && lastId !== 'undefined') {
+            query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+        }
+
+        // 🔥 OPTIMIZED: Use lean() and select only needed fields
+        const transactions = await Transaction
+            .find(query)
+            .select('_id userId type amount status description reference createdAt previousBalance newBalance metadata')
+            .sort({ _id: -1 })
+            .limit(limit + 1)
+            .lean()
+            .maxTimeMS(8000);
+
+        const hasMore = transactions.length > limit;
+        if (hasMore) transactions.pop();
+
+        const newLastId = transactions.length > 0
+            ? transactions[transactions.length - 1]._id.toString()
+            : null;
+
+        // 🔥 OPTIMIZED: Get user data in a single efficient query
+        const userIds = [...new Set(
+            transactions
+                .map(tx => tx.userId?.toString())
+                .filter(id => id && id !== 'null' && id !== 'system')
+        )];
+
+        let userMap = {};
+        if (userIds.length > 0) {
+            const users = await User
+                .find(
+                    { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+                    { fullName: 1, email: 1, phone: 1 }
+                )
+                .lean()
+                .maxTimeMS(3000);
+
+            userMap = users.reduce((map, user) => {
+                map[user._id.toString()] = {
+                    fullName: user.fullName || 'Unknown',
+                    email: user.email || 'no-email',
+                    phone: user.phone || 'N/A'
+                };
+                return map;
+            }, {});
+        }
+
+        // Combine transactions with user data
+        const result = transactions.map(tx => ({
+            ...tx,
+            user: userMap[tx.userId?.toString()] || {
+                fullName: 'System',
+                email: 'system@transaction',
+                phone: 'N/A'
+            }
+        }));
+
+        console.log(`✅ Returning ${result.length} transactions, hasMore: ${hasMore}`);
+
+        res.json({
+            success: true,
+            transactions: result,
+            hasMore: hasMore,
+            lastId: newLastId,
+            total: result.length
+        });
+
+    } catch (error) {
+        console.error('❌ Transactions error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message,
+            code: error.code || 'SERVER_ERROR'
+        });
     }
-
-    // Fetch one extra to determine if there are more
-    const transactions = await Transaction
-      .find(query)
-      .sort({ _id: -1 })  // ✅ REQUIRED for cursor pagination
-      .limit(limit + 1)
-      .lean();
-
-    const hasMore = transactions.length > limit;
-    
-    // Remove the extra item if it exists
-    if (hasMore) {
-      transactions.pop();
-    }
-
-    const newLastId = transactions.length > 0
-      ? transactions[transactions.length - 1]._id.toString()
-      : null;
-
-    // Get user data for these transactions
-    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
-    
-    let userMap = {};
-    if (userIds.length > 0) {
-      const users = await User.find(
-        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 }
-      ).lean();
-      
-      userMap = users.reduce((map, user) => {
-        map[user._id.toString()] = {
-          fullName: user.fullName || 'Unknown',
-          email: user.email || 'no-email',
-          phone: user.phone || 'N/A'
-        };
-        return map;
-      }, {});
-    }
-
-    // Combine transactions with user data
-    const result = transactions.map(tx => ({
-      ...tx,
-      user: userMap[tx.userId?.toString()] || {
-        fullName: 'System',
-        email: 'system@transaction',
-        phone: 'N/A'
-      }
-    }));
-
-    console.log(`✅ Returning ${result.length} transactions, hasMore: ${hasMore}`);
-
-    res.json({
-      success: true,
-      transactions: result,
-      hasMore: hasMore,
-      lastId: newLastId,
-    });
-
-  } catch (error) {
-    console.error('❌ Transactions error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: error.message 
-    });
-  }
 });
-
-
 
 
 // ==================== TOTAL USERS COUNT ENDPOINT ====================
