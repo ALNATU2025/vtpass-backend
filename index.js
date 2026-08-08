@@ -5944,6 +5944,7 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
       transactions: result,
       total: await Transaction.countDocuments(),
       returned: result.length
+      usersCount: usersCount
     });
   } catch (error) {
     console.error('Error in latest-transactions:', error);
