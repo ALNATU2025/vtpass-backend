@@ -5858,6 +5858,7 @@ app.get('/api/admin/disputes', adminProtect, async (req, res) => {
 
 
 // Get latest transactions with FULL balance data (for admin page)
+// Get latest transactions with FULL balance data (for admin page)
 app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 200, 500);
@@ -5939,12 +5940,13 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
       };
     });
     
+    // 🔥 FIXED: Use userIds.length directly
     res.json({
       success: true,
       transactions: result,
       total: await Transaction.countDocuments(),
       returned: result.length,
-      usersCount: usersCount
+      usersCount: userIds.length  // ← userIds.length, NOT usersCount
     });
   } catch (error) {
     console.error('Error in latest-transactions:', error);
