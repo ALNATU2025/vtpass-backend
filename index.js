@@ -7627,7 +7627,7 @@ app.get('/api/commission-transactions', protect, [
 });
 
 
-// @desc    Get all transactions with cursor pagination - OPTIMIZED
+// @desc    Get all transactions with cursor pagination - OPTIMIZED with user data
 // @route   GET /api/transactions/all
 // @access  Private/Admin
 app.get('/api/transactions/all', adminProtect, async (req, res) => {
@@ -7642,7 +7642,7 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
             query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
         }
 
-        // 🔥 OPTIMIZED: Use lean() and select only needed fields
+        // Get transactions with proper user data
         const transactions = await Transaction
             .find(query)
             .select('_id userId type amount status description reference createdAt previousBalance newBalance metadata')
@@ -7658,11 +7658,11 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
             ? transactions[transactions.length - 1]._id.toString()
             : null;
 
-        // 🔥 OPTIMIZED: Get user data in a single efficient query
+        // ✅ FIX: Get ALL user data including fullName, email, phone
         const userIds = [...new Set(
             transactions
                 .map(tx => tx.userId?.toString())
-                .filter(id => id && id !== 'null' && id !== 'system')
+                .filter(id => id && id !== 'null' && id !== 'system' && id !== 'unknown')
         )];
 
         let userMap = {};
@@ -7670,32 +7670,42 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
             const users = await User
                 .find(
                     { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-                    { fullName: 1, email: 1, phone: 1 }
+                    { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
                 )
                 .lean()
                 .maxTimeMS(3000);
 
             userMap = users.reduce((map, user) => {
                 map[user._id.toString()] = {
-                    fullName: user.fullName || 'Unknown',
-                    email: user.email || 'no-email',
-                    phone: user.phone || 'N/A'
+                    fullName: user.fullName || 'Unknown User',
+                    email: user.email || 'no-email@example.com',
+                    phone: user.phone || 'N/A',
+                    isAdmin: user.isAdmin || false
                 };
                 return map;
             }, {});
         }
 
         // Combine transactions with user data
-        const result = transactions.map(tx => ({
-            ...tx,
-            user: userMap[tx.userId?.toString()] || {
+        const result = transactions.map(tx => {
+            const userId = tx.userId?.toString();
+            const userData = userMap[userId] || {
                 fullName: 'System',
                 email: 'system@transaction',
-                phone: 'N/A'
-            }
-        }));
+                phone: 'N/A',
+                isAdmin: false
+            };
+            
+            return {
+                ...tx,
+                user: userData,
+                // ✅ Also add userId as string for frontend
+                userId: userId || 'system'
+            };
+        });
 
         console.log(`✅ Returning ${result.length} transactions, hasMore: ${hasMore}`);
+        console.log(`   Users found: ${Object.keys(userMap).length}`);
 
         res.json({
             success: true,
@@ -7714,7 +7724,6 @@ app.get('/api/transactions/all', adminProtect, async (req, res) => {
         });
     }
 });
-
 
 // ==================== TOTAL USERS COUNT ENDPOINT ====================
 // @desc    Get total user count (fast, no pagination)
