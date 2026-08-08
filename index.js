@@ -5943,7 +5943,7 @@ app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
       success: true,
       transactions: result,
       total: await Transaction.countDocuments(),
-      returned: result.length
+      returned: result.length,
       usersCount: usersCount
     });
   } catch (error) {
