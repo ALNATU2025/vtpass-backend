@@ -6802,70 +6802,90 @@ app.get('/api/users', adminProtect, [
 app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => {
   try {
     console.log('🔍 === VTpass Balance Debug ===');
-    console.log('User:', req.user.email);
-    console.log('Is Admin:', req.user.isAdmin);
+    console.log('User:', req.user?.email);
+    console.log('Is Admin:', req.user?.isAdmin);
     
     const vtpassApiKey = process.env.VTPASS_API_KEY;
     const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
     
-    console.log('API Key exists:', !!vtpassApiKey);
-    console.log('API Key length:', vtpassApiKey?.length);
-    console.log('Secret Key exists:', !!vtpassSecretKey);
-    console.log('Secret Key length:', vtpassSecretKey?.length);
+    console.log('API Key configured:', !!vtpassApiKey);
+    console.log('Secret Key configured:', !!vtpassSecretKey);
+    console.log('API Key length:', vtpassApiKey?.length || 0);
+    console.log('Secret Key length:', vtpassSecretKey?.length || 0);
     
     if (!vtpassApiKey || !vtpassSecretKey) {
-      console.log('❌ CREDENTIALS MISSING');
+      console.log('❌ CREDENTIALS MISSING!');
       return res.status(400).json({
         success: false,
         message: 'VTpass API credentials not configured',
-        debug: { apiKeyExists: !!vtpassApiKey, secretKeyExists: !!vtpassSecretKey }
+        debug: { 
+          apiKeyExists: !!vtpassApiKey, 
+          secretKeyExists: !!vtpassSecretKey 
+        }
       });
     }
-    
+
     console.log('📡 Calling VTpass API...');
-    console.log('URL: https://vtpass.com/api/balance');
     
-    const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-      headers: {
-        'api-key': vtpassApiKey,
-        'secret-key': vtpassSecretKey,
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000
-    });
+    // Try both sandbox and production
+    const urls = [
+      'https://sandbox.vtpass.com/api/balance',
+      'https://vtpass.com/api/balance'
+    ];
     
-    console.log('✅ Response status:', balanceResponse.status);
-    console.log('📦 Full response:', JSON.stringify(balanceResponse.data, null, 2));
+    let balanceResponse = null;
+    let lastError = null;
     
-    // Check the actual response structure
-    const responseData = balanceResponse.data;
-    const vtpassBalance = responseData.contents?.balance || 0;
-    const code = responseData.code || 'unknown';
+    for (const url of urls) {
+      try {
+        console.log(`📡 Trying: ${url}`);
+        const response = await axios.get(url, {
+          headers: {
+            'api-key': vtpassApiKey,
+            'secret-key': vtpassSecretKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        
+        if (response.data.code === 1) {
+          balanceResponse = response;
+          console.log(`✅ Success with: ${url}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`❌ Failed: ${url}`, e.response?.data || e.message);
+        lastError = e;
+      }
+    }
+
+    if (!balanceResponse) {
+      console.error('❌ All VTpass endpoints failed');
+      return res.status(500).json({
+        success: false,
+        message: 'VTpass API unreachable',
+        error: lastError?.response?.data || lastError?.message || 'Unknown error',
+        triedEndpoints: urls
+      });
+    }
+
+    const vtpassBalance = balanceResponse.data.contents?.balance || 0;
     
-    console.log('💰 Balance:', vtpassBalance);
-    console.log('📊 Code:', code);
+    console.log('💰 VTpass Balance:', vtpassBalance);
     
     res.json({
       success: true,
       balance: vtpassBalance,
-      code: code,
+      environment: balanceResponse.config.url.includes('sandbox') ? 'sandbox' : 'production',
       lastChecked: new Date().toISOString(),
-      currency: 'NGN',
-      rawResponse: responseData, // ← This will show you exactly what VTpass returned
-      debug: {
-        apiKeyLength: vtpassApiKey.length,
-        secretKeyLength: vtpassSecretKey.length,
-        responseKeys: Object.keys(responseData)
-      }
+      currency: 'NGN'
     });
     
   } catch (error) {
     console.error('❌ ERROR DETAILS:');
     console.error('Message:', error.message);
     console.error('Status:', error.response?.status);
-    console.error('Headers:', error.response?.headers);
     console.error('Data:', JSON.stringify(error.response?.data, null, 2));
-    console.error('Config:', error.config);
     
     res.status(500).json({
       success: false,
