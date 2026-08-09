@@ -4691,6 +4691,238 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // ==================== ADMIN REFUND & DISPUTE ENDPOINTS ====================
 
+
+
+// ==================== USER STATISTICS ENDPOINT ====================
+// @desc    Get user registration statistics (daily, weekly, monthly, yearly)
+// @route   GET /api/admin/users/statistics
+// @access  Private/Admin
+app.get('/api/admin/users/statistics', adminProtect, async (req, res) => {
+  try {
+    console.log('📊 [STATISTICS] Fetching user registration statistics...');
+    
+    const now = new Date();
+    
+    // Start of today (midnight)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // 7 days ago
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // 30 days ago (this month)
+    const monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    
+    // 365 days ago (this year)
+    const yearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    
+    // Get all counts in parallel for speed
+    const [
+      totalUsers,
+      activeUsers,
+      adminUsers,
+      dailyCount,
+      weeklyCount,
+      monthlyCount,
+      yearlyCount,
+      todayUsers,
+      allUsers
+    ] = await Promise.all([
+      // Total users
+      User.countDocuments(),
+      
+      // Active users
+      User.countDocuments({ isActive: true }),
+      
+      // Admin users
+      User.countDocuments({ isAdmin: true }),
+      
+      // Daily registrations (today)
+      User.countDocuments({
+        createdAt: { $gte: today }
+      }),
+      
+      // Weekly registrations (last 7 days)
+      User.countDocuments({
+        createdAt: { $gte: weekAgo }
+      }),
+      
+      // Monthly registrations (last 30 days)
+      User.countDocuments({
+        createdAt: { $gte: monthAgo }
+      }),
+      
+      // Yearly registrations (last 365 days)
+      User.countDocuments({
+        createdAt: { $gte: yearAgo }
+      }),
+      
+      // Today's users with details (newest first)
+      User.find({
+        createdAt: { $gte: today }
+      })
+      .sort({ createdAt: -1 })
+      .select('-password -pin -transactionPin')
+      .lean(),
+      
+      // All users sorted by registration date (newest first)
+      User.find({})
+      .sort({ createdAt: -1 })
+      .select('-password -pin -transactionPin')
+      .lean()
+    ]);
+    
+    // Format today's users for frontend
+    const formattedTodayUsers = todayUsers.map(user => ({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      isAdmin: user.isAdmin,
+      walletBalance: user.walletBalance,
+      commissionBalance: user.commissionBalance,
+      createdAt: user.createdAt,
+      registrationDate: user.createdAt
+    }));
+    
+    // Format all users for frontend
+    const formattedAllUsers = allUsers.map(user => ({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      isAdmin: user.isAdmin,
+      walletBalance: user.walletBalance,
+      commissionBalance: user.commissionBalance,
+      createdAt: user.createdAt,
+      registrationDate: user.createdAt
+    }));
+    
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        totalUsers,
+        activeUsers,
+        adminUsers,
+        statistics: {
+          daily: dailyCount,
+          weekly: weeklyCount,
+          monthly: monthlyCount,
+          yearly: yearlyCount
+        },
+        todayUsers: formattedTodayUsers,
+        allUsers: formattedAllUsers,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    
+    console.log(`✅ [STATISTICS] Stats fetched: Total: ${totalUsers}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ [STATISTICS] Error fetching user statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching user statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ==================== DAILY REGISTRATIONS WITH PAGINATION ====================
+// @desc    Get daily registrations with pagination
+// @route   GET /api/admin/users/daily
+// @access  Private/Admin
+app.get('/api/admin/users/daily', adminProtect, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Get daily users with pagination
+    const dailyUsers = await User.find({
+      createdAt: { $gte: today }
+    })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(parseInt(limit))
+    .select('-password -pin -transactionPin')
+    .lean();
+    
+    const totalDailyRegistrations = await User.countDocuments({
+      createdAt: { $gte: today }
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        users: dailyUsers,
+        total: totalDailyRegistrations,
+        page: parseInt(page),
+        totalPages: Math.ceil(totalDailyRegistrations / parseInt(limit)),
+        limit: parseInt(limit)
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching daily registrations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching daily registrations'
+    });
+  }
+});
+
+// ==================== REGISTRATIONS BY DATE RANGE ====================
+// @desc    Get registrations by date range
+// @route   GET /api/admin/users/by-date-range
+// @access  Private/Admin
+app.get('/api/admin/users/by-date-range', adminProtect, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Start date and end date are required'
+      });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    const users = await User.find({
+      createdAt: { $gte: start, $lte: end }
+    })
+    .sort({ createdAt: -1 })
+    .select('-password -pin -transactionPin')
+    .lean();
+    
+    res.json({
+      success: true,
+      data: {
+        users,
+        total: users.length,
+        startDate: start,
+        endDate: end
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching registrations by date range:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching registrations by date range'
+    });
+  }
+});
+
 // GET all pending/failed transactions
 // GET all pending/failed transactions - FIXED to include ALL types
 // GET all pending/failed transactions - FIXED to include failed
