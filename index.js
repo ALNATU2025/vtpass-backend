@@ -4895,21 +4895,26 @@ app.get('/api/admin/transactions/filtered', adminProtect, async (req, res) => {
     }
     
     // Time filter
-    const now = new Date();
-    if (timeFilter && timeFilter !== 'All Time') {
-      let dateFilter = {};
-      if (timeFilter === 'Today') {
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        dateFilter = { $gte: today };
-      } else if (timeFilter === 'This Week') {
-        const startOfWeek = now.subtract(Duration(days: now.weekday - 1));
-        dateFilter = { $gte: startOfWeek };
-      } else if (timeFilter === 'This Month') {
-        const startOfMonth = DateTime(now.year, now.month, 1);
-        dateFilter = { $gte: startOfMonth };
-      }
-      query.createdAt = dateFilter;
-    }
+    // Time filter
+const now = new Date();
+if (timeFilter && timeFilter !== 'All Time') {
+  let dateFilter = {};
+  if (timeFilter === 'Today') {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    dateFilter = { $gte: today };
+  } else if (timeFilter === 'This Week') {
+    // Calculate start of week (Monday)
+    const day = now.getDay(); // 0 = Sunday, 1 = Monday, ...
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
+    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), diff);
+    startOfWeek.setHours(0, 0, 0, 0);
+    dateFilter = { $gte: startOfWeek };
+  } else if (timeFilter === 'This Month') {
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    dateFilter = { $gte: startOfMonth };
+  }
+  query.createdAt = dateFilter;
+}
     
     // Date range filter
     if (startDate && endDate) {
