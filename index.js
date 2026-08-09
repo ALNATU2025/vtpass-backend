@@ -6799,22 +6799,32 @@ app.get('/api/users', adminProtect, [
 
 
 
-// @desc    Get VTpass wallet balance
-// @route   GET /api/admin/vtpass-balance
-// @access  Private/Admin
 app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => {
   try {
+    console.log('🔍 === VTpass Balance Debug ===');
+    console.log('User:', req.user.email);
+    console.log('Is Admin:', req.user.isAdmin);
+    
     const vtpassApiKey = process.env.VTPASS_API_KEY;
     const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
     
+    console.log('API Key exists:', !!vtpassApiKey);
+    console.log('API Key length:', vtpassApiKey?.length);
+    console.log('Secret Key exists:', !!vtpassSecretKey);
+    console.log('Secret Key length:', vtpassSecretKey?.length);
+    
     if (!vtpassApiKey || !vtpassSecretKey) {
+      console.log('❌ CREDENTIALS MISSING');
       return res.status(400).json({
         success: false,
-        message: 'VTpass API credentials not configured'
+        message: 'VTpass API credentials not configured',
+        debug: { apiKeyExists: !!vtpassApiKey, secretKeyExists: !!vtpassSecretKey }
       });
     }
     
-    // ✅ FIXED: Use header authentication, NOT Basic Auth
+    console.log('📡 Calling VTpass API...');
+    console.log('URL: https://vtpass.com/api/balance');
+    
     const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
       headers: {
         'api-key': vtpassApiKey,
@@ -6823,27 +6833,50 @@ app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => 
       },
       timeout: 10000
     });
-
-    const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+    
+    console.log('✅ Response status:', balanceResponse.status);
+    console.log('📦 Full response:', JSON.stringify(balanceResponse.data, null, 2));
+    
+    // Check the actual response structure
+    const responseData = balanceResponse.data;
+    const vtpassBalance = responseData.contents?.balance || 0;
+    const code = responseData.code || 'unknown';
+    
+    console.log('💰 Balance:', vtpassBalance);
+    console.log('📊 Code:', code);
     
     res.json({
       success: true,
       balance: vtpassBalance,
-      lastChecked: new Date(),
-      currency: 'NGN'
+      code: code,
+      lastChecked: new Date().toISOString(),
+      currency: 'NGN',
+      rawResponse: responseData, // ← This will show you exactly what VTpass returned
+      debug: {
+        apiKeyLength: vtpassApiKey.length,
+        secretKeyLength: vtpassSecretKey.length,
+        responseKeys: Object.keys(responseData)
+      }
     });
     
   } catch (error) {
-    console.error('Error fetching VTpass balance:', error.message);
-    console.error('Response data:', error.response?.data);
+    console.error('❌ ERROR DETAILS:');
+    console.error('Message:', error.message);
+    console.error('Status:', error.response?.status);
+    console.error('Headers:', error.response?.headers);
+    console.error('Data:', JSON.stringify(error.response?.data, null, 2));
+    console.error('Config:', error.config);
+    
     res.status(500).json({
       success: false,
       message: 'Failed to fetch VTpass balance',
-      error: error.message
+      error: error.message,
+      status: error.response?.status,
+      vtpassResponse: error.response?.data,
+      details: 'Check server logs for full details'
     });
   }
 });
-
 
 
 
@@ -7127,6 +7160,8 @@ app.post('/api/users/change-password', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // @desc    Fund a user's wallet (Admin only)
 // @route   POST /api/users/fund
 // @access  Private/Admin
