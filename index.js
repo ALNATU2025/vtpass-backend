@@ -4693,13 +4693,15 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
-// ==================== TRANSACTION STATISTICS ====================
-// @desc    Get transaction statistics (daily, weekly, monthly, yearly)
+// ==================== ENHANCED TRANSACTION STATISTICS ====================
+// @desc    Get transaction statistics with filters (daily, weekly, monthly, yearly)
 // @route   GET /api/admin/transactions/statistics
 // @access  Private/Admin
 app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => {
   try {
     console.log('📊 [TRANSACTION STATS] Fetching transaction statistics...');
+    
+    const { type, status, startDate, endDate } = req.query;
     
     const now = new Date();
     
@@ -4715,7 +4717,60 @@ app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => 
     // 365 days ago (this year)
     const yearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     
-    // Get all counts in parallel for speed
+    // Build filter query
+    let filterQuery = {};
+    
+    // Type filter
+    if (type && type !== 'All') {
+      if (type === 'Commission Credit') {
+        filterQuery.isCommission = true;
+      } else {
+        // Map display type to actual type
+        const typeMap = {
+          'Airtime Purchase': 'Airtime Purchase',
+          'Data Purchase': 'Data Purchase',
+          'Cable TV Purchase': 'Cable TV Purchase',
+          'Electricity Purchase': 'Electricity Purchase',
+          'Education Purchase': 'Education Purchase',
+          'Insurance Purchase': 'Insurance Purchase',
+          'International Airtime': 'International Airtime',
+          'Transfer': 'Transfer',
+          'Fund Wallet': 'Fund Wallet',
+          'Service Fee': 'Service Fee',
+        };
+        filterQuery.type = typeMap[type] || type;
+      }
+    }
+    
+    // Status filter
+    if (status && status !== 'All') {
+      const statusLower = status.toLowerCase();
+      if (statusLower === 'success') {
+        filterQuery.status = { $regex: /success|completed/i };
+      } else if (statusLower === 'pending') {
+        filterQuery.status = { $regex: /pending|processing/i };
+      } else if (statusLower === 'failed') {
+        filterQuery.status = { $regex: /failed|cancelled/i };
+      }
+    }
+    
+    // Date range filter
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filterQuery.createdAt = { $gte: start, $lte: end };
+    }
+    
+    // Get statistics
+    const buildStatsQuery = (dateFilter) => {
+      const query = { ...filterQuery };
+      if (dateFilter) {
+        query.createdAt = { ...query.createdAt, ...dateFilter };
+      }
+      return query;
+    };
+    
     const [
       totalTransactions,
       dailyCount,
@@ -4731,64 +4786,34 @@ app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => 
       pendingCount,
       failedCount
     ] = await Promise.all([
-      // Total transactions
-      Transaction.countDocuments(),
-      
-      // Daily transactions
-      Transaction.countDocuments({ createdAt: { $gte: today } }),
-      
-      // Weekly transactions
-      Transaction.countDocuments({ createdAt: { $gte: weekAgo } }),
-      
-      // Monthly transactions
-      Transaction.countDocuments({ createdAt: { $gte: monthAgo } }),
-      
-      // Yearly transactions
-      Transaction.countDocuments({ createdAt: { $gte: yearAgo } }),
-      
-      // Total amount
+      Transaction.countDocuments(filterQuery),
+      Transaction.countDocuments(buildStatsQuery({ $gte: today })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: weekAgo })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: monthAgo })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: yearAgo })),
       Transaction.aggregate([
+        { $match: filterQuery },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      
-      // Daily amount
       Transaction.aggregate([
-        { $match: { createdAt: { $gte: today } } },
+        { $match: buildStatsQuery({ $gte: today }) },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      
-      // Weekly amount
       Transaction.aggregate([
-        { $match: { createdAt: { $gte: weekAgo } } },
+        { $match: buildStatsQuery({ $gte: weekAgo }) },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      
-      // Monthly amount
       Transaction.aggregate([
-        { $match: { createdAt: { $gte: monthAgo } } },
+        { $match: buildStatsQuery({ $gte: monthAgo }) },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      
-      // Yearly amount
       Transaction.aggregate([
-        { $match: { createdAt: { $gte: yearAgo } } },
+        { $match: buildStatsQuery({ $gte: yearAgo }) },
         { $group: { _id: null, total: { $sum: '$amount' } } }
       ]),
-      
-      // Success count
-      Transaction.countDocuments({ 
-        status: { $regex: /success|completed/i } 
-      }),
-      
-      // Pending count
-      Transaction.countDocuments({ 
-        status: { $regex: /pending|processing/i } 
-      }),
-      
-      // Failed count
-      Transaction.countDocuments({ 
-        status: { $regex: /failed|cancelled/i } 
-      })
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /success|completed/i } }),
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /pending|processing/i } }),
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /failed|cancelled/i } })
     ]);
     
     const response = {
@@ -4811,7 +4836,7 @@ app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => 
       }
     };
     
-    console.log(`✅ [TRANSACTION STATS] Stats fetched: Total: ${totalTransactions}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
+    console.log(`✅ [TRANSACTION STATS] Stats fetched with filters - Total: ${totalTransactions}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
     
     res.json(response);
     
@@ -4825,6 +4850,170 @@ app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => 
   }
 });
 
+// ==================== FILTERED TRANSACTIONS ====================
+// @desc    Get filtered transactions for admin
+// @route   GET /api/admin/transactions/filtered
+// @access  Private/Admin
+app.get('/api/admin/transactions/filtered', adminProtect, async (req, res) => {
+  try {
+    const { type, status, timeFilter, startDate, endDate, search, sortBy, limit = 100, page = 1 } = req.query;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    let query = {};
+    
+    // Type filter
+    if (type && type !== 'All') {
+      if (type === 'Commission Credit') {
+        query.isCommission = true;
+      } else {
+        const typeMap = {
+          'Airtime Purchase': 'Airtime Purchase',
+          'Data Purchase': 'Data Purchase',
+          'Cable TV Purchase': 'Cable TV Purchase',
+          'Electricity Purchase': 'Electricity Purchase',
+          'Education Purchase': 'Education Purchase',
+          'Insurance Purchase': 'Insurance Purchase',
+          'International Airtime': 'International Airtime',
+          'Transfer': 'Transfer',
+          'Fund Wallet': 'Fund Wallet',
+          'Service Fee': 'Service Fee',
+        };
+        query.type = typeMap[type] || type;
+      }
+    }
+    
+    // Status filter
+    if (status && status !== 'All') {
+      const statusLower = status.toLowerCase();
+      if (statusLower === 'success') {
+        query.status = { $regex: /success|completed/i };
+      } else if (statusLower === 'pending') {
+        query.status = { $regex: /pending|processing/i };
+      } else if (statusLower === 'failed') {
+        query.status = { $regex: /failed|cancelled/i };
+      }
+    }
+    
+    // Time filter
+    const now = new Date();
+    if (timeFilter && timeFilter !== 'All Time') {
+      let dateFilter = {};
+      if (timeFilter === 'Today') {
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        dateFilter = { $gte: today };
+      } else if (timeFilter === 'This Week') {
+        const startOfWeek = now.subtract(Duration(days: now.weekday - 1));
+        dateFilter = { $gte: startOfWeek };
+      } else if (timeFilter === 'This Month') {
+        const startOfMonth = DateTime(now.year, now.month, 1);
+        dateFilter = { $gte: startOfMonth };
+      }
+      query.createdAt = dateFilter;
+    }
+    
+    // Date range filter
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt = { $gte: start, $lte: end };
+    }
+    
+    // Search filter
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      const userIds = await User.find({
+        $or: [
+          { fullName: searchRegex },
+          { email: searchRegex },
+          { phone: searchRegex }
+        ]
+      }).select('_id').lean();
+      
+      const userIdList = userIds.map(u => u._id);
+      
+      query.$or = [
+        { reference: searchRegex },
+        { transactionId: searchRegex },
+        { description: searchRegex },
+        { userId: { $in: userIdList } }
+      ];
+    }
+    
+    // Build sort
+    let sort = { createdAt: -1 };
+    if (sortBy === 'Oldest') sort = { createdAt: 1 };
+    else if (sortBy === 'Highest Amount') sort = { amount: -1 };
+    else if (sortBy === 'Lowest Amount') sort = { amount: 1 };
+    
+    // Get transactions
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query)
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Transaction.countDocuments(query)
+    ]);
+    
+    // Get user data
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id && id !== 'null' && id !== 'system'))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
+        };
+        return map;
+      }, {});
+    }
+    
+    // Process transactions
+    const processedTransactions = transactions.map(tx => {
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+      
+      return {
+        ...tx,
+        user: userData,
+        userId: userId || 'system'
+      };
+    });
+    
+    res.json({
+      success: true,
+      transactions: processedTransactions,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit)),
+      limit: parseInt(limit)
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching filtered transactions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
 
 // ==================== USER STATISTICS ENDPOINT ====================
 // @desc    Get user registration statistics (daily, weekly, monthly, yearly)
