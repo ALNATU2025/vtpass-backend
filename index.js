@@ -4693,6 +4693,139 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
+// ==================== TRANSACTION STATISTICS ====================
+// @desc    Get transaction statistics (daily, weekly, monthly, yearly)
+// @route   GET /api/admin/transactions/statistics
+// @access  Private/Admin
+app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => {
+  try {
+    console.log('📊 [TRANSACTION STATS] Fetching transaction statistics...');
+    
+    const now = new Date();
+    
+    // Start of today (midnight)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // 7 days ago
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // 30 days ago (this month)
+    const monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    
+    // 365 days ago (this year)
+    const yearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    
+    // Get all counts in parallel for speed
+    const [
+      totalTransactions,
+      dailyCount,
+      weeklyCount,
+      monthlyCount,
+      yearlyCount,
+      totalAmount,
+      dailyAmount,
+      weeklyAmount,
+      monthlyAmount,
+      yearlyAmount,
+      successCount,
+      pendingCount,
+      failedCount
+    ] = await Promise.all([
+      // Total transactions
+      Transaction.countDocuments(),
+      
+      // Daily transactions
+      Transaction.countDocuments({ createdAt: { $gte: today } }),
+      
+      // Weekly transactions
+      Transaction.countDocuments({ createdAt: { $gte: weekAgo } }),
+      
+      // Monthly transactions
+      Transaction.countDocuments({ createdAt: { $gte: monthAgo } }),
+      
+      // Yearly transactions
+      Transaction.countDocuments({ createdAt: { $gte: yearAgo } }),
+      
+      // Total amount
+      Transaction.aggregate([
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      
+      // Daily amount
+      Transaction.aggregate([
+        { $match: { createdAt: { $gte: today } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      
+      // Weekly amount
+      Transaction.aggregate([
+        { $match: { createdAt: { $gte: weekAgo } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      
+      // Monthly amount
+      Transaction.aggregate([
+        { $match: { createdAt: { $gte: monthAgo } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      
+      // Yearly amount
+      Transaction.aggregate([
+        { $match: { createdAt: { $gte: yearAgo } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      
+      // Success count
+      Transaction.countDocuments({ 
+        status: { $regex: /success|completed/i } 
+      }),
+      
+      // Pending count
+      Transaction.countDocuments({ 
+        status: { $regex: /pending|processing/i } 
+      }),
+      
+      // Failed count
+      Transaction.countDocuments({ 
+        status: { $regex: /failed|cancelled/i } 
+      })
+    ]);
+    
+    const response = {
+      success: true,
+      data: {
+        totalTransactions,
+        daily: dailyCount,
+        weekly: weeklyCount,
+        monthly: monthlyCount,
+        yearly: yearlyCount,
+        totalAmount: totalAmount[0]?.total || 0,
+        dailyAmount: dailyAmount[0]?.total || 0,
+        weeklyAmount: weeklyAmount[0]?.total || 0,
+        monthlyAmount: monthlyAmount[0]?.total || 0,
+        yearlyAmount: yearlyAmount[0]?.total || 0,
+        successCount,
+        pendingCount,
+        failedCount,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    
+    console.log(`✅ [TRANSACTION STATS] Stats fetched: Total: ${totalTransactions}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ [TRANSACTION STATS] Error fetching transaction statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching transaction statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
 // ==================== USER STATISTICS ENDPOINT ====================
 // @desc    Get user registration statistics (daily, weekly, monthly, yearly)
 // @route   GET /api/admin/users/statistics
