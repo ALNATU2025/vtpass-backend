@@ -4850,13 +4850,24 @@ app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => 
   }
 });
 
-// ==================== FILTERED TRANSACTIONS ====================
-// @desc    Get filtered transactions for admin
+// backend/routes/admin.js or wherever your admin routes are
+
+// ==================== FILTERED TRANSACTIONS WITH PAGINATION ====================
+// @desc    Get filtered transactions with pagination
 // @route   GET /api/admin/transactions/filtered
 // @access  Private/Admin
 app.get('/api/admin/transactions/filtered', adminProtect, async (req, res) => {
   try {
-    const { type, status, timeFilter, startDate, endDate, search, sortBy, limit = 100, page = 1 } = req.query;
+    const { 
+      type, 
+      status, 
+      startDate, 
+      endDate, 
+      search, 
+      sortBy, 
+      limit = 100, 
+      page = 1 
+    } = req.query;
     
     const skip = (parseInt(page) - 1) * parseInt(limit);
     let query = {};
@@ -4894,28 +4905,6 @@ app.get('/api/admin/transactions/filtered', adminProtect, async (req, res) => {
       }
     }
     
-    // Time filter
-    // Time filter
-const now = new Date();
-if (timeFilter && timeFilter !== 'All Time') {
-  let dateFilter = {};
-  if (timeFilter === 'Today') {
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    dateFilter = { $gte: today };
-  } else if (timeFilter === 'This Week') {
-    // Calculate start of week (Monday)
-    const day = now.getDay(); // 0 = Sunday, 1 = Monday, ...
-    const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
-    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), diff);
-    startOfWeek.setHours(0, 0, 0, 0);
-    dateFilter = { $gte: startOfWeek };
-  } else if (timeFilter === 'This Month') {
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    dateFilter = { $gte: startOfMonth };
-  }
-  query.createdAt = dateFilter;
-}
-    
     // Date range filter
     if (startDate && endDate) {
       const start = new Date(startDate);
@@ -4951,15 +4940,15 @@ if (timeFilter && timeFilter !== 'All Time') {
     else if (sortBy === 'Highest Amount') sort = { amount: -1 };
     else if (sortBy === 'Lowest Amount') sort = { amount: 1 };
     
-    // Get transactions
-    const [transactions, total] = await Promise.all([
-      Transaction.find(query)
-        .sort(sort)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      Transaction.countDocuments(query)
-    ]);
+    // Get total count for pagination
+    const total = await Transaction.countDocuments(query);
+    
+    // Get transactions with pagination
+    const transactions = await Transaction.find(query)
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
     
     // Get user data
     const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id && id !== 'null' && id !== 'system'))];
@@ -4994,10 +4983,23 @@ if (timeFilter && timeFilter !== 'All Time') {
         isAdmin: false
       };
       
+      // Parse balance data
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        balanceBefore = typeof tx.balanceBefore === 'number' ? tx.balanceBefore : parseFloat(tx.balanceBefore) || 0;
+      }
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        balanceAfter = typeof tx.balanceAfter === 'number' ? tx.balanceAfter : parseFloat(tx.balanceAfter) || 0;
+      }
+      
       return {
         ...tx,
         user: userData,
-        userId: userId || 'system'
+        userId: userId || 'system',
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
       };
     });
     
@@ -5007,7 +5009,8 @@ if (timeFilter && timeFilter !== 'All Time') {
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / parseInt(limit)),
-      limit: parseInt(limit)
+      limit: parseInt(limit),
+      returned: processedTransactions.length
     });
     
   } catch (error) {
