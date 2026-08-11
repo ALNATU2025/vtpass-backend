@@ -8535,6 +8535,415 @@ app.get('/api/admin/transaction-stats', adminProtect, async (req, res) => {
 
 
 
+
+
+// ==================== ADMIN DASHBOARD ENDPOINT WITH DEBUG LOGGING ====================
+/**
+ * @desc    Get admin dashboard with period stats and filtered transactions
+ * @route   GET /api/admin/dashboard
+ * @access  Private/Admin
+ */
+app.get('/api/admin/dashboard', adminProtect, async (req, res) => {
+  try {
+    // DEBUG: Log all query parameters
+    console.log('🔍 ========== ADMIN DASHBOARD REQUEST ==========');
+    console.log('📋 Query Params:', JSON.stringify(req.query, null, 2));
+    console.log('👤 User:', req.user?.email || 'Unknown');
+
+    const {
+      timeFilter = 'all',
+      status = 'all',
+      service = 'all',
+      search = '',
+      page = 1,
+      limit = 50,
+      startDate: customStartDate,
+      endDate: customEndDate
+    } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const maxLimit = Math.min(parseInt(limit), 500);
+
+    console.log('📊 [ADMIN DASHBOARD] Fetching admin dashboard data...');
+    console.log('   Filters:', { timeFilter, status, service, search, page, limit: maxLimit });
+
+    // ================================================
+    // 1. DATE FILTERS
+    // ================================================
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    console.log('📅 Date Ranges:');
+    console.log(`   Today: ${today.toISOString()}`);
+    console.log(`   Week Start: ${weekStart.toISOString()}`);
+    console.log(`   Month Start: ${monthStart.toISOString()}`);
+    console.log(`   Year Start: ${yearStart.toISOString()}`);
+
+    // ================================================
+    // 2. SERVICE TYPE MAPPING - ALL SERVICES
+    // ================================================
+    const serviceTypeMap = {
+      'airtime': { $in: ['Airtime Purchase'] },
+      'data': { $in: ['Data Purchase'] },
+      'electricity': { $in: ['Electricity Purchase'] },
+      'cable': { $in: ['Cable TV Subscription', 'Cable TV Purchase'] },
+      'international_airtime': { $in: ['International Airtime Purchase'] },
+      'education': { $in: ['Education Purchase'] },
+      'insurance': { $in: ['Insurance Purchase'] },
+      'transfer': { $in: ['Transfer Sent', 'Transfer Received'] },
+      'wallet': { $in: ['Wallet Funding', 'credit'] },
+      'commission': { $in: ['Commission Credit', 'Commission Debit', 'Commission Withdrawal', 'Welcome Bonus', 'Direct Referral Bonus', 'Indirect Referral Bonus', 'Referral Service Commission'] }
+    };
+
+    // ================================================
+    // 3. STATUS MAPPING
+    // ================================================
+    const statusMap = {
+      'success': { $regex: /^success|completed$/i },
+      'pending': { $regex: /^pending|processing$/i },
+      'failed': { $regex: /^failed|cancelled$/i }
+    };
+
+    // ================================================
+    // 4. BUILD TIME FILTER QUERY
+    // ================================================
+    let timeFilterQuery = {};
+    
+    // Check for custom date range first (from frontend)
+    if (customStartDate && customEndDate) {
+      const start = new Date(customStartDate);
+      const end = new Date(customEndDate);
+      end.setHours(23, 59, 59, 999);
+      timeFilterQuery = { createdAt: { $gte: start, $lte: end } };
+      console.log(`📅 Custom Date Range: ${start.toISOString()} to ${end.toISOString()}`);
+    } else {
+      switch (timeFilter) {
+        case 'today':
+          timeFilterQuery = { createdAt: { $gte: today } };
+          console.log('📅 Filter: Today');
+          break;
+        case 'week':
+          timeFilterQuery = { createdAt: { $gte: weekStart } };
+          console.log('📅 Filter: This Week');
+          break;
+        case 'month':
+          timeFilterQuery = { createdAt: { $gte: monthStart } };
+          console.log('📅 Filter: This Month');
+          break;
+        case 'year':
+          timeFilterQuery = { createdAt: { $gte: yearStart } };
+          console.log('📅 Filter: This Year');
+          break;
+        case 'all':
+        default:
+          timeFilterQuery = {};
+          console.log('📅 Filter: All Time');
+          break;
+      }
+    }
+
+    // ================================================
+    // 5. BUILD SERVICE FILTER QUERY
+    // ================================================
+    let serviceFilterQuery = {};
+    if (service !== 'all' && serviceTypeMap[service]) {
+      serviceFilterQuery = { type: serviceTypeMap[service] };
+      console.log(`🔧 Service Filter: ${service} -> ${JSON.stringify(serviceTypeMap[service])}`);
+    } else {
+      console.log('🔧 Service Filter: All');
+    }
+
+    // ================================================
+    // 6. BUILD STATUS FILTER QUERY
+    // ================================================
+    let statusFilterQuery = {};
+    if (status !== 'all' && statusMap[status]) {
+      statusFilterQuery = { status: statusMap[status] };
+      console.log(`📊 Status Filter: ${status}`);
+    } else {
+      console.log('📊 Status Filter: All');
+    }
+
+    // ================================================
+    // 7. BUILD SEARCH FILTER QUERY
+    // ================================================
+    let searchFilterQuery = {};
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      searchFilterQuery = {
+        $or: [
+          { description: searchRegex },
+          { reference: searchRegex },
+          { transactionId: searchRegex },
+          { type: searchRegex }
+        ]
+      };
+      console.log(`🔍 Search Filter: "${search}"`);
+    }
+
+    // ================================================
+    // 8. PERIOD STATS - ALWAYS FROM FULL DATASET (NO FILTERS)
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching PERIOD STATS from FULL dataset...');
+
+    // Helper to get count and amount for a date range
+    const getPeriodStats = async (dateFilter = {}) => {
+      const [count, amountAgg] = await Promise.all([
+        Transaction.countDocuments(dateFilter),
+        Transaction.aggregate([
+          { $match: dateFilter },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ])
+      ]);
+      return { count: count || 0, amount: amountAgg[0]?.total || 0 };
+    };
+
+    console.log('⏳ Fetching All Time stats...');
+    const [allTime, todayStats, weekStats, monthStats, yearStats] = await Promise.all([
+      getPeriodStats(),
+      getPeriodStats({ createdAt: { $gte: today } }),
+      getPeriodStats({ createdAt: { $gte: weekStart } }),
+      getPeriodStats({ createdAt: { $gte: monthStart } }),
+      getPeriodStats({ createdAt: { $gte: yearStart } })
+    ]);
+
+    console.log('✅ Period Stats Fetched:');
+    console.log(`   All Time: ${allTime.count} transactions, ₦${allTime.amount}`);
+    console.log(`   Today: ${todayStats.count} transactions, ₦${todayStats.amount}`);
+    console.log(`   Week: ${weekStats.count} transactions, ₦${weekStats.amount}`);
+    console.log(`   Month: ${monthStats.count} transactions, ₦${monthStats.amount}`);
+    console.log(`   Year: ${yearStats.count} transactions, ₦${yearStats.amount}`);
+
+    // ================================================
+    // 9. STATUS SUMMARY - FROM FILTERED DATASET
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching STATUS SUMMARY from FILTERED dataset...');
+
+    // Status summary uses: timeFilter + serviceFilter (NOT status, NOT search)
+    const statusSummaryBaseFilter = {
+      ...timeFilterQuery,
+      ...serviceFilterQuery
+    };
+
+    console.log('📋 Status Summary Filter:', JSON.stringify(statusSummaryBaseFilter, null, 2));
+
+    // Get ALL status counts from filtered data
+    const statusCounts = await Transaction.aggregate([
+      { $match: statusSummaryBaseFilter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    console.log('📊 Status Counts from Aggregation:');
+    statusCounts.forEach(item => {
+      console.log(`   ${item._id || 'unknown'}: ${item.count}`);
+    });
+
+    // Initialize status summary
+    const statusSummary = {
+      success: 0,
+      pending: 0,
+      failed: 0,
+      total: 0,
+      details: []
+    };
+
+    statusCounts.forEach(item => {
+      const stat = (item._id || '').toLowerCase();
+      if (stat.match(/^success|completed$/)) {
+        statusSummary.success += item.count;
+      } else if (stat.match(/^pending|processing$/)) {
+        statusSummary.pending += item.count;
+      } else if (stat.match(/^failed|cancelled$/)) {
+        statusSummary.failed += item.count;
+      }
+      statusSummary.total += item.count;
+      statusSummary.details.push({
+        status: item._id || 'unknown',
+        count: item.count
+      });
+    });
+
+    console.log('✅ Status Summary:');
+    console.log(`   Success: ${statusSummary.success}`);
+    console.log(`   Pending: ${statusSummary.pending}`);
+    console.log(`   Failed: ${statusSummary.failed}`);
+    console.log(`   Total: ${statusSummary.total}`);
+
+    // ================================================
+    // 10. TRANSACTION LIST - FROM FILTERED DATASET
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching TRANSACTION LIST from FILTERED dataset...');
+
+    // Combine all filters for transaction list
+    const transactionFilter = {
+      ...timeFilterQuery,
+      ...statusFilterQuery,
+      ...serviceFilterQuery,
+      ...searchFilterQuery
+    };
+
+    console.log('📋 Transaction Filter:', JSON.stringify(transactionFilter, null, 2));
+
+    const [transactions, totalTransactions] = await Promise.all([
+      Transaction.find(transactionFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(maxLimit)
+        .lean(),
+      Transaction.countDocuments(transactionFilter)
+    ]);
+
+    console.log(`📊 Transaction List: Found ${transactions.length} of ${totalTransactions} total`);
+
+    // ================================================
+    // 11. GET USER DATA FOR TRANSACTIONS
+    // ================================================
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    console.log(`👤 Unique User IDs: ${userIds.length}`);
+
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
+        };
+        return map;
+      }, {});
+      
+      console.log(`👤 Found ${Object.keys(userMap).length} users`);
+    }
+
+    // ================================================
+    // 12. PROCESS TRANSACTIONS
+    // ================================================
+    const processedTransactions = transactions.map(tx => {
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        balanceBefore = typeof tx.balanceBefore === 'number' ? tx.balanceBefore : parseFloat(tx.balanceBefore) || 0;
+      }
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        balanceAfter = typeof tx.balanceAfter === 'number' ? tx.balanceAfter : parseFloat(tx.balanceAfter) || 0;
+      }
+
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+
+      return {
+        _id: tx._id,
+        type: tx.type,
+        amount: tx.amount,
+        status: tx.status,
+        description: tx.description,
+        reference: tx.reference,
+        transactionId: tx.transactionId,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        isCommission: tx.isCommission || false,
+        authenticationMethod: tx.authenticationMethod || 'none',
+        metadata: tx.metadata || {},
+        userId: userId || 'system',
+        user: userData
+      };
+    });
+
+    // ================================================
+    // 13. BUILD RESPONSE
+    // ================================================
+    const response = {
+      success: true,
+      periodStats: {
+        allTime: allTime,
+        today: todayStats,
+        week: weekStats,
+        month: monthStats,
+        year: yearStats
+      },
+      statusSummary: statusSummary,
+      transactions: processedTransactions,
+      pagination: {
+        total: totalTransactions || 0,
+        page: parseInt(page),
+        limit: maxLimit,
+        totalPages: Math.ceil((totalTransactions || 0) / maxLimit)
+      },
+      appliedFilters: {
+        timeFilter: timeFilter,
+        status: status,
+        service: service,
+        search: search || null,
+        startDate: customStartDate || null,
+        endDate: customEndDate || null
+      },
+      timestamp: new Date().toISOString(),
+      // DEBUG INFO
+      _debug: {
+        totalInDatabase: await Transaction.countDocuments(),
+        filterCounts: {
+          timeFilter: await Transaction.countDocuments(timeFilterQuery),
+          serviceFilter: await Transaction.countDocuments(serviceFilterQuery),
+          statusFilter: await Transaction.countDocuments(statusFilterQuery),
+          searchFilter: await Transaction.countDocuments(searchFilterQuery),
+          combined: totalTransactions
+        }
+      }
+    };
+
+    console.log('✅ ========== RESPONSE SUMMARY ==========');
+    console.log(`   Period Stats: All Time (${allTime.count}), Today (${todayStats.count}), Week (${weekStats.count}), Month (${monthStats.count}), Year (${yearStats.count})`);
+    console.log(`   Status Summary: Success (${statusSummary.success}), Pending (${statusSummary.pending}), Failed (${statusSummary.failed}), Total (${statusSummary.total})`);
+    console.log(`   Transactions: ${processedTransactions.length} of ${totalTransactions} returned`);
+    console.log(`   Pagination: Page ${page}/${Math.ceil((totalTransactions || 0) / maxLimit)}`);
+    console.log('==========================================');
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ [ADMIN DASHBOARD] Error:', error);
+    console.error('❌ Error Stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch admin dashboard data',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+
+
+
+
+
 // ==================== DASHBOARD CACHE ====================
 const dashboardCache = new Map();
 const CACHE_TTL = 5000; // 5 seconds cache
