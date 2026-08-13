@@ -15,6 +15,7 @@ const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
 const { sendVerificationEmail } = require('./emailService');
 const referralRoutes = require('./routes/referralRoutes');
+const { initSocketServer } = require('./socket-server');
 
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
@@ -193,6 +194,14 @@ axios.defaults.retryDelay = 1000;
 // 3. ADD CONNECTION KEEP-ALIVE
 const http = require('http');
 const https = require('https');
+const server = http.createServer(app);
+const io = initSocketServer(server);
+global.io = io;
+global.emitNotificationToUser = require('./socket-server').emitNotificationToUser;
+global.emitBadgeUpdate = require('./socket-server').emitBadgeUpdate;
+global.emitNotificationToAll = require('./socket-server').emitNotificationToAll;
+global.isUserOnline = require('./socket-server').isUserOnline;
+global.getConnectedUsersCount = require('./socket-server').getConnectedUsersCount;
 const agent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 30000,
@@ -512,6 +521,30 @@ const upload = multer({
 // Serve static files from uploads directory
 app.use('/uploads', express.static(uploadsDir));
 const PORT = process.env.PORT || 5000;
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🔌 Socket.IO server ready`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
 // Helper function to generate Request ID in Africa/Lagos timezone
 function generateRequestId() {
   let lagosTime;
@@ -9442,6 +9475,105 @@ app.get('/api/notifications/statistics', protect, async (req, res) => {
     });
   }
 });
+
+
+
+// ==================== SOCKET.IO NOTIFICATION ENDPOINT ====================
+/**
+ * @desc    Send real-time notification via Socket.IO
+ * @route   POST /api/notifications/socket-send
+ * @access  Private/Admin
+ */
+app.post('/api/notifications/socket-send', adminProtect, async (req, res) => {
+  try {
+    const { title, message, recipientId, sendToAll = false, type = 'general', screen = 'notifications', data = {} } = req.body;
+
+    // Validate input
+    if (!title || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Title and message are required' 
+      });
+    }
+
+    // Save to database
+    const notification = new Notification({
+      title,
+      message,
+      type,
+      screen,
+      data,
+      sender: req.user._id,
+      recipient: sendToAll ? null : (recipientId || null),
+      readBy: [],
+    });
+
+    await notification.save();
+
+    const notificationData = notification.toJSON();
+
+    // Emit via Socket.IO
+    if (sendToAll) {
+      // Send to all connected users
+      global.io.emit('notification', notificationData);
+      
+      // Update badges for all users
+      const users = await User.find({}).select('_id');
+      for (const user of users) {
+        const count = await global.getUnreadCount(user._id);
+        global.io.to(`user:${user._id}`).emit('badge_update', { count });
+      }
+    } else if (recipientId) {
+      // Send to specific user
+      global.io.to(`user:${recipientId}`).emit('notification', notificationData);
+      const count = await global.getUnreadCount(recipientId);
+      global.io.to(`user:${recipientId}`).emit('badge_update', { count });
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification sent successfully',
+      notificationId: notification._id,
+      sentTo: sendToAll ? 'all' : recipientId
+    });
+
+  } catch (error) {
+    console.error('❌ Socket notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * @desc    Get unread notification count (Socket.IO version)
+ * @route   GET /api/notifications/unread-count-socket
+ * @access  Private
+ */
+app.get('/api/notifications/unread-count-socket', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const count = await global.getUnreadCount(userId);
+    
+    res.json({
+      success: true,
+      count: count,
+      userId: userId
+    });
+  } catch (error) {
+    console.error('❌ Unread count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get unread count'
+    });
+  }
+});
+
+
+
+
 
 
 // @desc    Create test notifications for development
