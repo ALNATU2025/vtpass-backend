@@ -195,8 +195,7 @@ axios.defaults.retryDelay = 1000;
 const http = require('http');
 const https = require('https');
 
-// ✅ CREATE SERVER ONCE
-const server = http.createServer(app);
+
 
 // ✅ Initialize Socket.IO
 const io = initSocketServer(server);
