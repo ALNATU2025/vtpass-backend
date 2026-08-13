@@ -195,7 +195,8 @@ axios.defaults.retryDelay = 1000;
 const http = require('http');
 const https = require('https');
 
-
+// ✅ CREATE SERVER ONCE
+const server = http.createServer(app);
 
 // ✅ Initialize Socket.IO
 const io = initSocketServer(server);
@@ -521,10 +522,13 @@ const upload = multer({
     cb(new Error("Only image files are allowed!"));
   }
 });
+
+
 // Serve static files from uploads directory
 app.use('/uploads', express.static(uploadsDir));
 const PORT = process.env.PORT || 5000;
 
+// ✅ Use the existing server instance (NO 'const' declaration)
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🔌 Socket.IO server ready`);
@@ -548,6 +552,9 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+
+
+
 // Helper function to generate Request ID in Africa/Lagos timezone
 function generateRequestId() {
   let lagosTime;
