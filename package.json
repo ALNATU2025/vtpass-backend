@@ -28,6 +28,8 @@
     "resend": "^6.4.0",
     "node-fetch": "^2.6.7",
     "nodemailer": "^6.9.14",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
     "@getbrevo/brevo": "^3.0.1"
   },
   "devDependencies": {
