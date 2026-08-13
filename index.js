@@ -184,9 +184,9 @@ app.set('trust proxy', 1);
 
 // ==================== SUPER FAST FIXES (NOW AFTER app IS CREATED) ====================
 // 1. INCREASE ALL TIMEOUTS (Prevents ECONNREFUSED)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // For Render SSL
+// ==================== SUPER FAST FIXES ====================
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// 2. FIX AXIOS TIMEOUTS GLOBALLY
 axios.defaults.timeout = 30000;
 axios.defaults.retry = 3;
 axios.defaults.retryDelay = 1000;
@@ -194,7 +194,11 @@ axios.defaults.retryDelay = 1000;
 // 3. ADD CONNECTION KEEP-ALIVE
 const http = require('http');
 const https = require('https');
+
+// ✅ CREATE SERVER ONCE
 const server = http.createServer(app);
+
+// ✅ Initialize Socket.IO
 const io = initSocketServer(server);
 global.io = io;
 global.emitNotificationToUser = require('./socket-server').emitNotificationToUser;
@@ -202,6 +206,7 @@ global.emitBadgeUpdate = require('./socket-server').emitBadgeUpdate;
 global.emitNotificationToAll = require('./socket-server').emitNotificationToAll;
 global.isUserOnline = require('./socket-server').isUserOnline;
 global.getConnectedUsersCount = require('./socket-server').getConnectedUsersCount;
+
 const agent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 30000,
@@ -210,7 +215,6 @@ const agent = new https.Agent({
   timeout: 60000
 });
 axios.defaults.httpsAgent = agent;
-
 // 4. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
 setInterval(() => {
   if (mongoose.connection.readyState !== 1) {
