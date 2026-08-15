@@ -223,7 +223,8 @@ router.post('/', [
       targetUser.roleLevel = roleDef.level;
       targetUser.assignedBy = currentUser._id;
       targetUser.roleChangedAt = new Date();
-      targetUser.permissions = roleDef.permissions || [];
+      // Ensure permissions are always strings, never objects
+      targetUser.permissions = (roleDef.permissions || []).map(p => String(p));
       
       await targetUser.save();
 
