@@ -432,6 +432,10 @@ app.use('/api/referral', referralRoutes);
 const commissionRoutes = require('./routes/commissionRoutes');
 app.use('/api/commission', commissionRoutes);  // ← THIS LINE WAS MISSING
 
+// ==================== RBAC ROUTES ====================
+const rbacRoutes = require('./routes/rbacRoutes');
+app.use('/api/rbac', rbacRoutes);
+
 
 
 // Global OTP Variables (ADD THIS AT TOP, AFTER IMPORTS)
@@ -3029,27 +3033,29 @@ app.post('/api/users/register', [
 
     // 6. Create user with referral tracking
           // 6. Create user with referral tracking - NO VIRTUAL ACCOUNT CREATED HERE
-    const user = new User({
-      fullName: fullName.trim(),
-      email: normalizedEmail,
-      phone: phone.trim(),
-      password: hashedPassword,
-      referralCode: userReferralCode,
-      referrerId: referrerId,
-      referrerCode: referrerCode,
-      referrerName: referrerName,
-      walletBalance: 0.0,
-      commissionBalance: 0.0,
-      welcomeBonusReceived: false,
-      welcomeBonusAmount: 0,
-      referralBonusAwarded: false,
-      indirectBonusAwardedLevel2: false,
-      isAdmin: false,
-      isActive: true,
-      emailVerified: true,
-      // CRITICAL: Set virtualAccount to null - no virtual account during registration
-      virtualAccount: null
-    });
+    // In the registration endpoint, find where user is created
+const user = new User({
+  fullName: fullName.trim(),
+  email: normalizedEmail,
+  phone: phone.trim(),
+  password: hashedPassword,
+  referralCode: userReferralCode,
+  referrerId: referrerId,
+  referrerCode: referrerCode,
+  referrerName: referrerName,
+  walletBalance: 0.0,
+  commissionBalance: 0.0,
+  // ========== ADD THESE ROLE FIELDS ==========
+  role: 'user',
+  roleLevel: 0,
+  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'],
+  // ==========================================
+  isAdmin: false,
+  isSuperAdmin: false,
+  isActive: true,
+  emailVerified: true,
+  virtualAccount: null
+});
 
     const newUser = await user.save({ session });
     console.log(`✅ [REGISTER] User created: ${newUser.email}`);
