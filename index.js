@@ -3045,10 +3045,10 @@ const user = new User({
   referrerName: referrerName,
   walletBalance: 0.0,
   commissionBalance: 0.0,
-  // ========== ADD THESE ROLE FIELDS ==========
+  // ========== ROLE FIELDS - MUST BE STRINGS ==========
   role: 'user',
   roleLevel: 0,
-  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'],
+  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'], // ✅ STRINGS
   // ==========================================
   isAdmin: false,
   isSuperAdmin: false,
