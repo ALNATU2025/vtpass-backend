@@ -300,7 +300,7 @@ router.post('/', [
       targetUser.isAdmin = false;
       targetUser.isSuperAdmin = false;
       targetUser.roleLevel = 0;
-      targetUser.permissions = userRoleDef.permissions || [];
+      targetUser.permissions = (userRoleDef.permissions || []).map(p => String(p));
       targetUser.assignedBy = currentUser._id;
       targetUser.roleChangedAt = new Date();
       
