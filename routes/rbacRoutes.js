@@ -1,31 +1,18 @@
-// routes/rbacRoutes.js - Single RBAC Endpoint
-// COPY AND PASTE THIS ENTIRE FILE
+// routes/rbacRoutes.js - Single RBAC Endpoint (FIXED)
 
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
-const { hasPermission, ROLE_DEFINITIONS, adminProtect } = require('../middleware/rbac');
+const { hasPermission, ROLE_DEFINITIONS } = require('../middleware/rbac');
+const { protect } = require('../middleware/authMiddleware');
 
 /**
  * @route   POST /api/rbac
  * @desc    Unified RBAC endpoint - Single endpoint for all role/permission operations
  * @access  Private
- * 
- * OPERATIONS:
- * 1. get_roles - Get all roles and their permissions (Admin+)
- * 2. get_role - Get specific role details (Admin+)
- * 3. assign_role - Assign role to user (Super Admin only)
- * 4. remove_role - Remove role from user (Super Admin only)
- * 5. get_user_role - Get user's role and permissions (Self/Admin)
- * 6. check_permission - Check if user has permission (Self/Admin)
- * 7. get_users_by_role - Get all users with specific role (Admin+)
- * 8. update_permissions - Update user permissions (Super Admin only)
- * 9. get_available_permissions - Get all available permissions (Admin+)
- * 10. get_role_stats - Get role statistics (Admin+)
- * 11. can_access - Check if user can access resource (Self/Admin)
  */
-router.post('/', [
+router.post('/', protect, [
   body('operation').isString().notEmpty().withMessage('Operation is required'),
   body('targetUserId').optional().isString().withMessage('Invalid user ID'),
   body('role').optional().isString().withMessage('Invalid role'),
@@ -55,6 +42,15 @@ router.post('/', [
       checkPermission,
       resourceId
     } = req.body;
+    
+    // ✅ CHECK: Make sure user is authenticated
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required',
+        code: 'AUTH_REQUIRED'
+      });
+    }
     
     const currentUser = req.user;
 
@@ -89,7 +85,6 @@ router.post('/', [
         count: 0
       }));
 
-      // Get count for each role
       for (const roleItem of roles) {
         const count = await User.countDocuments({
           $or: [
@@ -206,7 +201,6 @@ router.post('/', [
         });
       }
 
-      // Cannot modify super admin
       if (targetUser.isSuperAdmin || targetUser.role === 'super_admin') {
         return res.status(403).json({
           success: false,
@@ -215,7 +209,6 @@ router.post('/', [
         });
       }
 
-      // Update user role
       const roleDef = ROLE_DEFINITIONS[role];
       targetUser.role = role;
       targetUser.isAdmin = (role === 'admin' || role === 'super_admin');
@@ -223,7 +216,6 @@ router.post('/', [
       targetUser.roleLevel = roleDef.level;
       targetUser.assignedBy = currentUser._id;
       targetUser.roleChangedAt = new Date();
-      // Ensure permissions are always strings, never objects
       targetUser.permissions = (roleDef.permissions || []).map(p => String(p));
       
       await targetUser.save();
@@ -276,7 +268,6 @@ router.post('/', [
         });
       }
 
-      // Cannot modify super admin
       if (targetUser.isSuperAdmin || targetUser.role === 'super_admin') {
         return res.status(403).json({
           success: false,
@@ -285,7 +276,6 @@ router.post('/', [
         });
       }
 
-      // Cannot remove own role
       if (targetUser._id.toString() === currentUser._id.toString()) {
         return res.status(403).json({
           success: false,
@@ -294,7 +284,6 @@ router.post('/', [
         });
       }
 
-      // Reset to user
       const userRoleDef = ROLE_DEFINITIONS.user;
       targetUser.role = 'user';
       targetUser.isAdmin = false;
@@ -326,6 +315,7 @@ router.post('/', [
     // OPERATION 5: Get user's role and permissions
     // ================================================
     if (operation === 'get_user_role') {
+      // ✅ FIX: If no targetUserId, use current user's ID
       const userId = targetUserId || currentUser._id;
       
       // Users can only view their own role unless admin
@@ -497,7 +487,7 @@ router.post('/', [
         });
       }
 
-      targetUser.permissions = permissions;
+      targetUser.permissions = permissions.map(p => String(p));
       targetUser.assignedBy = currentUser._id;
       await targetUser.save();
 
@@ -574,12 +564,6 @@ router.post('/', [
           ]
         });
         stats.byRole[roleKey] = count;
-      }
-
-      const departments = ['management', 'support', 'finance', 'operations', 'development', 'none'];
-      for (const dept of departments) {
-        const count = await User.countDocuments({ department: dept });
-        stats.byDepartment[dept] = count;
       }
 
       stats.recentAssignments = await User.find({
