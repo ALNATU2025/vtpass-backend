@@ -1,4 +1,4 @@
-// models/User.js
+// models/User.js - COMPLETE REPLACEMENT
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const Transaction = require('./Transaction');
@@ -81,62 +81,90 @@ const userSchema = mongoose.Schema(
       type: Number,
       default: 0.0,
     },
+    
+    // ========== ROLE BASED ACCESS CONTROL ==========
+    role: {
+      type: String,
+      enum: ['user', 'admin', 'super_admin', 'support', 'finance'],
+      default: 'user'
+    },
+    roleLevel: {
+      type: Number,
+      default: 0
+    },
+    permissions: {
+      type: [String],
+      default: ['view_profile', 'make_transactions']
+    },
+    department: {
+      type: String,
+      enum: ['management', 'support', 'finance', 'operations', 'development', 'none'],
+      default: 'none'
+    },
+    assignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    roleChangedAt: {
+      type: Date,
+      default: Date.now
+    },
+    // BACKWARD COMPATIBILITY - Keep these
     isAdmin: {
       type: Boolean,
       default: false,
     },
+    isSuperAdmin: {
+      type: Boolean,
+      default: false,
+    },
+    // =============================================
+    
     isActive: {
       type: Boolean,
       default: true,
     },
 
     welcomeBonusReceived: {
-  type: Boolean,
-  default: false
-},
-
-  firstDepositBonusReceived: {
-  type: Boolean,
-  default: false
-},
-    
-firstDepositMade: {
-  type: Boolean,
-  default: false
-},
-welcomeBonusAmount: {
-  type: Number,
-  default: 0
-},
-  referralBonusAwarded: {
-  type: Boolean,
-  default: false
-},
-indirectBonusAwardedLevel2: {
-  type: Boolean,
-  default: false
-},
-indirectBonusAwardedLevel3: {
-  type: Boolean,
-  default: false
-},
-
-referralTier: {
-  type: String,
-  enum: ['Bronze', 'Silver', 'Gold', 'Platinum'],
-  default: 'Bronze'
-},
-
-
-
-
-referrerCode: String,
-referrerName: String,
-referralCount: {
-  type: Number,
-  default: 0
-},
-    
+      type: Boolean,
+      default: false
+    },
+    firstDepositBonusReceived: {
+      type: Boolean,
+      default: false
+    },
+    firstDepositMade: {
+      type: Boolean,
+      default: false
+    },
+    welcomeBonusAmount: {
+      type: Number,
+      default: 0
+    },
+    referralBonusAwarded: {
+      type: Boolean,
+      default: false
+    },
+    indirectBonusAwardedLevel2: {
+      type: Boolean,
+      default: false
+    },
+    indirectBonusAwardedLevel3: {
+      type: Boolean,
+      default: false
+    },
+    referralTier: {
+      type: String,
+      enum: ['Bronze', 'Silver', 'Gold', 'Platinum'],
+      default: 'Bronze'
+    },
+    referrerCode: String,
+    referrerName: String,
+    referralCount: {
+      type: Number,
+      default: 0
+    },
     
     // Referral system fields
     referralCode: {
@@ -150,23 +178,18 @@ referralCount: {
       ref: 'User',
       default: null,
     },
-    referralCount: {
-      type: Number,
-      default: 0,
-    },
     totalReferralEarnings: {
       type: Number,
       default: 0.0,
     },
-
     pendingCommission: {
-  type: Number,
-  default: 0.0,
-},
-lastCommissionAwarded: {
-  type: Date,
-  default: null,
-},
+      type: Number,
+      default: 0.0,
+    },
+    lastCommissionAwarded: {
+      type: Date,
+      default: null,
+    },
 
     // Authentication fields
     refreshToken: {
@@ -224,9 +247,7 @@ lastCommissionAwarded: {
       default: false,
     },
 
-    
-      // Virtual Account fields
-    // Virtual Account fields - REMOVED unique constraints to prevent null duplicate errors
+    // Virtual Account fields
     virtualAccount: {
       assigned: { 
         type: Boolean, 
@@ -257,180 +278,126 @@ lastCommissionAwarded: {
   }
 );
 
-// ========== FIXED OTP METHODS (Renamed to avoid conflicts) ==========
+// ========== USER SCHEMA METHODS ==========
 
-// Method to check if password reset OTP is locked
-userSchema.methods.isOTPLocked = function () {
-  return this.resetPasswordOTPLockedUntil && this.resetPasswordOTPLockedUntil > new Date();
-};
-
-// Method to get remaining OTP lock time
-userSchema.methods.getOTPLockRemaining = function () {
-  if (!this.resetPasswordOTPLockedUntil) return 0;
-  const now = new Date();
-  const diff = this.resetPasswordOTPLockedUntil - now;
-  return Math.ceil(diff / (1000 * 60)); // Convert to minutes
-};
-
-// Method to increment failed OTP attempts
-userSchema.methods.incrementOTPAttempts = async function () {
-  this.resetPasswordOTPAttempts += 1;
-  
-  // Lock OTP verification after 3 failed attempts for 30 minutes
-  if (this.resetPasswordOTPAttempts >= 3) {
-    this.resetPasswordOTPLockedUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+// Method to check if user has specific permission
+userSchema.methods.hasPermission = function(permission) {
+  // Super admin has all permissions
+  if (this.isSuperAdmin || this.role === 'super_admin') {
+    return true;
   }
   
-  return this.save();
-};
-
-// Method to reset OTP attempts (on successful verification)
-userSchema.methods.resetOTPAttempts = async function () {
-  this.resetPasswordOTPAttempts = 0;
-  this.resetPasswordOTPLockedUntil = null;
-  return this.save();
-};
-
-// Method to verify password reset OTP
-userSchema.methods.verifyOTP = async function (otp) {
-  try {
-    // Check if OTP verification is locked
-    if (this.isOTPLocked()) {
-      const remainingTime = this.getOTPLockRemaining();
-      return {
-        success: false,
-        locked: true,
-        message: `OTP verification locked. Try again in ${remainingTime} minutes.`
-      };
+  // Check user's permissions
+  if (this.permissions && this.permissions.includes(permission)) {
+    return true;
+  }
+  
+  // Check role-based permissions (using the ROLE_DEFINITIONS from middleware)
+  const ROLE_DEFINITIONS = {
+    admin: {
+      permissions: ['view_dashboard', 'view_users', 'manage_users', 'view_transactions', 
+                    'view_all_transactions', 'update_transaction_status', 'manage_admins',
+                    'manage_settings', 'view_reports', 'export_data', 'manage_notifications'],
+      inherits: ['finance', 'support']
+    },
+    finance: {
+      permissions: ['view_transactions', 'view_all_transactions', 'process_refunds', 
+                    'view_disputes', 'resolve_disputes', 'view_reports', 'view_financial_reports',
+                    'manage_wallet'],
+      inherits: ['support']
+    },
+    support: {
+      permissions: ['view_users', 'view_transactions', 'view_disputes', 'create_disputes',
+                    'resolve_disputes', 'send_notifications', 'update_user_status'],
+      inherits: ['user']
+    },
+    user: {
+      permissions: ['view_profile', 'update_profile', 'view_own_transactions', 'make_transactions',
+                    'create_own_disputes', 'view_own_disputes', 'view_commission']
     }
-
-    // Check if OTP exists
-    if (!this.resetPasswordOTP) {
-      return {
-        success: false,
-        message: 'No OTP requested. Please request a new OTP.'
-      };
+  };
+  
+  // Check role permissions
+  const roleDef = ROLE_DEFINITIONS[this.role];
+  if (roleDef) {
+    if (roleDef.permissions && roleDef.permissions.includes(permission)) {
+      return true;
     }
-
-    // Check if OTP has expired
-    if (!this.resetPasswordOTPExpire || this.resetPasswordOTPExpire < new Date()) {
-      // Clear expired OTP
-      this.resetPasswordOTP = null;
-      this.resetPasswordOTPExpire = null;
-      await this.save();
-      
-      return {
-        success: false,
-        expired: true,
-        message: 'OTP has expired. Please request a new one.'
-      };
-    }
-
-    // Verify OTP matches (string comparison)
-    const isMatch = this.resetPasswordOTP === otp;
-    
-    if (isMatch) {
-      // Reset failed attempts on success
-      await this.resetOTPAttempts();
-      return {
-        success: true,
-        message: 'OTP verified successfully'
-      };
-    } else {
-      // Increment failed attempts
-      await this.incrementOTPAttempts();
-      
-      if (this.resetPasswordOTPAttempts >= 3) {
-        return {
-          success: false,
-          locked: true,
-          message: 'OTP verification locked for 30 minutes due to multiple failed attempts'
-        };
+    // Check inherited permissions
+    if (roleDef.inherits) {
+      for (const inheritedRole of roleDef.inherits) {
+        const inheritedDef = ROLE_DEFINITIONS[inheritedRole];
+        if (inheritedDef && inheritedDef.permissions && inheritedDef.permissions.includes(permission)) {
+          return true;
+        }
       }
-      
-      const remainingAttempts = 3 - this.resetPasswordOTPAttempts;
-      return {
-        success: false,
-        message: `Invalid OTP. ${remainingAttempts} attempts remaining`
-      };
     }
-  } catch (error) {
-    console.error('Error verifying password reset OTP:', error);
-    return {
-      success: false,
-      message: 'Error verifying OTP. Please try again.'
-    };
-  }
-};
-
-// Method to set password reset OTP
-userSchema.methods.setOTP = async function (otp) {
-  this.resetPasswordOTP = otp;
-  this.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-  this.resetPasswordOTPAttempts = 0;
-  this.resetPasswordOTPLockedUntil = null;
-  this.resetPasswordToken = null;
-  this.resetPasswordExpire = null;
-  
-  return this.save();
-};
-
-// Method to clear password reset OTP
-userSchema.methods.clearOTP = async function () {
-  this.resetPasswordOTP = null;
-  this.resetPasswordOTPExpire = null;
-  this.resetPasswordOTPAttempts = 0;
-  this.resetPasswordOTPLockedUntil = null;
-  
-  return this.save();
-};
-
-// Method to generate and set password reset token (after OTP verification)
-userSchema.methods.generateResetToken = async function () {
-  const crypto = require('crypto');
-  const resetToken = crypto.randomBytes(32).toString('hex');
-  
-  this.resetPasswordToken = resetToken;
-  this.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-  
-  // Clear OTP
-  this.resetPasswordOTP = null;
-  this.resetPasswordOTPExpire = null;
-  this.resetPasswordOTPAttempts = 0;
-  this.resetPasswordOTPLockedUntil = null;
-  
-  await this.save();
-  
-  return resetToken;
-};
-
-// Method to verify password reset token
-userSchema.methods.isResetTokenValid = function (token) {
-  if (!this.resetPasswordToken || !this.resetPasswordExpire) {
-    return false;
   }
   
-  const isValid = this.resetPasswordToken === token && this.resetPasswordExpire > new Date();
-  return isValid;
-};
-
-// Method to clear password reset token (after successful reset)
-userSchema.methods.clearResetToken = async function () {
-  this.resetPasswordToken = null;
-  this.resetPasswordExpire = null;
+  // Backward compatibility
+  if (this.isAdmin) {
+    return true;
+  }
   
-  return this.save();
+  return false;
 };
 
-// ========== END OF FIXED OTP METHODS ==========
+// Method to check if user has any of the specified roles
+userSchema.methods.hasRole = function(roles) {
+  if (this.isSuperAdmin || this.role === 'super_admin') {
+    return true;
+  }
+  if (typeof roles === 'string') {
+    return this.role === roles;
+  }
+  if (Array.isArray(roles)) {
+    return roles.includes(this.role);
+  }
+  return false;
+};
+
+// Method to get user's role level
+userSchema.methods.getRoleLevel = function() {
+  const roleLevels = {
+    'user': 0,
+    'support': 2,
+    'finance': 3,
+    'admin': 4,
+    'super_admin': 5
+  };
+  return this.roleLevel || roleLevels[this.role] || 0;
+};
+
+// Method to check if user can access a resource
+userSchema.methods.canAccess = function(resource, action) {
+  const permissionMap = {
+    'transactions:view': 'view_transactions',
+    'transactions:view_all': 'view_all_transactions',
+    'transactions:update': 'update_transaction_status',
+    'users:view': 'view_users',
+    'users:manage': 'manage_users',
+    'users:update_status': 'update_user_status',
+    'refunds:process': 'process_refunds',
+    'disputes:view': 'view_disputes',
+    'disputes:resolve': 'resolve_disputes',
+    'notifications:send': 'send_notifications',
+    'settings:manage': 'manage_settings',
+    'reports:view': 'view_reports',
+    'wallet:manage': 'manage_wallet'
+  };
+  
+  const permission = permissionMap[`${resource}:${action}`];
+  if (!permission) return false;
+  
+  return this.hasPermission(permission);
+};
+
+// ========== EXISTING METHODS (Keep all your existing methods) ==========
 
 // Hash transaction PIN before saving if modified
 userSchema.pre('save', async function (next) {
-  // Only hash transactionPin if it's a 6-digit number
   if (this.isModified('transactionPin') && this.transactionPin) {
-    // Check if it's already hashed (starts with $2a$ or $2b$)
     if (!this.transactionPin.startsWith('$2a$') && !this.transactionPin.startsWith('$2b$')) {
-      // Only hash if it's 6 digits (raw PIN)
       if (/^\d{6}$/.test(this.transactionPin)) {
         console.log(`DEBUG (User Model Pre-Save): Hashing transaction PIN for user ${this.email}`);
         const salt = await bcrypt.genSalt(10);
@@ -464,22 +431,19 @@ userSchema.methods.getRemainingLockTime = function () {
   if (!this.pinLockedUntil) return 0;
   const now = new Date();
   const diff = this.pinLockedUntil - now;
-  return Math.ceil(diff / (1000 * 60)); // Convert to minutes
+  return Math.ceil(diff / (1000 * 60));
 };
 
 // Method to increment failed PIN attempts
 userSchema.methods.incrementFailedPinAttempts = function () {
   this.failedPinAttempts += 1;
-  
-  // Lock account after 3 failed attempts for 15 minutes
   if (this.failedPinAttempts >= 3) {
-    this.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    this.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
   }
-  
   return this.save();
 };
 
-// Method to reset failed PIN attempts (on successful PIN entry)
+// Method to reset failed PIN attempts
 userSchema.methods.resetFailedPinAttempts = function () {
   this.failedPinAttempts = 0;
   this.pinLockedUntil = null;
@@ -504,7 +468,6 @@ userSchema.virtual('formattedCommissionBalance').get(function () {
 // Method to verify transaction PIN with lock checking
 userSchema.methods.verifyTransactionPin = async function (enteredPin) {
   try {
-    // Check if PIN is locked
     if (this.isPinLocked()) {
       const remainingTime = this.getRemainingLockTime();
       throw new Error(`Account locked. Try again in ${remainingTime} minutes.`);
@@ -517,11 +480,9 @@ userSchema.methods.verifyTransactionPin = async function (enteredPin) {
     const isMatch = await bcrypt.compare(enteredPin, this.transactionPin);
     
     if (isMatch) {
-      // Reset failed attempts on success
       await this.resetFailedPinAttempts();
       return { success: true, message: 'PIN verified successfully' };
     } else {
-      // Increment failed attempts
       await this.incrementFailedPinAttempts();
       
       if (this.failedPinAttempts >= 3) {
@@ -561,7 +522,7 @@ userSchema.methods.checkCommissionBalance = function (amount) {
   };
 };
 
-// Method to deduct commission for service purchase - FIXED VERSION
+// Method to deduct commission for service purchase
 userSchema.methods.deductCommissionForService = async function (amount, serviceType, serviceDetails) {
   const session = await mongoose.startSession();
   
@@ -571,7 +532,6 @@ userSchema.methods.deductCommissionForService = async function (amount, serviceT
     console.log(`💰 DEDUCTING COMMISSION FOR SERVICE: ${serviceType}, Amount: ₦${amount}`);
     console.log(`📊 User: ${this.email}, Current commission: ₦${this.commissionBalance}`);
     
-    // Check if we have enough commission
     if (this.commissionBalance < amount) {
       await session.abortTransaction();
       throw new Error(`Insufficient commission balance. Available: ₦${this.commissionBalance.toFixed(2)}, Required: ₦${amount.toFixed(2)}`);
@@ -580,21 +540,13 @@ userSchema.methods.deductCommissionForService = async function (amount, serviceT
     const balanceBefore = this.commissionBalance;
     this.commissionBalance -= amount;
     
-    // ================================================
-    // 🔥 CRITICAL FIX: Create ONLY a COMMISSION DEBIT
-    // NOT a commission credit, and NO commission should be earned
-    // for purchases made with commission
-    // ================================================
-    
-    // Generate unique reference
     const reference = `COMM_DEBIT_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     
-    // Create commission DEBIT transaction
     const commissionTransaction = new Transaction({
       userId: this._id,
       type: 'Commission Debit',
       amount: amount,
-      status: 'Pending', // Will update after VTpass success
+      status: 'Pending',
       description: `Commission used for ${serviceType} purchase`,
       balanceBefore: balanceBefore,
       balanceAfter: this.commissionBalance,
@@ -611,12 +563,10 @@ userSchema.methods.deductCommissionForService = async function (amount, serviceT
         originalService: serviceType,
         paymentMethod: 'commission',
         isCommissionPayment: true,
-        commissionAction: 'debit', // NEW: explicitly mark as debit
+        commissionAction: 'debit',
         timestamp: new Date(),
-        // IMPORTANT: Add these flags to prevent commission calculation
         skipCommissionCalculation: true,
         noCommissionEarned: true,
-        // Service-specific details
         phone: serviceDetails.phone || '',
         network: serviceDetails.network || '',
         meterNumber: serviceDetails.meterNumber || serviceDetails.billersCode || '',
@@ -661,7 +611,6 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
   session.startTransaction();
   
   try {
-    // Verify PIN if provided
     if (transactionPin) {
       const pinVerification = await this.verifyTransactionPin(transactionPin);
       if (!pinVerification.success) {
@@ -669,13 +618,11 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
       }
     }
     
-    // Check balance
     const balanceCheck = this.checkCommissionBalance(amount);
     if (!balanceCheck.success) {
       throw new Error(balanceCheck.message);
     }
     
-    // Check minimum withdrawal
     if (amount < 500) {
       throw new Error('Minimum withdrawal amount is ₦500');
     }
@@ -683,13 +630,9 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
     const oldCommissionBalance = this.commissionBalance;
     const oldWalletBalance = this.walletBalance || 0;
     
-    // Deduct from commission
     this.commissionBalance -= amount;
-    
-    // Add to main wallet
     this.walletBalance = (this.walletBalance || 0) + amount;
     
-    // Create commission withdrawal transaction
     const commissionTransaction = new Transaction({
       userId: this._id,
       type: 'Commission Withdrawal',
@@ -709,7 +652,6 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
       }
     });
     
-    // Create wallet credit transaction
     const walletTransaction = new Transaction({
       userId: this._id,
       type: 'Commission Credit',
@@ -750,7 +692,7 @@ userSchema.methods.withdrawCommissionToWallet = async function (amount, transact
   }
 };
 
-// Method to refund commission (if VTPass transaction fails) - FIXED
+// Method to refund commission
 userSchema.methods.refundCommission = async function (amount, originalTransactionId) {
   const session = await mongoose.startSession();
   
@@ -762,10 +704,9 @@ userSchema.methods.refundCommission = async function (amount, originalTransactio
     const oldCommissionBalance = this.commissionBalance;
     this.commissionBalance += amount;
     
-    // Create refund transaction - use 'Commission Refund' type
     const refundTransaction = new Transaction({
       userId: this._id,
-      type: 'Commission Refund', // Changed from 'Commission Credit'
+      type: 'Commission Refund',
       amount: amount,
       status: 'Successful',
       description: 'Commission refunded - Service purchase failed',
@@ -782,13 +723,11 @@ userSchema.methods.refundCommission = async function (amount, originalTransactio
         refundReason: 'service_purchase_failed',
         refundSource: 'commission_payment',
         timestamp: new Date(),
-        // Mark as refund so frontend can distinguish
         isRefund: true,
         originalAmount: amount
       }
     });
     
-    // Update original transaction status
     const originalTransaction = await Transaction.findById(originalTransactionId).session(session);
     if (originalTransaction) {
       originalTransaction.status = 'Failed';
@@ -825,7 +764,146 @@ userSchema.methods.refundCommission = async function (amount, originalTransactio
     session.endSession();
   }
 };
-// Index for better performance
+
+// ========== OTP METHODS (Keep your existing ones) ==========
+
+userSchema.methods.isOTPLocked = function () {
+  return this.resetPasswordOTPLockedUntil && this.resetPasswordOTPLockedUntil > new Date();
+};
+
+userSchema.methods.getOTPLockRemaining = function () {
+  if (!this.resetPasswordOTPLockedUntil) return 0;
+  const now = new Date();
+  const diff = this.resetPasswordOTPLockedUntil - now;
+  return Math.ceil(diff / (1000 * 60));
+};
+
+userSchema.methods.incrementOTPAttempts = async function () {
+  this.resetPasswordOTPAttempts += 1;
+  if (this.resetPasswordOTPAttempts >= 3) {
+    this.resetPasswordOTPLockedUntil = new Date(Date.now() + 30 * 60 * 1000);
+  }
+  return this.save();
+};
+
+userSchema.methods.resetOTPAttempts = async function () {
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  return this.save();
+};
+
+userSchema.methods.verifyOTP = async function (otp) {
+  try {
+    if (this.isOTPLocked()) {
+      const remainingTime = this.getOTPLockRemaining();
+      return {
+        success: false,
+        locked: true,
+        message: `OTP verification locked. Try again in ${remainingTime} minutes.`
+      };
+    }
+
+    if (!this.resetPasswordOTP) {
+      return {
+        success: false,
+        message: 'No OTP requested. Please request a new OTP.'
+      };
+    }
+
+    if (!this.resetPasswordOTPExpire || this.resetPasswordOTPExpire < new Date()) {
+      this.resetPasswordOTP = null;
+      this.resetPasswordOTPExpire = null;
+      await this.save();
+      
+      return {
+        success: false,
+        expired: true,
+        message: 'OTP has expired. Please request a new one.'
+      };
+    }
+
+    const isMatch = this.resetPasswordOTP === otp;
+    
+    if (isMatch) {
+      await this.resetOTPAttempts();
+      return {
+        success: true,
+        message: 'OTP verified successfully'
+      };
+    } else {
+      await this.incrementOTPAttempts();
+      
+      if (this.resetPasswordOTPAttempts >= 3) {
+        return {
+          success: false,
+          locked: true,
+          message: 'OTP verification locked for 30 minutes due to multiple failed attempts'
+        };
+      }
+      
+      const remainingAttempts = 3 - this.resetPasswordOTPAttempts;
+      return {
+        success: false,
+        message: `Invalid OTP. ${remainingAttempts} attempts remaining`
+      };
+    }
+  } catch (error) {
+    console.error('Error verifying password reset OTP:', error);
+    return {
+      success: false,
+      message: 'Error verifying OTP. Please try again.'
+    };
+  }
+};
+
+userSchema.methods.setOTP = async function (otp) {
+  this.resetPasswordOTP = otp;
+  this.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000);
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  this.resetPasswordToken = null;
+  this.resetPasswordExpire = null;
+  return this.save();
+};
+
+userSchema.methods.clearOTP = async function () {
+  this.resetPasswordOTP = null;
+  this.resetPasswordOTPExpire = null;
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  return this.save();
+};
+
+userSchema.methods.generateResetToken = async function () {
+  const crypto = require('crypto');
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  
+  this.resetPasswordToken = resetToken;
+  this.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000);
+  
+  this.resetPasswordOTP = null;
+  this.resetPasswordOTPExpire = null;
+  this.resetPasswordOTPAttempts = 0;
+  this.resetPasswordOTPLockedUntil = null;
+  
+  await this.save();
+  return resetToken;
+};
+
+userSchema.methods.isResetTokenValid = function (token) {
+  if (!this.resetPasswordToken || !this.resetPasswordExpire) {
+    return false;
+  }
+  return this.resetPasswordToken === token && this.resetPasswordExpire > new Date();
+};
+
+userSchema.methods.clearResetToken = async function () {
+  this.resetPasswordToken = null;
+  this.resetPasswordExpire = null;
+  return this.save();
+};
+
+// Indexes
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ referralCode: 1 });
@@ -833,5 +911,8 @@ userSchema.index({ referrerId: 1 });
 userSchema.index({ 'virtualAccount.accountNumber': 1 });
 userSchema.index({ resetPasswordOTP: 1 });
 userSchema.index({ resetPasswordOTPExpire: 1 });
+userSchema.index({ role: 1 });
+userSchema.index({ isAdmin: 1 });
+userSchema.index({ isSuperAdmin: 1 });
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);
