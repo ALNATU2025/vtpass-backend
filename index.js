@@ -12229,39 +12229,237 @@ app.get('/api/vtpass/variations', protect, [
   }
 });
 
-// NEW: Error reporting endpoint
-// @desc    Report an error
+// @desc    Report an error - COMPLETE IMPLEMENTATION
 // @route   POST /api/errors/report
-// @access  Private
-app.post('/api/errors/report', protect, async (req, res) => {
+// @access  Public
+app.post('/api/errors/report', async (req, res) => {
   try {
-    const { error, stackTrace, timestamp, platform, version } = req.body;
-    
-    console.error('Error reported from client:', {
-      error,
-      stackTrace,
-      timestamp,
-      platform,
+    const { 
+      error, 
+      stackTrace, 
+      timestamp, 
+      platform, 
       version,
-      userId: req.user._id
+      userId: clientUserId,
+      deviceId,
+      screen,
+      errorType,
+      fatal
+    } = req.body;
+    
+    // ============================================
+    // 1. Rate Limiting
+    // ============================================
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const rateKey = `error_${deviceId || ip}`;
+    
+    if (!errorRateLimits.has(rateKey)) {
+      errorRateLimits.set(rateKey, { count: 0, resetAt: Date.now() + 60000 });
+    }
+    
+    const rate = errorRateLimits.get(rateKey);
+    if (Date.now() > rate.resetAt) {
+      rate.count = 0;
+      rate.resetAt = Date.now() + 60000;
+    }
+    
+    // Allow more reports for fatal errors
+    const maxReports = fatal ? 20 : 10;
+    
+    if (rate.count >= maxReports) {
+      console.log(`⏱️ Rate limit reached for ${rateKey}`);
+      return res.status(429).json({
+        success: false,
+        message: 'Too many error reports. Please wait.',
+        retryAfter: Math.ceil((rate.resetAt - Date.now()) / 1000)
+      });
+    }
+    
+    rate.count++;
+    errorRateLimits.set(rateKey, rate);
+    
+    // ============================================
+    // 2. Get User Info (Optional)
+    // ============================================
+    let userId = clientUserId || null;
+    let userEmail = null;
+    let userName = null;
+    
+    // Try to get from token if not provided
+    if (!userId) {
+      try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (token) {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET);
+          const user = await User.findById(decoded.id).select('email fullName');
+          if (user) {
+            userId = user._id;
+            userEmail = user.email;
+            userName = user.fullName;
+          }
+        }
+      } catch (tokenError) {
+        // Token invalid - that's fine
+      }
+    }
+    
+    // ============================================
+    // 3. Categorize Error
+    // ============================================
+    const errorCategories = {
+      AUTH: ['auth', 'login', 'token', 'session', 'unauthorized', 'forbidden'],
+      PIN: ['pin', 'transaction pin', 'too many attempts', 'locked'],
+      BALANCE: ['balance', 'insufficient', 'funds'],
+      NETWORK: ['network', 'connection', 'timeout', 'socket', 'dns'],
+      VALIDATION: ['validation', 'invalid', 'required', 'format'],
+      SERVER: ['500', 'internal server', 'server error', 'unavailable'],
+      PAYMENT: ['payment', 'paystack', 'vtpass', 'transfer'],
+      DATABASE: ['mongo', 'mongodb', 'database', 'query'],
+      UI: ['rendering', 'widget', 'layout', 'view']
+    };
+    
+    let category = 'UNKNOWN';
+    let severity = 'MEDIUM';
+    
+    for (const [cat, keywords] of Object.entries(errorCategories)) {
+      if (keywords.some(kw => error?.toLowerCase().includes(kw))) {
+        category = cat;
+        break;
+      }
+    }
+    
+    // Determine severity
+    if (fatal || error?.toLowerCase().includes('crash') || category === 'SERVER' || category === 'DATABASE') {
+      severity = 'CRITICAL';
+    } else if (category === 'UI' || category === 'VALIDATION') {
+      severity = 'LOW';
+    } else if (['AUTH', 'PIN', 'BALANCE'].includes(category)) {
+      severity = 'LOW';
+    }
+    
+    // ============================================
+    // 4. Build Log Entry
+    // ============================================
+    const logEntry = {
+      error: error?.substring(0, 2000),
+      stackTrace: stackTrace?.substring(0, 5000),
+      timestamp: timestamp || new Date().toISOString(),
+      platform: platform || 'unknown',
+      version: version || 'unknown',
+      userId: userId,
+      userEmail: userEmail,
+      userName: userName,
+      deviceId: deviceId || 'unknown',
+      screen: screen || 'unknown',
+      errorType: errorType || 'unknown',
+      category: category,
+      severity: severity,
+      fatal: fatal || false,
+      ip: ip,
+      userAgent: req.get('User-Agent'),
+      headers: req.headers,
+      isResolved: false,
+      reportedAt: new Date().toISOString()
+    };
+    
+    // ============================================
+    // 5. Log Based on Severity
+    // ============================================
+    const logPrefix = {
+      'CRITICAL': '🚨🚨🚨 CRITICAL ERROR',
+      'MEDIUM': '⚠️ Error',
+      'LOW': '📝 User Error'
+    };
+    
+    console.log(`${logPrefix[severity] || '📝'} [${category}] from ${userEmail || userId || 'anonymous'}:`);
+    console.log(`  Error: ${error?.substring(0, 200)}`);
+    console.log(`  Platform: ${platform}, Version: ${version}`);
+    console.log(`  IP: ${ip}`);
+    
+    if (severity === 'CRITICAL') {
+      console.log(`  Stack Trace: ${stackTrace?.substring(0, 500)}`);
+    }
+    
+    // ============================================
+    // 6. Save to Database (if available)
+    // ============================================
+    try {
+      // Check if ErrorLog model exists, if not, create it
+      let ErrorLog;
+      try {
+        ErrorLog = mongoose.model('ErrorLog');
+      } catch (modelError) {
+        // Define schema if model doesn't exist
+        const ErrorLogSchema = new mongoose.Schema({
+          error: { type: String, required: true },
+          stackTrace: { type: String },
+          timestamp: { type: Date, default: Date.now },
+          platform: { type: String },
+          version: { type: String },
+          userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          userEmail: { type: String },
+          userName: { type: String },
+          deviceId: { type: String },
+          screen: { type: String },
+          errorType: { type: String },
+          category: { type: String },
+          severity: { type: String, enum: ['LOW', 'MEDIUM', 'CRITICAL'], default: 'MEDIUM' },
+          fatal: { type: Boolean, default: false },
+          ip: { type: String },
+          userAgent: { type: String },
+          isResolved: { type: Boolean, default: false },
+          resolvedAt: { type: Date },
+          resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          notes: { type: String }
+        }, { timestamps: true });
+        
+        ErrorLog = mongoose.model('ErrorLog', ErrorLogSchema);
+      }
+      
+      // Save only critical and medium errors to database
+      if (severity !== 'LOW') {
+        await new ErrorLog(logEntry).save();
+        console.log(`💾 Error saved to database (${severity})`);
+      }
+      
+    } catch (dbError) {
+      console.error('Failed to save error to DB:', dbError.message);
+    }
+    
+    // ============================================
+    // 7. Send Response
+    // ============================================
+    res.status(200).json({
+      success: true,
+      message: 'Error report received',
+      logged: true,
+      category: category,
+      severity: severity,
+      reportId: `ERR_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
     });
     
-    // Here you would typically save the error to a database or send it to a logging service
-    // For now, we'll just acknowledge receipt
-    
-    res.status(200).json({ 
-      success: true, 
-      message: 'Error report received' 
-    });
   } catch (error) {
-    console.error('Error reporting error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to process error report' 
+    console.error('Error processing error report:', error);
+    res.status(200).json({
+      success: false,
+      message: 'Error report received but processing failed',
+      error: error.message
     });
   }
 });
 
+// Rate limiting store
+const errorRateLimits = new Map();
+
+// Clean up rate limit store every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of errorRateLimits.entries()) {
+    if (now > value.resetAt) {
+      errorRateLimits.delete(key);
+    }
+  }
+}, 60 * 60 * 1000);
 
 
 
