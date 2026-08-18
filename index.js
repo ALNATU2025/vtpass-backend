@@ -10375,7 +10375,9 @@ app.post('/api/vtpass/tv/purchase',
     body('variationCode').notEmpty().withMessage('Variation code is required'),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
     body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
-    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change')
+    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
+    body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
+    body('currentPackage').optional().isString().withMessage('Current package must be a string')
   ], 
   async (req, res) => {
     const errors = validationResult(req);
@@ -10386,7 +10388,17 @@ app.post('/api/vtpass/tv/purchase',
     console.log('📺 CABLE TV PURCHASE REQUEST (RACE PROTECTED + IMMEDIATE DEBIT 2026)');
     console.log('📦 Request Body:', req.body);
     
-    const { serviceID, billersCode, variationCode, amount, phone } = req.body;
+    const { 
+      serviceID, 
+      billersCode, 
+      variationCode, 
+      amount, 
+      phone,
+      subscription_type = 'renew',
+      quantity = 1,
+      currentPackage
+    } = req.body;
+    
     const userId = req.user._id;
     const reference = generateRequestId();
     
@@ -10402,16 +10414,65 @@ app.post('/api/vtpass/tv/purchase',
       }
       
       // ================================================
+      // 🔥 SMART VALIDATION: Check if this is a package change
+      // ================================================
+      let isPackageChange = false;
+      let packageChangeDetails = null;
+      
+      // If currentPackage is provided, check if the user is changing packages
+      if (currentPackage && variationCode !== currentPackage) {
+        isPackageChange = true;
+        console.log(`🔄 PACKAGE CHANGE DETECTED: ${currentPackage} → ${variationCode}`);
+        
+        // Get package prices for validation
+        const packagePrices = await getPackagePrices(serviceID);
+        const currentPackagePrice = packagePrices[currentPackage];
+        const newPackagePrice = packagePrices[variationCode];
+        
+        if (!newPackagePrice) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid package selected',
+            code: 'INVALID_PACKAGE'
+          });
+        }
+        
+        // ✅ CRITICAL FIX: For package changes, amount MUST match the new package price
+        if (Math.abs(amount - newPackagePrice) > 0.01) {
+          await session.abortTransaction();
+          console.log(`❌ AMOUNT MISMATCH FOR PACKAGE CHANGE: Required ₦${newPackagePrice}, Got ₦${amount}`);
+          return res.status(400).json({
+            success: false,
+            message: `Package change requires exact amount of ₦${newPackagePrice.toFixed(2)}. You entered ₦${amount.toFixed(2)}.`,
+            code: 'AMOUNT_MISMATCH',
+            requiredAmount: newPackagePrice,
+            providedAmount: amount
+          });
+        }
+        
+        packageChangeDetails = {
+          from: currentPackage,
+          to: variationCode,
+          fromPrice: currentPackagePrice,
+          toPrice: newPackagePrice
+        };
+        
+        console.log(`✅ Package change validated: ₦${currentPackagePrice} → ₦${newPackagePrice}`);
+      }
+      
+      // ================================================
       // 🔥 IMMEDIATE DEBIT ON PIN ENTRY - DEBIT NOW!
       // ================================================
-      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${amount} TV subscription for smartcard ${billersCode}`);
+      const totalAmount = amount * quantity;
+      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${totalAmount} TV subscription for smartcard ${billersCode}`);
       
       // Check balance first
-      if (user.walletBalance < amount) {
+      if (user.walletBalance < totalAmount) {
         await session.abortTransaction();
         return res.status(400).json({ 
           success: false, 
-          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          message: `Insufficient balance. Required: ₦${totalAmount}, Available: ₦${user.walletBalance.toFixed(2)}`,
           code: 'INSUFFICIENT_BALANCE'
         });
       }
@@ -10462,23 +10523,38 @@ app.post('/api/vtpass/tv/purchase',
       // IMMEDIATE DEBIT - DEDUCT FROM WALLET NOW
       // ================================================
       const balanceBefore = user.walletBalance;
-      user.walletBalance -= amount;
+      user.walletBalance -= totalAmount;
       const balanceAfter = user.walletBalance;
       await user.save({ session });
       
-      console.log(`💰 WALLET DEBITED: ₦${amount}`);
+      console.log(`💰 WALLET DEBITED: ₦${totalAmount}`);
       console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
       
-      // Call VTpass API
-      const vtpassResult = await callVtpassApi('/pay', {
+      // ================================================
+      // 🔥 CALL VTPASS WITH CORRECT PARAMETERS
+      // ================================================
+      const vtpassPayload = {
         serviceID,
         billersCode,
         variation_code: variationCode,
-        amount,
+        amount: totalAmount,
         phone,
         request_id: reference,
-        subscription_type: req.body.subscription_type || 'renew',
-      });
+        subscription_type: isPackageChange ? 'change' : (req.body.subscription_type || 'renew'),
+        quantity: quantity
+      };
+      
+      // Add extra parameters for ExtraView packages
+      if (serviceID === 'dstv' && variationCode.includes('extra')) {
+        vtpassPayload.is_extra_view = true;
+        vtpassPayload.subscription_type = isPackageChange ? 'change' : 'renew';
+        console.log('📺 EXTRAVIEW DETECTED: Adding special handling');
+      }
+      
+      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
+      
+      // Call VTpass API
+      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
       
       console.log('📡 VTPass Response for TV Purchase:', JSON.stringify(vtpassResult, null, 2));
       
@@ -10515,24 +10591,27 @@ app.post('/api/vtpass/tv/purchase',
         customerAddress = vtpassResult.data.customerAddress || vtpassResult.data.content?.Address || 'N/A';
         
         // Calculate and add commission
-        await calculateAndAddCommission(userId, amount, 'tv', session)
+        await calculateAndAddCommission(userId, totalAmount, 'tv', session)
           .catch(err => console.log('⚠️ TV commission calculation failed:', err.message));
         
         // Create notification
         try {
           await Notification.create({
             recipient: userId,
-            title: "TV Subscription Successful 📺",
-            message: `Your ${serviceID.toUpperCase()} TV subscription of ₦${amount} for ${billersCode} was completed successfully. New wallet balance: ₦${newBalance}`,
+            title: isPackageChange ? 'TV Package Changed Successfully 📺' : 'TV Subscription Successful 📺',
+            message: `Your ${serviceID.toUpperCase()} TV subscription${isPackageChange ? ' change from ' + packageChangeDetails.from + ' to ' + packageChangeDetails.to : ''} of ₦${totalAmount} for ${billersCode} was completed successfully. New wallet balance: ₦${newBalance}`,
             type: 'transaction',
             isRead: false,
             metadata: {
               serviceID: serviceID,
               smartcardNumber: billersCode,
-              amount: amount,
-              packageName: variationCode,
+              amount: totalAmount,
+              packageName: packageName,
               newBalance: newBalance,
-              userDebited: true
+              userDebited: true,
+              isPackageChange: isPackageChange,
+              packageChangeDetails: packageChangeDetails,
+              quantity: quantity
             }
           });
         } catch (notificationError) {
@@ -10574,7 +10653,7 @@ app.post('/api/vtpass/tv/purchase',
             packageName: existingPackageName,
             vtpassResponse: existingTx.metadata?.vtpassResponse || {},
             userDebited: true,
-            amountDebited: amount
+            amountDebited: totalAmount
           });
         }
         
@@ -10582,23 +10661,23 @@ app.post('/api/vtpass/tv/purchase',
         transactionStatus = 'Failed';
         vtpassData = vtpassResult.data;
         
-        console.log(`⚠️ VTpass duplicate - User already debited ₦${amount}`);
+        console.log(`⚠️ VTpass duplicate - User already debited ₦${totalAmount}`);
       }
       else {
         // VTpass failed - user is already debited
         transactionStatus = 'Failed';
         vtpassData = vtpassResult.data;
         
-        console.log(`❌ VTPASS FAILED: User already debited ₦${amount}, TV subscription not delivered`);
+        console.log(`❌ VTPASS FAILED: User already debited ₦${totalAmount}, TV subscription not delivered`);
       }
       
       // CREATE TRANSACTION WITH VARIATION_CODE IN METADATA (user already debited)
       const newTransaction = await createTransaction(
         userId,
-        amount,
+        totalAmount,
         'Cable TV Subscription',
         transactionStatus,
-        `${serviceID.toUpperCase()} subscription for ${billersCode}${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}`,
+        `${serviceID.toUpperCase()} subscription for ${billersCode}${isPackageChange ? ' - Package Change: ' + packageChangeDetails.from + ' → ' + packageChangeDetails.to : ''}${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}`,
         balanceBefore,
         balanceAfter,
         session,
@@ -10616,11 +10695,15 @@ app.post('/api/vtpass/tv/purchase',
           serviceID: serviceID,
           vtpassResponse: vtpassData,
           userDebited: true,
-          debitAmount: amount,
+          debitAmount: totalAmount,
           vtpassDelivered: transactionStatus === 'Successful',
           token: formattedToken,
           customerName: customerName,
-          customerAddress: customerAddress
+          customerAddress: customerAddress,
+          isPackageChange: isPackageChange,
+          packageChangeDetails: packageChangeDetails,
+          quantity: quantity,
+          subscription_type: isPackageChange ? 'change' : (req.body.subscription_type || 'renew')
         }
       );
       
@@ -10633,6 +10716,9 @@ app.post('/api/vtpass/tv/purchase',
       console.log(`🆔 Reference: ${reference}`);
       console.log(`✅ Status: ${newTransaction.status}`);
       console.log(`💰 User Debited: true`);
+      if (isPackageChange) {
+        console.log(`🔄 Package Change: ${packageChangeDetails.from} → ${packageChangeDetails.to}`);
+      }
 
       // Extract VTPass details
       const vtpassCode = vtpassData?.code || '000';
@@ -10652,19 +10738,23 @@ app.post('/api/vtpass/tv/purchase',
             status: newTransaction.status,
             variation_code: variationCode,
             packageName: packageName,
-            message: `TV subscription successful!`,
+            message: isPackageChange ? `Package changed successfully!` : `TV subscription successful!`,
             code: vtpassCode,
-            response_description: vtpassDesc
+            response_description: vtpassDesc,
+            isPackageChange: isPackageChange,
+            packageChangeDetails: packageChangeDetails
           },
           newBalance: newBalance,
-          message: `TV subscription successful!`,
+          message: isPackageChange ? `Package changed successfully!` : `TV subscription successful!`,
           forceSuccessDialog: true,
           isDuplicateSuccess: false,
           userDebited: true,
-          amountDebited: amount,
+          amountDebited: totalAmount,
           token: formattedToken || 'Check SMS',
           customerName: customerName,
-          customerAddress: customerAddress
+          customerAddress: customerAddress,
+          isPackageChange: isPackageChange,
+          packageChangeDetails: packageChangeDetails
         };
 
         console.log('📤 Sending success response to frontend');
@@ -10673,7 +10763,7 @@ app.post('/api/vtpass/tv/purchase',
         // Failed but user was debited
         res.status(400).json({
           success: false,
-          message: `Your wallet was debited ₦${amount} but TV subscription delivery failed. Please contact support.`,
+          message: `Your wallet was debited ₦${totalAmount} but TV subscription delivery failed. Please contact support.`,
           transactionId: newTransaction._id.toString(),
           status: newTransaction.status,
           newBalance: newBalance,
@@ -10681,11 +10771,13 @@ app.post('/api/vtpass/tv/purchase',
           packageName: packageName,
           vtpassResponse: vtpassData,
           userDebited: true,
-          amountDebited: amount,
+          amountDebited: totalAmount,
           isFailed: true,
           shouldShowAsFailed: true,
           code: vtpassCode,
-          response_description: vtpassDesc
+          response_description: vtpassDesc,
+          isPackageChange: isPackageChange,
+          packageChangeDetails: packageChangeDetails
         });
       }
       
@@ -10714,6 +10806,36 @@ app.post('/api/vtpass/tv/purchase',
   }
 );
 
+// Helper function to get package prices
+async function getPackagePrices(serviceID) {
+  const packageMappings = {
+    'dstv': {
+      'dstv-padi': 1850,
+      'dstv-yanga': 2565,
+      'dstv-confam': 4615,
+      'dstv79': 7900,
+      'dstv7': 12400,
+      'dstv3': 18400
+    },
+    'gotv': {
+      'gotv-lite': 410,
+      'gotv-jinja': 1640,
+      'gotv-jolli': 2460,
+      'gotv-max': 3600,
+      'gotv-supa-plus': 15700
+    },
+    'startimes': {
+      'nova': 900,
+      'basic': 1700,
+      'smart': 2200,
+      'classic': 2500,
+      'super': 4200
+    }
+  };
+  
+  return packageMappings[serviceID] || {};
+}
+
 // Helper function to map variation code to package name
 function getPackageNameFromVariationCode(variationCode, serviceID) {
   const packageMappings = {
@@ -10721,20 +10843,23 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
       'dstv-padi': 'DStv Padi',
       'dstv-yanga': 'DStv Yanga', 
       'dstv-confam': 'DStv Confam',
-      'dstv-compact': 'DStv Compact',
-      'dstv-compact-plus': 'DStv Compact Plus',
-      'dstv-premium': 'DStv Premium'
+      'dstv79': 'DStv Compact',
+      'dstv7': 'DStv Compact Plus',
+      'dstv3': 'DStv Premium'
     },
     'gotv': {
-      'gotv-smallie': 'GOtv Smallie',
+      'gotv-lite': 'GOtv Lite',
       'gotv-jinja': 'GOtv Jinja',
-      'gotv-max': 'GOtv Max'
+      'gotv-jolli': 'GOtv Jolli',
+      'gotv-max': 'GOtv Max',
+      'gotv-supa-plus': 'GOtv Supa Plus'
     },
     'startimes': {
       'nova': 'StarTimes Nova',
-      'nova-dish-weekly': 'StarTimes Nova Dish Weekly',
       'basic': 'StarTimes Basic',
-      'classic': 'StarTimes Classic'
+      'smart': 'StarTimes Smart',
+      'classic': 'StarTimes Classic',
+      'super': 'StarTimes Super'
     }
   };
   
@@ -10756,7 +10881,6 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
-
 
 
 
