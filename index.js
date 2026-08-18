@@ -10271,6 +10271,52 @@ app.post('/api/vtpass/validate-smartcard', protect, [
 
 
 
+              // @desc    Validate electricity meter (NO transaction cooldown)
+// @route   POST /api/vtpass/merchant-verify
+// @access  Private
+app.post('/api/vtpass/merchant-verify', protect, async (req, res) => {
+  try {
+    const { billersCode, serviceID, type } = req.body;
+    
+    console.log(`🔍 Validating meter: ${billersCode}, ${serviceID}, ${type}`);
+    
+    // ✅ NO transaction cooldown check - this is a read-only operation
+    
+    // Call VTpass merchant-verify API directly
+    const response = await fetch('https://vtpass.com/api/merchant-verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY || '8f9add2090d11f0231997d4a566cfaa5',
+        'secret-key': process.env.VTPASS_SECRET_KEY || 'SK_477125973682912ca3fd2e11128b4a5c412b158c45c',
+      },
+      body: JSON.stringify({
+        billersCode,
+        serviceID,
+        type,
+      }),
+    });
+    
+    const data = await response.json();
+    console.log('📦 VTpass validation response:', JSON.stringify(data));
+    
+    // ✅ Forward the VTpass response
+    res.json({
+      success: true,
+      vtpassResponse: data,
+    });
+    
+  } catch (error) {
+    console.error('❌ Meter validation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate meter. Please try again.',
+      error: error.message,
+    });
+  }
+});
+
+
 
 // Add the normalizeStatus function right BEFORE the route handler:
 
