@@ -10271,7 +10271,7 @@ app.post('/api/vtpass/validate-smartcard', protect, [
 
 
 
-              // @desc    Validate electricity meter (NO transaction cooldown)
+// @desc    Validate electricity meter (NO transaction cooldown)
 // @route   POST /api/vtpass/merchant-verify
 // @access  Private
 app.post('/api/vtpass/merchant-verify', protect, async (req, res) => {
