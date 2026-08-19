@@ -7681,6 +7681,8 @@ app.put('/api/users/toggle-admin-status/:userId', adminProtect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // @desc    Update user profile
 // @route   PATCH /api/users/:userId
 // @access  Private
@@ -7749,6 +7751,8 @@ app.patch('/api/users/:userId', protect, [
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // @desc    Change user password
 // @route   POST /api/users/change-password
 // @access  Private
@@ -7869,6 +7873,9 @@ app.post('/api/users/fund', adminProtect, [
     session.endSession();
   }
 });
+
+
+
 // @desc    Get transaction statistics (Admin only)
 // @route   GET /api/transactions/statistics
 // @access  Private/Admin
