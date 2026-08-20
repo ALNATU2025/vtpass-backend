@@ -29,6 +29,10 @@ const Referral = require('./models/Referral');
 const formatCurrency = (amount) => `₦${(amount || 0).toFixed(2)}`;
 const adminExportRoutes = require('./routes/adminExportRoutes');
 
+// ==================== COMMISSION STATS CACHE ====================
+const commissionStatsCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+
 
 // Add this with your other imports (around line 10-20)
 const { preventRaceCondition, preventDuplicateVtpassCall, userServiceRateLimiter } = require('./middleware/rateLimiter');
@@ -4738,6 +4742,8 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
+
+
 // ==================== ADMIN SERVICE COMMISSION STATISTICS ====================
 // @desc    Get commission statistics for admin (Super Admin only)
 // @route   GET /api/admin/commission-stats
@@ -4762,7 +4768,18 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     } = req.query;
 
     // ================================================
-    // 1. DATE RANGES
+    // 1. GENERATE CACHE KEY
+    // ================================================
+    const cacheKey = `commission_stats_${timeFilter}_${service}_${customStartDate || ''}_${customEndDate || ''}`;
+    const cached = commissionStatsCache.get(cacheKey);
+    
+    if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+      console.log('📦 Returning CACHED commission stats');
+      return res.json({ success: true, data: cached.data });
+    }
+
+    // ================================================
+    // 2. DATE RANGES
     // ================================================
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -4773,7 +4790,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     const yearStart = new Date(now.getFullYear(), 0, 1);
 
     // ================================================
-    // 2. SERVICE TYPE MAPPING
+    // 3. SERVICE TYPE MAPPING
     // ================================================
     const serviceCommissionRates = {
       'airtime': { rate: 0.02, label: 'Airtime' },
@@ -4786,7 +4803,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       'ticket': { rate: 150, label: 'Ticket', isFlat: true }
     };
 
-    // Service type mapping for transactions
     const serviceTypeMap = {
       'airtime': { $in: ['Airtime Purchase'] },
       'international_airtime': { $in: ['International Airtime Purchase'] },
@@ -4799,7 +4815,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     // ================================================
-    // 3. BUILD FILTERS
+    // 4. BUILD FILTERS
     // ================================================
     let timeFilterQuery = {};
     
@@ -4835,7 +4851,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     // ================================================
-    // 4. FETCH TRANSACTIONS
+    // 5. FETCH TRANSACTIONS - ADD INDEX HINT AND LIMIT
     // ================================================
     const filterQuery = {
       ...timeFilterQuery,
@@ -4845,14 +4861,16 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
 
     console.log('🔍 Filter Query:', JSON.stringify(filterQuery, null, 2));
 
+    // ✅ FIX: Use lean() and limit to improve performance
     const transactions = await Transaction.find(filterQuery)
       .sort({ createdAt: -1 })
-      .lean();
+      .lean()
+      .limit(20000); // Limit to 20,000 transactions for performance
 
     console.log(`📊 Found ${transactions.length} successful transactions`);
 
     // ================================================
-    // 5. CALCULATE COMMISSIONS
+    // 6. CALCULATE COMMISSIONS
     // ================================================
     let totalCommission = 0;
     let totalTransactionAmount = 0;
@@ -4947,20 +4965,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
 
     // ================================================
-    // 6. BUILD PERIOD STATS
+    // 7. BUILD PERIOD STATS
     // ================================================
-    const getPeriodStats = (statsObj) => {
-      const keys = Object.keys(statsObj);
-      if (keys.length === 0) {
-        return { count: 0, amount: 0, commission: 0 };
-      }
-      // Sort keys chronologically
-      keys.sort();
-      const lastKey = keys[keys.length - 1];
-      return statsObj[lastKey] || { count: 0, amount: 0, commission: 0 };
-    };
-
-    // Get current period stats
     const todayStr = new Date().toISOString().split('T')[0];
     const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const yearStr = `${now.getFullYear()}`;
@@ -4969,7 +4975,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     const monthStats = monthlyStats[monthStr] || { count: 0, amount: 0, commission: 0 };
     const yearStats = yearlyStats[yearStr] || { count: 0, amount: 0, commission: 0 };
 
-    // Get week stats
     let weekStr = '';
     const weekDay = now.getDay();
     const weekStartDate = new Date(now);
@@ -4980,81 +4985,80 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     const weekStats = weeklyStats[weekStr] || { count: 0, amount: 0, commission: 0 };
 
     // ================================================
-    // 7. BUILD RESPONSE
+    // 8. BUILD RESPONSE
     // ================================================
-    const response = {
-      success: true,
-      data: {
-        // Summary
-        totalTransactions: transactions.length,
-        totalAmount: totalTransactionAmount,
-        totalCommission: totalCommission,
-        totalCount: transactions.length,
+    const responseData = {
+      totalTransactions: transactions.length,
+      totalAmount: totalTransactionAmount,
+      totalCommission: totalCommission,
+      totalCount: transactions.length,
 
-        // Period Stats
-        periodStats: {
-          today: {
-            count: todayStats.count,
-            amount: todayStats.amount,
-            commission: todayStats.commission,
-            label: 'Today'
-          },
-          week: {
-            count: weekStats.count,
-            amount: weekStats.amount,
-            commission: weekStats.commission,
-            label: 'This Week'
-          },
-          month: {
-            count: monthStats.count,
-            amount: monthStats.amount,
-            commission: monthStats.commission,
-            label: 'This Month'
-          },
-          year: {
-            count: yearStats.count,
-            amount: yearStats.amount,
-            commission: yearStats.commission,
-            label: 'This Year'
-          }
+      periodStats: {
+        today: {
+          count: todayStats.count,
+          amount: todayStats.amount,
+          commission: todayStats.commission,
+          label: 'Today'
         },
-
-        // Service Breakdown
-        serviceBreakdown: serviceBreakdown,
-
-        // Daily history (for charts)
-        dailyHistory: Object.keys(dailyStats).sort().map(key => ({
-          date: key,
-          ...dailyStats[key]
-        })),
-
-        // Monthly history
-        monthlyHistory: Object.keys(monthlyStats).sort().map(key => ({
-          month: key,
-          ...monthlyStats[key]
-        })),
-
-        // Commission rates
-        commissionRates: serviceCommissionRates,
-
-        // Applied filters
-        appliedFilters: {
-          timeFilter,
-          service,
-          startDate: customStartDate || null,
-          endDate: customEndDate || null
+        week: {
+          count: weekStats.count,
+          amount: weekStats.amount,
+          commission: weekStats.commission,
+          label: 'This Week'
         },
+        month: {
+          count: monthStats.count,
+          amount: monthStats.amount,
+          commission: monthStats.commission,
+          label: 'This Month'
+        },
+        year: {
+          count: yearStats.count,
+          amount: yearStats.amount,
+          commission: yearStats.commission,
+          label: 'This Year'
+        }
+      },
 
-        timestamp: new Date().toISOString()
-      }
+      serviceBreakdown: serviceBreakdown,
+
+      dailyHistory: Object.keys(dailyStats).sort().map(key => ({
+        date: key,
+        ...dailyStats[key]
+      })),
+
+      monthlyHistory: Object.keys(monthlyStats).sort().map(key => ({
+        month: key,
+        ...monthlyStats[key]
+      })),
+
+      commissionRates: serviceCommissionRates,
+
+      appliedFilters: {
+        timeFilter,
+        service,
+        startDate: customStartDate || null,
+        endDate: customEndDate || null
+      },
+
+      timestamp: new Date().toISOString()
     };
+
+    // ✅ Cache the response
+    commissionStatsCache.set(cacheKey, {
+      data: responseData,
+      timestamp: Date.now()
+    });
 
     console.log('✅ [COMMISSION STATS] Response built successfully');
     console.log(`   Total Commission: ₦${totalCommission.toFixed(2)}`);
     console.log(`   Total Transactions: ${transactions.length}`);
     console.log(`   Today: ${todayStats.count} transactions, ₦${todayStats.commission.toFixed(2)} commission`);
 
-    res.json(response);
+    res.json({
+      success: true,
+      data: responseData
+    });
 
   } catch (error) {
     console.error('❌ [COMMISSION STATS] Error:', error);
@@ -5065,6 +5069,21 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
   }
 });
+
+// ================================================
+// CLEAN UP CACHE EVERY 10 MINUTES
+// ================================================
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of commissionStatsCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      commissionStatsCache.delete(key);
+    }
+  }
+}, 10 * 60 * 1000);
+
+
+
 
 // ==================== COMMISSION RATES ENDPOINT ====================
 // @desc    Get commission rates for all services
