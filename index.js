@@ -9389,9 +9389,7 @@ app.get('/api/admin/dashboard', adminProtect, async (req, res) => {
 
 
 
-// ==================== DASHBOARD CACHE ====================
-const dashboardCache = new Map();
-const CACHE_TTL = 5000; // 5 seconds cache
+
 
 // @desc    Get dashboard summary (CACHED - NO DUPLICATE CALLS)
 // @route   GET /api/admin/dashboard-summary
