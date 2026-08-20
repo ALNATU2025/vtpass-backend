@@ -32,6 +32,10 @@ const adminExportRoutes = require('./routes/adminExportRoutes');
 // ==================== COMMISSION STATS CACHE ====================
 const commissionStatsCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+const dashboardCache = new Map();
+const DASHBOARD_CACHE_TTL = 5000; // 5 seconds cache
+
+
 
 
 // Add this with your other imports (around line 10-20)
@@ -9455,14 +9459,29 @@ app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
 });
 
 // Clean up cache every minute
+// Clean up dashboard cache every minute
 setInterval(() => {
   const now = Date.now();
-  for (const [key, value] of dashboardCache.entries()) {
-    if (now - value.timestamp > CACHE_TTL) {
-      dashboardCache.delete(key);
+  if (typeof dashboardCache !== 'undefined' && dashboardCache) {
+    for (const [key, value] of dashboardCache.entries()) {
+      if (now - value.timestamp > DASHBOARD_CACHE_TTL) {
+        dashboardCache.delete(key);
+      }
     }
   }
 }, 60000);
+
+// Clean up commission stats cache every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  if (typeof commissionStatsCache !== 'undefined' && commissionStatsCache) {
+    for (const [key, value] of commissionStatsCache.entries()) {
+      if (now - value.timestamp > CACHE_TTL) {
+        commissionStatsCache.delete(key);
+      }
+    }
+  }
+}, 10 * 60 * 1000);
 
 
 
