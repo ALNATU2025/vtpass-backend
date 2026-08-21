@@ -4770,7 +4770,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       startDate: customStartDate,
       endDate: customEndDate,
       page = 1,
-      limit = 50
+      limit = 50,
+      lastId
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -4822,29 +4823,23 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       const end = new Date(customEndDate);
       end.setHours(23, 59, 59, 999);
       timeFilterQuery = { createdAt: { $gte: start, $lte: end } };
-      console.log(`📅 Custom Date Range: ${start.toISOString()} to ${end.toISOString()}`);
     } else {
       switch (timeFilter) {
         case 'today':
           timeFilterQuery = { createdAt: { $gte: today } };
-          console.log('📅 Filter: Today');
           break;
         case 'week':
           timeFilterQuery = { createdAt: { $gte: weekStart } };
-          console.log('📅 Filter: This Week');
           break;
         case 'month':
           timeFilterQuery = { createdAt: { $gte: monthStart } };
-          console.log('📅 Filter: This Month');
           break;
         case 'year':
           timeFilterQuery = { createdAt: { $gte: yearStart } };
-          console.log('📅 Filter: This Year');
           break;
         case 'all':
         default:
           timeFilterQuery = {};
-          console.log('📅 Filter: All Time');
           break;
       }
     }
@@ -4855,7 +4850,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     let serviceFilterQuery = {};
     if (service !== 'all' && serviceTypeMap[service]) {
       serviceFilterQuery = { type: serviceTypeMap[service] };
-      console.log(`🔧 Service Filter: ${service}`);
     }
 
     // ================================================
@@ -4867,27 +4861,61 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       status: { $regex: /^success|completed$/i }
     };
 
-    console.log('🔍 Filter Query:', JSON.stringify(baseFilter, null, 2));
+    // ================================================
+    // 6. CURSOR-BASED PAGINATION (like admin all transactions)
+    // ================================================
+    let query = { ...baseFilter };
+    
+    if (lastId && lastId !== 'null' && lastId !== 'undefined') {
+      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+    }
 
     // ================================================
-    // 6. GET TOTAL COUNT (FAST)
+    // 7. GET TOTAL COUNT (FAST)
     // ================================================
     const totalTransactions = await Transaction.countDocuments(baseFilter);
-    console.log(`📊 Total successful transactions: ${totalTransactions}`);
 
     // ================================================
-    // 7. GET TRANSACTIONS WITH PAGINATION (FAST)
+    // 8. GET TRANSACTIONS WITH CURSOR PAGINATION
     // ================================================
-    const transactions = await Transaction.find(baseFilter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(maxLimit)
+    const transactions = await Transaction.find(query)
+      .select('_id userId type amount status description reference createdAt')
+      .sort({ _id: -1 })
+      .limit(maxLimit + 1)
       .lean();
 
-    console.log(`📊 Returned ${transactions.length} transactions`);
+    const hasMore = transactions.length > maxLimit;
+    if (hasMore) transactions.pop();
+
+    const newLastId = transactions.length > 0
+      ? transactions[transactions.length - 1]._id.toString()
+      : null;
 
     // ================================================
-    // 8. CALCULATE COMMISSIONS (ONLY ON RETURNED DATA)
+    // 9. GET USER DATA FOR TRANSACTIONS
+    // ================================================
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+
+    // ================================================
+    // 10. CALCULATE COMMISSIONS (ONLY ON RETURNED DATA)
     // ================================================
     let totalCommission = 0;
     let totalAmount = 0;
@@ -5002,7 +5030,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     yearStats = yearlyStats[yearStr] || { count: 0, amount: 0, commission: 0 };
 
     // ================================================
-    // 9. BUILD DAILY HISTORY (LAST 30 DAYS)
+    // 11. BUILD DAILY HISTORY (LAST 30 DAYS)
     // ================================================
     const dailyHistory = Object.keys(dailyStats)
       .sort()
@@ -5013,7 +5041,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       }));
 
     // ================================================
-    // 10. BUILD RESPONSE
+    // 12. BUILD RESPONSE (LIKE ADMIN ALL TRANSACTIONS)
     // ================================================
     const response = {
       success: true,
@@ -5054,12 +5082,51 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         dailyHistory: dailyHistory,
         commissionRates: serviceCommissionRates,
 
+        // Pagination (like admin all transactions)
         pagination: {
           total: totalTransactions,
           page: parseInt(page),
           limit: maxLimit,
-          totalPages: Math.ceil(totalTransactions / maxLimit)
+          totalPages: Math.ceil(totalTransactions / maxLimit),
+          hasMore: hasMore,
+          lastId: newLastId
         },
+
+        // Transaction list with user data (like admin all transactions)
+        transactions: transactions.map(tx => {
+          const userId = tx.userId?.toString();
+          const userData = userMap[userId] || {
+            fullName: 'System',
+            email: 'system@transaction',
+            phone: 'N/A'
+          };
+          
+          // Calculate commission for this transaction
+          let serviceType = 'other';
+          for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
+            if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
+              serviceType = key;
+              break;
+            }
+          }
+          const rateConfig = serviceCommissionRates[serviceType];
+          let commission = 0;
+          if (rateConfig) {
+            if (rateConfig.isFlat) {
+              commission = rateConfig.rate;
+            } else {
+              commission = (tx.amount || 0) * (rateConfig.rate || 0);
+            }
+          }
+
+          return {
+            ...tx,
+            user: userData,
+            userId: userId || 'system',
+            commissionEarned: commission,
+            serviceType: serviceType
+          };
+        }),
 
         appliedFilters: {
           timeFilter: timeFilter,
@@ -5076,7 +5143,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log(`   Total Commission: ₦${totalCommission.toFixed(2)}`);
     console.log(`   Total Transactions: ${totalTransactions}`);
     console.log(`   Returned: ${transactions.length} transactions`);
-    console.log(`   Today: ${todayStats.count} transactions, ₦${todayStats.commission.toFixed(2)} commission`);
+    console.log(`   Has More: ${hasMore}`);
 
     res.json(response);
 
@@ -5091,7 +5158,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
   }
 });
-
 
 
 // ==================== COMMISSION RATES ENDPOINT ====================
