@@ -4747,7 +4747,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULL VERSION ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETELY FIXED ====================
 // @desc    Get commission statistics for admin (Super Admin only)
 // @route   GET /api/admin/commission-stats
 // @access  Private/SuperAdmin
@@ -4790,25 +4790,79 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     // 2. SERVICE TYPE MAPPING & COMMISSION RATES
     // ================================================
     const serviceCommissionRates = {
-      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱' },
-      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍' },
-      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺' },
-      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶' },
-      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡' },
-      'education': { rate: 100, label: 'Education', isFlat: true, icon: '🎓' },
-      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰' },
-      'ticket': { rate: 150, label: 'Ticket', isFlat: true, icon: '🎫' }
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
+      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
+      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰', color: '#7C3AED' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
     };
 
+    // ================================================
+    // 🔥 FIXED: Service type detection - CASE INSENSITIVE, PARTIAL MATCH
+    // ================================================
     const serviceTypeMap = {
-      'airtime': { $in: ['Airtime Purchase'] },
-      'international_airtime': { $in: ['International Airtime Purchase'] },
-      'cable': { $in: ['Cable TV Subscription', 'Cable TV Purchase'] },
-      'data': { $in: ['Data Purchase'] },
-      'electricity': { $in: ['Electricity Purchase'] },
-      'education': { $in: ['Education Purchase'] },
-      'betting': { $in: ['Betting Funding', 'Betting Purchase'] },
-      'ticket': { $in: ['Ticket Purchase'] }
+      'airtime': {
+        keywords: ['airtime', 'airtime purchase'],
+        commissionKey: 'airtime'
+      },
+      'international_airtime': {
+        keywords: ['international airtime', 'international airtime purchase', 'foreign airtime'],
+        commissionKey: 'international_airtime'
+      },
+      'cable': {
+        keywords: ['cable tv', 'cable tv subscription', 'cable tv purchase', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+        commissionKey: 'cable'
+      },
+      'data': {
+        keywords: ['data purchase', 'data', 'mtn data', 'airtel data', 'glo data'],
+        commissionKey: 'data'
+      },
+      'electricity': {
+        keywords: ['electricity purchase', 'electricity', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+        commissionKey: 'electricity'
+      },
+      'education': {
+        keywords: ['education purchase', 'education', 'waec', 'jamb', 'exam', 'result checker'],
+        commissionKey: 'education'
+      },
+      'betting': {
+        keywords: ['betting', 'betting funding', 'betting purchase', 'sportybet', 'bet9ja', 'betking'],
+        commissionKey: 'betting'
+      },
+      'ticket': {
+        keywords: ['ticket purchase', 'ticket', 'event ticket'],
+        commissionKey: 'ticket'
+      }
+    };
+
+    // Helper to detect service type from transaction
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'other';
+      
+      const lowerType = transactionType.toLowerCase().trim();
+      
+      // Check for commission/credit/withdrawal transactions - EXCLUDE from service breakdown
+      if (lowerType.includes('commission') || 
+          lowerType.includes('credit') || 
+          lowerType.includes('withdrawal') ||
+          lowerType.includes('welcome bonus') ||
+          lowerType.includes('referral bonus')) {
+        return 'commission';
+      }
+      
+      // Check each service type
+      for (const [key, config] of Object.entries(serviceTypeMap)) {
+        for (const keyword of config.keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      
+      return 'other';
     };
 
     // ================================================
@@ -4847,17 +4901,28 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     // ================================================
     let serviceFilterQuery = {};
     if (service !== 'all' && serviceTypeMap[service]) {
-      serviceFilterQuery = { type: serviceTypeMap[service] };
+      const keywords = serviceTypeMap[service].keywords;
+      serviceFilterQuery = { 
+        type: { $regex: keywords.join('|'), $options: 'i' } 
+      };
     }
 
     // ================================================
     // 5. BUILD BASE FILTER FOR SUCCESSFUL TRANSACTIONS
     // ================================================
+    // ✅ EXCLUDE commission/credit/withdrawal transactions from calculations
     const baseFilter = {
       ...timeFilterQuery,
       ...serviceFilterQuery,
-      status: { $regex: /^success|completed$/i }
+      status: { $regex: /^success|completed$/i },
+      type: { 
+        $not: { 
+          $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i 
+        } 
+      }
     };
+
+    console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
     // 6. GET TOTAL COUNT AND TRANSACTIONS
@@ -4871,140 +4936,212 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         .lean()
     ]);
 
-    console.log(`📊 Total successful transactions: ${totalTransactions}`);
+    console.log(`📊 Total successful service transactions: ${totalTransactions}`);
     console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 7. GET PERIOD STATS (FULL DATASET)
+    // 7. GET PERIOD STATS WITH CORRECT COMMISSION
     // ================================================
-    const todayFilter = { ...baseFilter, createdAt: { $gte: today } };
-    const weekFilter = { ...baseFilter, createdAt: { $gte: weekStart } };
-    const monthFilter = { ...baseFilter, createdAt: { $gte: monthStart } };
-    const yearFilter = { ...baseFilter, createdAt: { $gte: yearStart } };
+    const getPeriodStats = async (dateFilter, serviceFilter = {}) => {
+      const filter = {
+        ...dateFilter,
+        ...serviceFilter,
+        status: { $regex: /^success|completed$/i },
+        type: { $not: { $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i } }
+      };
+      
+      const txs = await Transaction.find(filter).select('type amount').lean();
+      
+      let totalAmount = 0;
+      let totalCommission = 0;
+      let totalCount = txs.length;
+      
+      for (const tx of txs) {
+        const amount = tx.amount || 0;
+        totalAmount += amount;
+        
+        const serviceType = detectServiceType(tx.type);
+        const rateConfig = serviceCommissionRates[serviceType];
+        
+        if (rateConfig) {
+          if (rateConfig.type === 'flat') {
+            totalCommission += rateConfig.rate;
+          } else {
+            totalCommission += amount * (rateConfig.rate || 0);
+          }
+        }
+      }
+      
+      return { count: totalCount, amount: totalAmount, commission: totalCommission };
+    };
 
-    const [
-      todayCount, todayAmountAgg,
-      weekCount, weekAmountAgg,
-      monthCount, monthAmountAgg,
-      yearCount, yearAmountAgg
-    ] = await Promise.all([
-      Transaction.countDocuments(todayFilter),
-      Transaction.aggregate([{ $match: todayFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-      Transaction.countDocuments(weekFilter),
-      Transaction.aggregate([{ $match: weekFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-      Transaction.countDocuments(monthFilter),
-      Transaction.aggregate([{ $match: monthFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-      Transaction.countDocuments(yearFilter),
-      Transaction.aggregate([{ $match: yearFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }])
+    // Get stats for each period
+    const [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
+      getPeriodStats({ createdAt: { $gte: today } }),
+      getPeriodStats({ createdAt: { $gte: weekStart } }),
+      getPeriodStats({ createdAt: { $gte: monthStart } }),
+      getPeriodStats({ createdAt: { $gte: yearStart } }),
+      getPeriodStats({})
     ]);
 
-    const todayAmount = todayAmountAgg[0]?.total || 0;
-    const weekAmount = weekAmountAgg[0]?.total || 0;
-    const monthAmount = monthAmountAgg[0]?.total || 0;
-    const yearAmount = yearAmountAgg[0]?.total || 0;
+    console.log('📊 Period Stats:');
+    console.log(`   Today: ${todayStats.count} txns, ₦${todayStats.commission.toFixed(2)} commission`);
+    console.log(`   Week: ${weekStats.count} txns, ₦${weekStats.commission.toFixed(2)} commission`);
+    console.log(`   Month: ${monthStats.count} txns, ₦${monthStats.commission.toFixed(2)} commission`);
+    console.log(`   Year: ${yearStats.count} txns, ₦${yearStats.commission.toFixed(2)} commission`);
+    console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission`);
 
     // ================================================
-    // 8. SERVICE BREAKDOWN BY PERIOD
+    // 8. SERVICE BREAKDOWN WITH CORRECT COMMISSION
     // ================================================
-    const getServiceBreakdown = async (filter) => {
+    const getServiceBreakdown = async (dateFilter) => {
+      const filter = {
+        ...dateFilter,
+        status: { $regex: /^success|completed$/i },
+        type: { $not: { $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i } }
+      };
+      
+      const txs = await Transaction.find(filter).select('type amount').lean();
+      
+      // Initialize breakdown with all services
       const breakdown = {};
-      Object.keys(serviceTypeMap).forEach(key => {
+      Object.keys(serviceCommissionRates).forEach(key => {
         breakdown[key] = {
-          label: serviceCommissionRates[key]?.label || key,
-          icon: serviceCommissionRates[key]?.icon || '📦',
+          label: serviceCommissionRates[key].label,
+          icon: serviceCommissionRates[key].icon || '📦',
+          color: serviceCommissionRates[key].color || '#6B7280',
           count: 0,
           amount: 0,
           commission: 0
         };
       });
+      
+      // Add 'other' category
+      breakdown['other'] = {
+        label: 'Other',
+        icon: '📦',
+        color: '#6B7280',
+        count: 0,
+        amount: 0,
+        commission: 0
+      };
 
-      const serviceTransactions = await Transaction.find({ ...filter, status: { $regex: /^success|completed$/i } })
-        .select('type amount')
-        .lean();
-
-      for (const tx of serviceTransactions) {
-        let serviceType = 'other';
-        for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
-          if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
-            serviceType = key;
-            break;
-          }
-        }
-
+      for (const tx of txs) {
+        const serviceType = detectServiceType(tx.type);
+        const amount = tx.amount || 0;
+        
+        // Skip commission transactions
+        if (serviceType === 'commission') continue;
+        
         if (breakdown[serviceType]) {
           breakdown[serviceType].count += 1;
-          breakdown[serviceType].amount += tx.amount || 0;
+          breakdown[serviceType].amount += amount;
           
           const rateConfig = serviceCommissionRates[serviceType];
           if (rateConfig) {
-            if (rateConfig.isFlat) {
+            if (rateConfig.type === 'flat') {
               breakdown[serviceType].commission += rateConfig.rate;
             } else {
-              breakdown[serviceType].commission += (tx.amount || 0) * (rateConfig.rate || 0);
+              breakdown[serviceType].commission += amount * (rateConfig.rate || 0);
             }
           }
         }
       }
-
+      
       return breakdown;
     };
 
-    // ================================================
-    // 9. GET BREAKDOWN FOR EACH PERIOD
-    // ================================================
+    // Get service breakdown for each period
     const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
-      getServiceBreakdown(todayFilter),
-      getServiceBreakdown(weekFilter),
-      getServiceBreakdown(monthFilter),
-      getServiceBreakdown(yearFilter),
-      getServiceBreakdown(baseFilter)
+      getServiceBreakdown({ createdAt: { $gte: today } }),
+      getServiceBreakdown({ createdAt: { $gte: weekStart } }),
+      getServiceBreakdown({ createdAt: { $gte: monthStart } }),
+      getServiceBreakdown({ createdAt: { $gte: yearStart } }),
+      getServiceBreakdown({})
     ]);
 
     // ================================================
-    // 10. CALCULATE TOTAL COMMISSIONS
+    // 9. BUILD TRANSACTION LIST WITH COMMISSION DATA
     // ================================================
-    let totalCommission = 0;
-    let totalAmount = 0;
-    let serviceBreakdown = {};
+    const transactionList = transactions.map(tx => {
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = serviceCommissionRates[serviceType];
+      
+      let commission = 0;
+      let rate = 0;
+      let rateType = 'percentage';
+      let serviceLabel = 'Other';
+      let serviceIcon = '📦';
+      let serviceColor = '#6B7280';
+      
+      if (rateConfig) {
+        rateType = rateConfig.type || 'percentage';
+        serviceLabel = rateConfig.label || 'Other';
+        serviceIcon = rateConfig.icon || '📦';
+        serviceColor = rateConfig.color || '#6B7280';
+        
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+          rate = rateConfig.rate;
+        } else {
+          rate = rateConfig.rate || 0;
+          commission = (tx.amount || 0) * rate;
+        }
+      }
 
+      // 🔥 FIXED: Ensure commission is properly calculated and displayed
+      return {
+        ...tx,
+        serviceType: serviceType,
+        serviceLabel: serviceLabel,
+        serviceIcon: serviceIcon,
+        serviceColor: serviceColor,
+        commissionEarned: Math.round(commission * 100) / 100, // Round to 2 decimals
+        commissionRate: rate,
+        rateType: rateType,
+        // Add rate display for frontend
+        rateDisplay: rateType === 'flat' 
+          ? `₦${rate.toFixed(0)} flat` 
+          : `${(rate * 100).toFixed(1)}%`
+      };
+    });
+
+    // ================================================
+    // 10. CALCULATE TOTALS FOR CURRENT VIEW
+    // ================================================
+    let totalAmount = 0;
+    let totalCommission = 0;
+    let serviceBreakdown = {};
+    
     Object.keys(serviceCommissionRates).forEach(key => {
       serviceBreakdown[key] = {
         label: serviceCommissionRates[key].label,
         icon: serviceCommissionRates[key].icon || '📦',
+        color: serviceCommissionRates[key].color || '#6B7280',
         count: 0,
         amount: 0,
         commission: 0
       };
     });
+    serviceBreakdown['other'] = {
+      label: 'Other',
+      icon: '📦',
+      color: '#6B7280',
+      count: 0,
+      amount: 0,
+      commission: 0
+    };
 
-    for (const tx of transactions) {
+    for (const tx of transactionList) {
       const amount = tx.amount || 0;
       totalAmount += amount;
-
-      let serviceType = 'other';
-      for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
-        if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
-          serviceType = key;
-          break;
-        }
-      }
-
-      const rateConfig = serviceCommissionRates[serviceType];
-      let commission = 0;
-      if (rateConfig) {
-        if (rateConfig.isFlat) {
-          commission = rateConfig.rate;
-        } else {
-          commission = amount * (rateConfig.rate || 0);
-        }
-      }
-
-      totalCommission += commission;
-
+      totalCommission += tx.commissionEarned || 0;
+      
+      const serviceType = tx.serviceType || 'other';
       if (serviceBreakdown[serviceType]) {
         serviceBreakdown[serviceType].count += 1;
         serviceBreakdown[serviceType].amount += amount;
-        serviceBreakdown[serviceType].commission += commission;
+        serviceBreakdown[serviceType].commission += tx.commissionEarned || 0;
       }
     }
 
@@ -5017,34 +5154,40 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         // Summary
         totalTransactions: totalTransactions,
         totalAmount: totalAmount,
-        totalCommission: totalCommission,
+        totalCommission: Math.round(totalCommission * 100) / 100,
         totalCount: totalTransactions,
 
-        // Period Stats
+        // Period Stats with CORRECT commissions
         periodStats: {
           today: {
-            count: todayCount,
-            amount: todayAmount,
-            commission: todayAmount * 0.02,
+            count: todayStats.count,
+            amount: Math.round(todayStats.amount * 100) / 100,
+            commission: Math.round(todayStats.commission * 100) / 100,
             label: 'Today'
           },
           week: {
-            count: weekCount,
-            amount: weekAmount,
-            commission: weekAmount * 0.02,
+            count: weekStats.count,
+            amount: Math.round(weekStats.amount * 100) / 100,
+            commission: Math.round(weekStats.commission * 100) / 100,
             label: 'This Week'
           },
           month: {
-            count: monthCount,
-            amount: monthAmount,
-            commission: monthAmount * 0.02,
+            count: monthStats.count,
+            amount: Math.round(monthStats.amount * 100) / 100,
+            commission: Math.round(monthStats.commission * 100) / 100,
             label: 'This Month'
           },
           year: {
-            count: yearCount,
-            amount: yearAmount,
-            commission: yearAmount * 0.02,
+            count: yearStats.count,
+            amount: Math.round(yearStats.amount * 100) / 100,
+            commission: Math.round(yearStats.commission * 100) / 100,
             label: 'This Year'
+          },
+          allTime: {
+            count: allTimeStats.count,
+            amount: Math.round(allTimeStats.amount * 100) / 100,
+            commission: Math.round(allTimeStats.commission * 100) / 100,
+            label: 'All Time'
           }
         },
 
@@ -5061,34 +5204,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         serviceBreakdown: serviceBreakdown,
 
         // Transaction list with commission calculation
-        transactions: transactions.map(tx => {
-          let serviceType = 'other';
-          for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
-            if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
-              serviceType = key;
-              break;
-            }
-          }
-
-          const rateConfig = serviceCommissionRates[serviceType];
-          let commission = 0;
-          if (rateConfig) {
-            if (rateConfig.isFlat) {
-              commission = rateConfig.rate;
-            } else {
-              commission = (tx.amount || 0) * (rateConfig.rate || 0);
-            }
-          }
-
-          return {
-            ...tx,
-            serviceType: serviceType,
-            serviceLabel: serviceCommissionRates[serviceType]?.label || 'Other',
-            commissionEarned: commission,
-            commissionRate: rateConfig?.rate || 0,
-            rateType: rateConfig?.type || 'percentage'
-          };
-        }),
+        transactions: transactionList,
 
         // Commission Rates
         commissionRates: serviceCommissionRates,
@@ -5113,9 +5229,12 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     console.log('✅ [COMMISSION STATS] Response built successfully');
-    console.log(`   Total Commission: ₦${totalCommission.toFixed(2)}`);
+    console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
     console.log(`   Total Transactions: ${totalTransactions}`);
-    console.log(`   Today: ${todayCount} transactions, ₦${(todayAmount * 0.02).toFixed(2)} commission`);
+    console.log(`   Today: ${todayStats.count} transactions, ₦${(todayStats.commission).toFixed(2)} commission`);
+    console.log(`   Week: ${weekStats.count} transactions, ₦${(weekStats.commission).toFixed(2)} commission`);
+    console.log(`   Month: ${monthStats.count} transactions, ₦${(monthStats.commission).toFixed(2)} commission`);
+    console.log(`   Year: ${yearStats.count} transactions, ₦${(yearStats.commission).toFixed(2)} commission`);
 
     res.json(response);
 
@@ -5130,6 +5249,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
   }
 });
+
+
 
 // ==================== COMMISSION RATES ENDPOINT ====================
 // @desc    Get commission rates for all services
