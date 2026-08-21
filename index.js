@@ -4747,8 +4747,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
-
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - OPTIMIZED ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULL VERSION ====================
 // @desc    Get commission statistics for admin (Super Admin only)
 // @route   GET /api/admin/commission-stats
 // @access  Private/SuperAdmin
@@ -4770,8 +4769,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       startDate: customStartDate,
       endDate: customEndDate,
       page = 1,
-      limit = 50,
-      lastId
+      limit = 50
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -4792,14 +4790,14 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     // 2. SERVICE TYPE MAPPING & COMMISSION RATES
     // ================================================
     const serviceCommissionRates = {
-      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
-      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
-      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
-      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
-      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
-      'education': { rate: 100, label: 'Education', isFlat: true },
-      'betting': { rate: 0.012, label: 'Betting', type: 'percentage' },
-      'ticket': { rate: 150, label: 'Ticket', isFlat: true }
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱' },
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡' },
+      'education': { rate: 100, label: 'Education', isFlat: true, icon: '🎓' },
+      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰' },
+      'ticket': { rate: 150, label: 'Ticket', isFlat: true, icon: '🎫' }
     };
 
     const serviceTypeMap = {
@@ -4862,98 +4860,127 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     // ================================================
-    // 6. CURSOR-BASED PAGINATION (like admin all transactions)
+    // 6. GET TOTAL COUNT AND TRANSACTIONS
     // ================================================
-    let query = { ...baseFilter };
-    
-    if (lastId && lastId !== 'null' && lastId !== 'undefined') {
-      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
-    }
+    const [totalTransactions, transactions] = await Promise.all([
+      Transaction.countDocuments(baseFilter),
+      Transaction.find(baseFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(maxLimit)
+        .lean()
+    ]);
+
+    console.log(`📊 Total successful transactions: ${totalTransactions}`);
+    console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 7. GET TOTAL COUNT (FAST)
+    // 7. GET PERIOD STATS (FULL DATASET)
     // ================================================
-    const totalTransactions = await Transaction.countDocuments(baseFilter);
+    const todayFilter = { ...baseFilter, createdAt: { $gte: today } };
+    const weekFilter = { ...baseFilter, createdAt: { $gte: weekStart } };
+    const monthFilter = { ...baseFilter, createdAt: { $gte: monthStart } };
+    const yearFilter = { ...baseFilter, createdAt: { $gte: yearStart } };
+
+    const [
+      todayCount, todayAmountAgg,
+      weekCount, weekAmountAgg,
+      monthCount, monthAmountAgg,
+      yearCount, yearAmountAgg
+    ] = await Promise.all([
+      Transaction.countDocuments(todayFilter),
+      Transaction.aggregate([{ $match: todayFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      Transaction.countDocuments(weekFilter),
+      Transaction.aggregate([{ $match: weekFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      Transaction.countDocuments(monthFilter),
+      Transaction.aggregate([{ $match: monthFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      Transaction.countDocuments(yearFilter),
+      Transaction.aggregate([{ $match: yearFilter }, { $group: { _id: null, total: { $sum: '$amount' } } }])
+    ]);
+
+    const todayAmount = todayAmountAgg[0]?.total || 0;
+    const weekAmount = weekAmountAgg[0]?.total || 0;
+    const monthAmount = monthAmountAgg[0]?.total || 0;
+    const yearAmount = yearAmountAgg[0]?.total || 0;
 
     // ================================================
-    // 8. GET TRANSACTIONS WITH CURSOR PAGINATION
+    // 8. SERVICE BREAKDOWN BY PERIOD
     // ================================================
-    const transactions = await Transaction.find(query)
-      .select('_id userId type amount status description reference createdAt')
-      .sort({ _id: -1 })
-      .limit(maxLimit + 1)
-      .lean();
-
-    const hasMore = transactions.length > maxLimit;
-    if (hasMore) transactions.pop();
-
-    const newLastId = transactions.length > 0
-      ? transactions[transactions.length - 1]._id.toString()
-      : null;
-
-    // ================================================
-    // 9. GET USER DATA FOR TRANSACTIONS
-    // ================================================
-    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
-    let userMap = {};
-    
-    if (userIds.length > 0) {
-      const users = await User.find(
-        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
-        { fullName: 1, email: 1, phone: 1 }
-      ).lean();
-      
-      userMap = users.reduce((map, user) => {
-        map[user._id.toString()] = {
-          _id: user._id,
-          fullName: user.fullName || 'Unknown User',
-          email: user.email || 'N/A',
-          phone: user.phone || 'N/A'
+    const getServiceBreakdown = async (filter) => {
+      const breakdown = {};
+      Object.keys(serviceTypeMap).forEach(key => {
+        breakdown[key] = {
+          label: serviceCommissionRates[key]?.label || key,
+          icon: serviceCommissionRates[key]?.icon || '📦',
+          count: 0,
+          amount: 0,
+          commission: 0
         };
-        return map;
-      }, {});
-    }
+      });
+
+      const serviceTransactions = await Transaction.find({ ...filter, status: { $regex: /^success|completed$/i } })
+        .select('type amount')
+        .lean();
+
+      for (const tx of serviceTransactions) {
+        let serviceType = 'other';
+        for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
+          if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
+            serviceType = key;
+            break;
+          }
+        }
+
+        if (breakdown[serviceType]) {
+          breakdown[serviceType].count += 1;
+          breakdown[serviceType].amount += tx.amount || 0;
+          
+          const rateConfig = serviceCommissionRates[serviceType];
+          if (rateConfig) {
+            if (rateConfig.isFlat) {
+              breakdown[serviceType].commission += rateConfig.rate;
+            } else {
+              breakdown[serviceType].commission += (tx.amount || 0) * (rateConfig.rate || 0);
+            }
+          }
+        }
+      }
+
+      return breakdown;
+    };
 
     // ================================================
-    // 10. CALCULATE COMMISSIONS (ONLY ON RETURNED DATA)
+    // 9. GET BREAKDOWN FOR EACH PERIOD
+    // ================================================
+    const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
+      getServiceBreakdown(todayFilter),
+      getServiceBreakdown(weekFilter),
+      getServiceBreakdown(monthFilter),
+      getServiceBreakdown(yearFilter),
+      getServiceBreakdown(baseFilter)
+    ]);
+
+    // ================================================
+    // 10. CALCULATE TOTAL COMMISSIONS
     // ================================================
     let totalCommission = 0;
     let totalAmount = 0;
     let serviceBreakdown = {};
-    let dailyStats = {};
-    let weeklyStats = {};
-    let monthlyStats = {};
-    let yearlyStats = {};
-    let todayStats = { count: 0, amount: 0, commission: 0 };
-    let weekStats = { count: 0, amount: 0, commission: 0 };
-    let monthStats = { count: 0, amount: 0, commission: 0 };
-    let yearStats = { count: 0, amount: 0, commission: 0 };
 
-    // Initialize service breakdown
     Object.keys(serviceCommissionRates).forEach(key => {
       serviceBreakdown[key] = {
         label: serviceCommissionRates[key].label,
+        icon: serviceCommissionRates[key].icon || '📦',
         count: 0,
         amount: 0,
         commission: 0
       };
     });
 
-    // Get date keys for current period
-    const todayStr = today.toISOString().split('T')[0];
-    const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const yearStr = `${now.getFullYear()}`;
-    const weekDay = now.getDay();
-    const weekStartDate = new Date(now);
-    weekStartDate.setDate(now.getDate() - weekDay);
-    const weekStr = `${now.getFullYear()}-W${String(Math.ceil((now.getDate() - weekDay + 1) / 7)).padStart(2, '0')}`;
-
-    // Process transactions
     for (const tx of transactions) {
       const amount = tx.amount || 0;
       totalAmount += amount;
 
-      // Determine service type
       let serviceType = 'other';
       for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
         if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
@@ -4962,10 +4989,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         }
       }
 
-      // Calculate commission
       const rateConfig = serviceCommissionRates[serviceType];
       let commission = 0;
-      
       if (rateConfig) {
         if (rateConfig.isFlat) {
           commission = rateConfig.rate;
@@ -4976,132 +5001,67 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
 
       totalCommission += commission;
 
-      // Update service breakdown
       if (serviceBreakdown[serviceType]) {
         serviceBreakdown[serviceType].count += 1;
         serviceBreakdown[serviceType].amount += amount;
         serviceBreakdown[serviceType].commission += commission;
       }
-
-      // Date-based statistics
-      const date = new Date(tx.createdAt);
-      const dateKey = date.toISOString().split('T')[0];
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const yearKey = `${date.getFullYear()}`;
-      const weekKey = `${date.getFullYear()}-W${String(Math.ceil((date.getDate() - date.getDay() + 1) / 7)).padStart(2, '0')}`;
-
-      // Daily stats
-      if (!dailyStats[dateKey]) {
-        dailyStats[dateKey] = { count: 0, amount: 0, commission: 0 };
-      }
-      dailyStats[dateKey].count += 1;
-      dailyStats[dateKey].amount += amount;
-      dailyStats[dateKey].commission += commission;
-
-      // Weekly stats
-      if (!weeklyStats[weekKey]) {
-        weeklyStats[weekKey] = { count: 0, amount: 0, commission: 0 };
-      }
-      weeklyStats[weekKey].count += 1;
-      weeklyStats[weekKey].amount += amount;
-      weeklyStats[weekKey].commission += commission;
-
-      // Monthly stats
-      if (!monthlyStats[monthKey]) {
-        monthlyStats[monthKey] = { count: 0, amount: 0, commission: 0 };
-      }
-      monthlyStats[monthKey].count += 1;
-      monthlyStats[monthKey].amount += amount;
-      monthlyStats[monthKey].commission += commission;
-
-      // Yearly stats
-      if (!yearlyStats[yearKey]) {
-        yearlyStats[yearKey] = { count: 0, amount: 0, commission: 0 };
-      }
-      yearlyStats[yearKey].count += 1;
-      yearlyStats[yearKey].amount += amount;
-      yearlyStats[yearKey].commission += commission;
     }
 
-    // Get current period stats
-    todayStats = dailyStats[todayStr] || { count: 0, amount: 0, commission: 0 };
-    weekStats = weeklyStats[weekStr] || { count: 0, amount: 0, commission: 0 };
-    monthStats = monthlyStats[monthStr] || { count: 0, amount: 0, commission: 0 };
-    yearStats = yearlyStats[yearStr] || { count: 0, amount: 0, commission: 0 };
-
     // ================================================
-    // 11. BUILD DAILY HISTORY (LAST 30 DAYS)
-    // ================================================
-    const dailyHistory = Object.keys(dailyStats)
-      .sort()
-      .slice(-30)
-      .map(key => ({
-        date: key,
-        ...dailyStats[key]
-      }));
-
-    // ================================================
-    // 12. BUILD RESPONSE (LIKE ADMIN ALL TRANSACTIONS)
+    // 11. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
+        // Summary
         totalTransactions: totalTransactions,
         totalAmount: totalAmount,
         totalCommission: totalCommission,
         totalCount: totalTransactions,
 
+        // Period Stats
         periodStats: {
           today: {
-            count: todayStats.count,
-            amount: todayStats.amount,
-            commission: todayStats.commission,
+            count: todayCount,
+            amount: todayAmount,
+            commission: todayAmount * 0.02,
             label: 'Today'
           },
           week: {
-            count: weekStats.count,
-            amount: weekStats.amount,
-            commission: weekStats.commission,
+            count: weekCount,
+            amount: weekAmount,
+            commission: weekAmount * 0.02,
             label: 'This Week'
           },
           month: {
-            count: monthStats.count,
-            amount: monthStats.amount,
-            commission: monthStats.commission,
+            count: monthCount,
+            amount: monthAmount,
+            commission: monthAmount * 0.02,
             label: 'This Month'
           },
           year: {
-            count: yearStats.count,
-            amount: yearStats.amount,
-            commission: yearStats.commission,
+            count: yearCount,
+            amount: yearAmount,
+            commission: yearAmount * 0.02,
             label: 'This Year'
           }
         },
 
-        serviceBreakdown: serviceBreakdown,
-        dailyHistory: dailyHistory,
-        commissionRates: serviceCommissionRates,
-
-        // Pagination (like admin all transactions)
-        pagination: {
-          total: totalTransactions,
-          page: parseInt(page),
-          limit: maxLimit,
-          totalPages: Math.ceil(totalTransactions / maxLimit),
-          hasMore: hasMore,
-          lastId: newLastId
+        // Service Breakdown by Period
+        serviceBreakdownByPeriod: {
+          today: todayBreakdown,
+          week: weekBreakdown,
+          month: monthBreakdown,
+          year: yearBreakdown,
+          allTime: allTimeBreakdown
         },
 
-        // Transaction list with user data (like admin all transactions)
+        // Current Service Breakdown (paginated data)
+        serviceBreakdown: serviceBreakdown,
+
+        // Transaction list with commission calculation
         transactions: transactions.map(tx => {
-          const userId = tx.userId?.toString();
-          const userData = userMap[userId] || {
-            fullName: 'System',
-            email: 'system@transaction',
-            phone: 'N/A'
-          };
-          
-          // Calculate commission for this transaction
           let serviceType = 'other';
           for (const [key, typeFilter] of Object.entries(serviceTypeMap)) {
             if (typeFilter.$in && typeFilter.$in.includes(tx.type)) {
@@ -5109,6 +5069,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
               break;
             }
           }
+
           const rateConfig = serviceCommissionRates[serviceType];
           let commission = 0;
           if (rateConfig) {
@@ -5121,12 +5082,24 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
 
           return {
             ...tx,
-            user: userData,
-            userId: userId || 'system',
+            serviceType: serviceType,
+            serviceLabel: serviceCommissionRates[serviceType]?.label || 'Other',
             commissionEarned: commission,
-            serviceType: serviceType
+            commissionRate: rateConfig?.rate || 0,
+            rateType: rateConfig?.type || 'percentage'
           };
         }),
+
+        // Commission Rates
+        commissionRates: serviceCommissionRates,
+
+        // Pagination
+        pagination: {
+          total: totalTransactions,
+          page: parseInt(page),
+          limit: maxLimit,
+          totalPages: Math.ceil(totalTransactions / maxLimit)
+        },
 
         appliedFilters: {
           timeFilter: timeFilter,
@@ -5142,8 +5115,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log('✅ [COMMISSION STATS] Response built successfully');
     console.log(`   Total Commission: ₦${totalCommission.toFixed(2)}`);
     console.log(`   Total Transactions: ${totalTransactions}`);
-    console.log(`   Returned: ${transactions.length} transactions`);
-    console.log(`   Has More: ${hasMore}`);
+    console.log(`   Today: ${todayCount} transactions, ₦${(todayAmount * 0.02).toFixed(2)} commission`);
 
     res.json(response);
 
@@ -5158,7 +5130,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
   }
 });
-
 
 // ==================== COMMISSION RATES ENDPOINT ====================
 // @desc    Get commission rates for all services
