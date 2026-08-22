@@ -4747,13 +4747,8 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
 
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULLY WORKING ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIX ====================
 
-/**
- * @desc    Get service commission statistics for admin
- * @route   GET /api/admin/service-commission-stats
- * @access  Private/SuperAdmin
- */
 app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
   try {
     // Check if user is Super Admin or Admin
@@ -4905,7 +4900,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     // ================================================
     // 5. BUILD SERVICE FILTER WITH PROPER REGEX STRINGS
     // ================================================
-    // Use string patterns instead of RegExp objects for MongoDB
     const excludePattern = 'commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer';
     const statusPattern = 'success|completed|successful';
     
@@ -4913,13 +4907,11 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     const isAllServices = service === 'all';
     
     if (isAllServices) {
-      // All services: exclude commission/credit transactions
       typeFilter = {
         type: { $not: { $regex: excludePattern, $options: 'i' } }
       };
       console.log('📋 Filter: All services (excluding commissions)');
     } else {
-      // Specific service: filter by service type AND exclude commissions
       const keywords = serviceKeywords[service] || [];
       if (keywords.length > 0) {
         const servicePattern = keywords.join('|');
@@ -4931,7 +4923,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
         };
         console.log(`🔧 Service Filter: ${service} -> ${servicePattern} (excluding commissions)`);
       } else {
-        // Fallback: use exact type match
         const typeMap = {
           'airtime': 'Airtime Purchase',
           'international_airtime': 'International Airtime Purchase',
@@ -4954,7 +4945,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 6. BUILD BASE FILTER - CORRECTLY COMBINED
+    // 6. BUILD BASE FILTER
     // ================================================
     const baseFilter = {
       ...timeFilterQuery,
@@ -4965,7 +4956,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
-    // 7. GET TRANSACTIONS WITH CORRECT FILTER
+    // 7. GET TRANSACTIONS (PAGINATED FOR LIST)
     // ================================================
     const [transactions, totalTransactions] = await Promise.all([
       Transaction.find(baseFilter)
@@ -4980,7 +4971,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 8. GET PERIOD STATS WITH CORRECT FILTER
+    // 🔥 FIXED: GET PERIOD STATS WITH CORRECT FILTER
     // ================================================
     const getPeriodStats = async (dateFilter) => {
       const filter = {
@@ -4989,6 +4980,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
         status: { $regex: statusPattern, $options: 'i' }
       };
       
+      // Get ALL transactions for this period (not just paginated)
       const txs = await Transaction.find(filter).select('type amount').lean();
       
       let totalAmount = 0;
@@ -5018,7 +5010,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       };
     };
 
-    // Get stats for each period with CORRECT filters
+    // Get stats for each period
     const [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
       getPeriodStats({ createdAt: { $gte: today } }),
       getPeriodStats({ createdAt: { $gte: weekStart } }),
@@ -5035,7 +5027,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission, ₦${allTimeStats.amount.toFixed(2)} volume`);
 
     // ================================================
-    // 9. GET SERVICE BREAKDOWN BY PERIOD
+    // 8. GET SERVICE BREAKDOWN BY PERIOD
     // ================================================
     const getServiceBreakdown = async (dateFilter) => {
       const filter = {
@@ -5099,7 +5091,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     ]);
 
     // ================================================
-    // 10. GET USER DATA FOR TRANSACTIONS
+    // 9. GET USER DATA FOR TRANSACTIONS
     // ================================================
     const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
     let userMap = {};
@@ -5123,7 +5115,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 11. BUILD TRANSACTION LIST WITH COMMISSION
+    // 10. BUILD TRANSACTION LIST WITH COMMISSION
     // ================================================
     const transactionList = transactions.map(tx => {
       const serviceType = detectServiceType(tx.type);
@@ -5178,46 +5170,18 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     });
 
     // ================================================
-    // 12. CALCULATE TOTALS
+    // 11. 🔥 FIXED: USE allTimeStats FOR TOTALS (NOT paginated transactions)
     // ================================================
-    let totalCommission = 0;
-    let totalAmount = 0;
-    let serviceBreakdown = {};
-    
-    Object.keys(COMMISSION_RATES).forEach(key => {
-      serviceBreakdown[key] = {
-        label: COMMISSION_RATES[key].label,
-        icon: COMMISSION_RATES[key].icon || '📦',
-        color: COMMISSION_RATES[key].color || '#6B7280',
-        count: 0,
-        amount: 0,
-        commission: 0
-      };
-    });
-    serviceBreakdown['unknown'] = {
-      label: 'Other',
-      icon: '📦',
-      color: '#6B7280',
-      count: 0,
-      amount: 0,
-      commission: 0
-    };
+    // ✅ CRITICAL FIX: Use allTimeStats which has ALL filtered transactions
+    const totalCommission = allTimeStats.commission;
+    const totalVolume = allTimeStats.amount;
+    const totalCount = allTimeStats.count;
 
-    for (const tx of transactionList) {
-      const amount = tx.amount || 0;
-      totalAmount += amount;
-      totalCommission += tx.commissionEarned || 0;
-      
-      const serviceType = tx.serviceType || 'unknown';
-      if (serviceBreakdown[serviceType]) {
-        serviceBreakdown[serviceType].count += 1;
-        serviceBreakdown[serviceType].amount += amount;
-        serviceBreakdown[serviceType].commission += tx.commissionEarned || 0;
-      }
-    }
+    // Service breakdown from allTimeStats
+    const serviceBreakdown = allTimeBreakdown;
 
     // ================================================
-    // 13. BUILD SERVICE SUMMARY (RANKED)
+    // 12. BUILD SERVICE SUMMARY (RANKED)
     // ================================================
     const serviceSummary = Object.entries(serviceBreakdown)
       .filter(([key, data]) => data.count > 0)
@@ -5237,20 +5201,19 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       .sort((a, b) => b.commission - a.commission);
 
     // ================================================
-    // 14. BUILD RESPONSE
+    // 13. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
-        // Summary - THIS IS WHAT SHOWS IN THE HEADER
+        // ✅ FIXED: Summary uses allTimeStats for correct totals
         summary: {
-          totalTransactions: totalTransactions,
-          totalVolume: Math.round(totalAmount * 100) / 100,
+          totalTransactions: totalCount,
+          totalVolume: Math.round(totalVolume * 100) / 100,    // ✅ NOW FILTERED CORRECTLY
           totalCommission: Math.round(totalCommission * 100) / 100,
-          totalCount: totalTransactions
+          totalCount: totalCount
         },
         
-        // Period Stats - Commission and Volume by period
         periodStats: {
           today: {
             count: todayStats.count,
@@ -5284,7 +5247,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           }
         },
 
-        // Service Breakdown by Period
         serviceBreakdownByPeriod: {
           today: todayBreakdown,
           week: weekBreakdown,
@@ -5293,19 +5255,11 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           allTime: allTimeBreakdown
         },
 
-        // Commission Rates
         commissionRates: COMMISSION_RATES,
-
-        // Service Summary (best performing)
         serviceSummary: serviceSummary,
-
-        // Service Breakdown (current view)
         serviceBreakdown: serviceBreakdown,
-
-        // Transactions with user info
         transactions: transactionList,
 
-        // Pagination
         pagination: {
           total: totalTransactions,
           page: parseInt(page),
@@ -5313,7 +5267,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           totalPages: Math.ceil(totalTransactions / maxLimit)
         },
 
-        // Applied Filters
         appliedFilters: {
           timeFilter: timeFilter,
           service: service,
@@ -5327,8 +5280,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
 
     console.log('✅ [COMMISSION STATS] Response built successfully');
     console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
-    console.log(`   Total Transactions: ${totalTransactions}`);
-    console.log(`   Total Volume: ₦${(totalAmount).toFixed(2)}`);
+    console.log(`   Total Transactions: ${totalCount}`);
+    console.log(`   Total Volume: ₦${(totalVolume).toFixed(2)}`);
 
     res.json(response);
 
