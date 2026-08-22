@@ -998,17 +998,16 @@ startBackgroundRequeryService();
 // @desc    Check if app needs update
 // @route   GET /api/app/version
 // @access  Public
+// ==================== APP VERSION CHECK ENDPOINT ====================
 app.get('/api/app/version', async (req, res) => {
   try {
-    // Get platform from query parameter (ios/android)
     const platform = req.query.platform || 'android';
     const currentVersion = req.query.version || '1.0.0';
     
-    // Define minimum required versions
     const versions = {
       android: {
-          minimum: '1.3.0',      // ← Change from 1.2.0 to 1.3.0
-          latest: '1.4.1',       // ← Change from 1.3.0 to 1.4.0
+        minimum: '1.3.0',
+        latest: '1.4.0', // Set this to match your current pubspec version without build number
         updateUrl: 'https://play.google.com/store/apps/details?id=com.dalabapay.official',
         whatsNew: [
           '🎉 New CableTV Bill Payment Feature',
@@ -1017,12 +1016,12 @@ app.get('/api/app/version', async (req, res) => {
           '📱 Improved UI/UX for better experience',
           '🐛 Bug fixes and performance improvements'
         ],
-        isRequired: false,      // Set to true for mandatory update
+        isRequired: false,
         releaseDate: '2025-05-7'
       },
       ios: {
-         minimum: '1.3.0',
-        latest: '1.4.1',
+        minimum: '1.3.0',
+        latest: '1.4.0',
         updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
         whatsNew: [
           '🎉 New Electricity Bill Payment Feature',
@@ -1075,7 +1074,6 @@ app.get('/api/app/version', async (req, res) => {
   }
 });
 
-// Helper function to compare versions
 function compareVersions(v1, v2) {
   const parts1 = v1.split('.').map(Number);
   const parts2 = v2.split('.').map(Number);
@@ -1090,7 +1088,6 @@ function compareVersions(v1, v2) {
   }
   return 0;
 }
-
 
 
 
