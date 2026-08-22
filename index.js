@@ -4747,14 +4747,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
 
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - OPTIMIZED VERSION ====================
-
-/**
- * @desc    Get service commission statistics for admin (OPTIMIZED - FAST)
- * @route   GET /api/admin/service-commission-stats
- * @access  Private/SuperAdmin
- */
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - FIXED ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULLY FIXED ====================
 
 app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
   try {
@@ -4777,6 +4770,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       page = 1,
       limit = 50
     } = req.query;
+
+    console.log(`📋 Time Filter: ${timeFilter}, Service: ${service}`);
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const maxLimit = Math.min(parseInt(limit), 500);
@@ -4902,22 +4897,47 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 5. BUILD SERVICE FILTER
+    // 🔥 FIXED: BUILD SERVICE FILTER - CORRECTLY
     // ================================================
     let serviceFilterQuery = {};
-    if (service !== 'all' && COMMISSION_RATES[service]) {
+    let serviceTypeList = [];
+    
+    if (service !== 'all') {
+      // Get the keywords for the selected service
       const keywords = serviceKeywords[service] || [];
-      serviceFilterQuery = { 
-        type: { $regex: keywords.join('|'), $options: 'i' } 
-      };
+      if (keywords.length > 0) {
+        // ✅ CORRECT FIX: Use $in or $regex for service type matching
+        serviceFilterQuery = { 
+          type: { $regex: keywords.join('|'), $options: 'i' } 
+        };
+        serviceTypeList = keywords;
+        console.log(`🔧 Service Filter: ${service} -> ${keywords.join('|')}`);
+      } else {
+        // Fallback: try to match by exact type
+        const typeMap = {
+          'airtime': 'Airtime Purchase',
+          'international_airtime': 'International Airtime Purchase',
+          'data': 'Data Purchase',
+          'cable': { $in: ['Cable TV Subscription', 'Cable TV Purchase'] },
+          'electricity': 'Electricity Purchase',
+          'education': { $in: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase'] },
+          'ticket': 'Ticket Purchase'
+        };
+        const typeFilter = typeMap[service];
+        if (typeFilter) {
+          serviceFilterQuery = { type: typeFilter };
+        }
+      }
     }
 
+    console.log('📋 Service Filter Query:', JSON.stringify(serviceFilterQuery, null, 2));
+
     // ================================================
-    // 6. BASE FILTER
+    // 6. BASE FILTER - CORRECTLY COMBINED
     // ================================================
     const baseFilter = {
       ...timeFilterQuery,
-      ...serviceFilterQuery,
+      ...serviceFilterQuery,  // ✅ This is now correctly applied
       status: { $regex: /^success|completed|successful$/i },
       type: { 
         $not: { 
@@ -4929,7 +4949,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
-    // 7. GET TRANSACTIONS
+    // 7. GET TRANSACTIONS WITH CORRECT FILTER
     // ================================================
     const [transactions, totalTransactions] = await Promise.all([
       Transaction.find(baseFilter)
@@ -4944,11 +4964,12 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 8. GET PERIOD STATS WITH CORRECT COMMISSION
+    // 8. GET PERIOD STATS WITH CORRECT FILTER
     // ================================================
     const getPeriodStats = async (dateFilter) => {
       const filter = {
         ...dateFilter,
+        ...serviceFilterQuery,  // ✅ Apply service filter to period stats
         status: { $regex: /^success|completed|successful$/i },
         type: { 
           $not: { 
@@ -4986,7 +5007,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       };
     };
 
-    // Get stats for each period
+    // Get stats for each period with CORRECT filters
     const [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
       getPeriodStats({ createdAt: { $gte: today } }),
       getPeriodStats({ createdAt: { $gte: weekStart } }),
@@ -5008,6 +5029,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     const getServiceBreakdown = async (dateFilter) => {
       const filter = {
         ...dateFilter,
+        ...serviceFilterQuery,  // ✅ Apply service filter to breakdown
         status: { $regex: /^success|completed|successful$/i },
         type: { 
           $not: { 
@@ -5071,9 +5093,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     ]);
 
     // ================================================
-    // 10. BUILD TRANSACTION LIST WITH COMMISSION
+    // 10. GET USER DATA FOR TRANSACTIONS
     // ================================================
-    // Get user data for transactions
     const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
     let userMap = {};
     
@@ -5095,6 +5116,9 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       }, {});
     }
 
+    // ================================================
+    // 11. BUILD TRANSACTION LIST WITH COMMISSION
+    // ================================================
     const transactionList = transactions.map(tx => {
       const serviceType = detectServiceType(tx.type);
       const rateConfig = COMMISSION_RATES[serviceType];
@@ -5148,7 +5172,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     });
 
     // ================================================
-    // 11. CALCULATE TOTAL COMMISSION FOR SUMMARY
+    // 12. CALCULATE TOTALS
     // ================================================
     let totalCommission = 0;
     let totalAmount = 0;
@@ -5187,7 +5211,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 12. BUILD SERVICE SUMMARY (RANKED)
+    // 13. BUILD SERVICE SUMMARY (RANKED)
     // ================================================
     const serviceSummary = Object.entries(serviceBreakdown)
       .filter(([key, data]) => data.count > 0)
@@ -5207,20 +5231,18 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       .sort((a, b) => b.commission - a.commission);
 
     // ================================================
-    // 13. BUILD RESPONSE - ✅ FIXED: Ensure totalCommission is set
+    // 14. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
-        // ✅ FIXED: Summary totals - make sure these are set correctly
         summary: {
           totalTransactions: totalTransactions,
           totalVolume: Math.round(totalAmount * 100) / 100,
-          totalCommission: Math.round(totalCommission * 100) / 100, // ✅ THIS WAS THE BUG
+          totalCommission: Math.round(totalCommission * 100) / 100,
           totalCount: totalTransactions
         },
         
-        // Period Stats
         periodStats: {
           today: {
             count: todayStats.count,
@@ -5254,7 +5276,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           }
         },
 
-        // Service Breakdown by Period
         serviceBreakdownByPeriod: {
           today: todayBreakdown,
           week: weekBreakdown,
@@ -5263,19 +5284,11 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           allTime: allTimeBreakdown
         },
 
-        // Commission Rates
         commissionRates: COMMISSION_RATES,
-
-        // Service Summary (best performing)
         serviceSummary: serviceSummary,
-
-        // Service Breakdown (current view)
         serviceBreakdown: serviceBreakdown,
-
-        // Transactions with user info
         transactions: transactionList,
 
-        // Pagination
         pagination: {
           total: totalTransactions,
           page: parseInt(page),
@@ -5283,7 +5296,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           totalPages: Math.ceil(totalTransactions / maxLimit)
         },
 
-        // Applied Filters
         appliedFilters: {
           timeFilter: timeFilter,
           service: service,
