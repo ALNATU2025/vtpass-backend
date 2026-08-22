@@ -4749,6 +4749,8 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIX ====================
 
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - WITH PROPER PAGINATION ====================
+
 app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
   try {
     // Check if user is Super Admin or Admin
@@ -4762,19 +4764,23 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log('📊 [COMMISSION STATS] Fetching service commission statistics...');
     console.log(`👤 User: ${req.user.email} (${req.user._id})`);
 
+    // ✅ FIXED: Properly parse page and limit with defaults
     const {
       timeFilter = 'all',
       service = 'all',
       startDate: customStartDate,
       endDate: customEndDate,
-      page = 1,
-      limit = 50
+      page = '1',
+      limit = '50'
     } = req.query;
 
-    console.log(`📋 Time Filter: ${timeFilter}, Service: ${service}`);
+    // ✅ FIXED: Convert to integers with proper validation
+    const currentPage = Math.max(1, parseInt(page) || 1);
+    const pageLimit = Math.min(parseInt(limit) || 50, 500);
+    const skip = (currentPage - 1) * pageLimit;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const maxLimit = Math.min(parseInt(limit), 500);
+    console.log(`📋 Time Filter: ${timeFilter}, Service: ${service}`);
+    console.log(`📄 Page: ${currentPage}, Limit: ${pageLimit}, Skip: ${skip}`);
 
     // ================================================
     // 1. DATE FILTERS
@@ -4956,22 +4962,30 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
-    // 7. GET TRANSACTIONS (PAGINATED FOR LIST)
+    // 7. GET TOTAL COUNT FIRST (for pagination)
     // ================================================
-    const [transactions, totalTransactions] = await Promise.all([
-      Transaction.find(baseFilter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(maxLimit)
-        .lean(),
-      Transaction.countDocuments(baseFilter)
-    ]);
-
+    const totalTransactions = await Transaction.countDocuments(baseFilter);
     console.log(`📊 Total successful service transactions: ${totalTransactions}`);
-    console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 🔥 FIXED: GET PERIOD STATS WITH CORRECT FILTER
+    // 8. GET TRANSACTIONS WITH PROPER PAGINATION
+    // ================================================
+    // ✅ CRITICAL FIX: Ensure skip and limit are applied correctly
+    const transactions = await Transaction.find(baseFilter)
+      .sort({ createdAt: -1 })
+      .skip(skip)        // ← This is what paginates
+      .limit(pageLimit)  // ← This limits the results
+      .lean();
+
+    console.log(`📊 Returned ${transactions.length} transactions (Page ${currentPage} of ${Math.ceil(totalTransactions / pageLimit)})`);
+
+    // ✅ DEBUG: Log first transaction ID to verify pagination
+    if (transactions.length > 0) {
+      console.log(`📄 First transaction ID on page ${currentPage}: ${transactions[0]._id}`);
+    }
+
+    // ================================================
+    // 9. GET PERIOD STATS (SAME AS BEFORE - NOT PAGINATED)
     // ================================================
     const getPeriodStats = async (dateFilter) => {
       const filter = {
@@ -4980,7 +4994,6 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
         status: { $regex: statusPattern, $options: 'i' }
       };
       
-      // Get ALL transactions for this period (not just paginated)
       const txs = await Transaction.find(filter).select('type amount').lean();
       
       let totalAmount = 0;
@@ -5027,7 +5040,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission, ₦${allTimeStats.amount.toFixed(2)} volume`);
 
     // ================================================
-    // 8. GET SERVICE BREAKDOWN BY PERIOD
+    // 10. GET SERVICE BREAKDOWN BY PERIOD
     // ================================================
     const getServiceBreakdown = async (dateFilter) => {
       const filter = {
@@ -5091,7 +5104,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     ]);
 
     // ================================================
-    // 9. GET USER DATA FOR TRANSACTIONS
+    // 11. GET USER DATA FOR TRANSACTIONS
     // ================================================
     const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
     let userMap = {};
@@ -5115,7 +5128,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 10. BUILD TRANSACTION LIST WITH COMMISSION
+    // 12. BUILD TRANSACTION LIST WITH COMMISSION
     // ================================================
     const transactionList = transactions.map(tx => {
       const serviceType = detectServiceType(tx.type);
@@ -5170,9 +5183,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     });
 
     // ================================================
-    // 11. 🔥 FIXED: USE allTimeStats FOR TOTALS (NOT paginated transactions)
+    // 13. CALCULATE TOTALS (from allTimeStats)
     // ================================================
-    // ✅ CRITICAL FIX: Use allTimeStats which has ALL filtered transactions
     const totalCommission = allTimeStats.commission;
     const totalVolume = allTimeStats.amount;
     const totalCount = allTimeStats.count;
@@ -5181,7 +5193,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     const serviceBreakdown = allTimeBreakdown;
 
     // ================================================
-    // 12. BUILD SERVICE SUMMARY (RANKED)
+    // 14. BUILD SERVICE SUMMARY (RANKED)
     // ================================================
     const serviceSummary = Object.entries(serviceBreakdown)
       .filter(([key, data]) => data.count > 0)
@@ -5201,15 +5213,14 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       .sort((a, b) => b.commission - a.commission);
 
     // ================================================
-    // 13. BUILD RESPONSE
+    // 15. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
-        // ✅ FIXED: Summary uses allTimeStats for correct totals
         summary: {
           totalTransactions: totalCount,
-          totalVolume: Math.round(totalVolume * 100) / 100,    // ✅ NOW FILTERED CORRECTLY
+          totalVolume: Math.round(totalVolume * 100) / 100,
           totalCommission: Math.round(totalCommission * 100) / 100,
           totalCount: totalCount
         },
@@ -5260,11 +5271,12 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
         serviceBreakdown: serviceBreakdown,
         transactions: transactionList,
 
+        // ✅ FIXED: Pagination with correct total and page
         pagination: {
           total: totalTransactions,
-          page: parseInt(page),
-          limit: maxLimit,
-          totalPages: Math.ceil(totalTransactions / maxLimit)
+          page: currentPage,
+          limit: pageLimit,
+          totalPages: Math.ceil(totalTransactions / pageLimit)
         },
 
         appliedFilters: {
@@ -5282,6 +5294,7 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
     console.log(`   Total Transactions: ${totalCount}`);
     console.log(`   Total Volume: ₦${(totalVolume).toFixed(2)}`);
+    console.log(`   Page ${currentPage} of ${Math.ceil(totalTransactions / pageLimit)}`);
 
     res.json(response);
 
