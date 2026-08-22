@@ -4747,7 +4747,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETELY FIXED ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIXED VERSION ====================
 // @desc    Get commission statistics for admin (Super Admin only)
 // @route   GET /api/admin/commission-stats
 // @access  Private/SuperAdmin
@@ -4762,6 +4762,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     console.log('📊 [COMMISSION STATS] Fetching commission statistics...');
+    console.log(`👤 User: ${req.user.email} (${req.user._id})`);
 
     const {
       timeFilter = 'all',
@@ -4801,7 +4802,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     // ================================================
-    // 🔥 FIXED: Service type detection - CASE INSENSITIVE, PARTIAL MATCH
+    // 3. SERVICE TYPE DETECTION - CASE INSENSITIVE, PARTIAL MATCH
     // ================================================
     const serviceTypeMap = {
       'airtime': {
@@ -4845,12 +4846,11 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       const lowerType = transactionType.toLowerCase().trim();
       
       // Check for commission/credit/withdrawal transactions - EXCLUDE from service breakdown
-      if (lowerType.includes('commission') || 
-          lowerType.includes('credit') || 
-          lowerType.includes('withdrawal') ||
-          lowerType.includes('welcome bonus') ||
-          lowerType.includes('referral bonus')) {
-        return 'commission';
+      const excludePatterns = ['commission', 'credit', 'withdrawal', 'welcome bonus', 'referral bonus'];
+      for (const pattern of excludePatterns) {
+        if (lowerType.includes(pattern)) {
+          return 'commission';
+        }
       }
       
       // Check each service type
@@ -4866,7 +4866,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     // ================================================
-    // 3. BUILD TIME FILTER QUERY
+    // 4. BUILD TIME FILTER QUERY
     // ================================================
     let timeFilterQuery = {};
     
@@ -4897,7 +4897,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     // ================================================
-    // 4. BUILD SERVICE FILTER QUERY
+    // 5. BUILD SERVICE FILTER QUERY
     // ================================================
     let serviceFilterQuery = {};
     if (service !== 'all' && serviceTypeMap[service]) {
@@ -4908,7 +4908,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     // ================================================
-    // 5. BUILD BASE FILTER FOR SUCCESSFUL TRANSACTIONS
+    // 6. BUILD BASE FILTER FOR SUCCESSFUL TRANSACTIONS
     // ================================================
     // ✅ EXCLUDE commission/credit/withdrawal transactions from calculations
     const baseFilter = {
@@ -4925,7 +4925,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
-    // 6. GET TOTAL COUNT AND TRANSACTIONS
+    // 7. GET TOTAL COUNT AND TRANSACTIONS
     // ================================================
     const [totalTransactions, transactions] = await Promise.all([
       Transaction.countDocuments(baseFilter),
@@ -4940,20 +4940,19 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 7. GET PERIOD STATS WITH CORRECT COMMISSION
+    // 8. GET PERIOD STATS WITH CORRECT COMMISSION
     // ================================================
-    const getPeriodStats = async (dateFilter, serviceFilter = {}) => {
+    const getPeriodStats = async (dateFilter) => {
       const filter = {
         ...dateFilter,
-        ...serviceFilter,
         status: { $regex: /^success|completed$/i },
         type: { $not: { $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i } }
       };
       
       const txs = await Transaction.find(filter).select('type amount').lean();
       
-      let totalAmount = 0;
-      let totalCommission = 0;
+      let totalAmount = 0;      // Total transaction volume
+      let totalCommission = 0;  // Total commission earned
       let totalCount = txs.length;
       
       for (const tx of txs) {
@@ -4972,7 +4971,11 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         }
       }
       
-      return { count: totalCount, amount: totalAmount, commission: totalCommission };
+      return { 
+        count: totalCount, 
+        amount: totalAmount,        // Transaction volume
+        commission: totalCommission // Commission earned
+      };
     };
 
     // Get stats for each period
@@ -4985,14 +4988,14 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     ]);
 
     console.log('📊 Period Stats:');
-    console.log(`   Today: ${todayStats.count} txns, ₦${todayStats.commission.toFixed(2)} commission`);
-    console.log(`   Week: ${weekStats.count} txns, ₦${weekStats.commission.toFixed(2)} commission`);
-    console.log(`   Month: ${monthStats.count} txns, ₦${monthStats.commission.toFixed(2)} commission`);
-    console.log(`   Year: ${yearStats.count} txns, ₦${yearStats.commission.toFixed(2)} commission`);
-    console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission`);
+    console.log(`   Today: ${todayStats.count} txns, ₦${todayStats.commission.toFixed(2)} commission, ₦${todayStats.amount.toFixed(2)} volume`);
+    console.log(`   Week: ${weekStats.count} txns, ₦${weekStats.commission.toFixed(2)} commission, ₦${weekStats.amount.toFixed(2)} volume`);
+    console.log(`   Month: ${monthStats.count} txns, ₦${monthStats.commission.toFixed(2)} commission, ₦${monthStats.amount.toFixed(2)} volume`);
+    console.log(`   Year: ${yearStats.count} txns, ₦${yearStats.commission.toFixed(2)} commission, ₦${yearStats.amount.toFixed(2)} volume`);
+    console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission, ₦${allTimeStats.amount.toFixed(2)} volume`);
 
     // ================================================
-    // 8. SERVICE BREAKDOWN WITH CORRECT COMMISSION
+    // 9. SERVICE BREAKDOWN WITH CORRECT COMMISSION
     // ================================================
     const getServiceBreakdown = async (dateFilter) => {
       const filter = {
@@ -5011,8 +5014,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
           icon: serviceCommissionRates[key].icon || '📦',
           color: serviceCommissionRates[key].color || '#6B7280',
           count: 0,
-          amount: 0,
-          commission: 0
+          amount: 0,        // Transaction volume
+          commission: 0     // Commission earned
         };
       });
       
@@ -5061,7 +5064,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     ]);
 
     // ================================================
-    // 9. BUILD TRANSACTION LIST WITH COMMISSION DATA
+    // 10. BUILD TRANSACTION LIST WITH COMMISSION DATA
     // ================================================
     const transactionList = transactions.map(tx => {
       const serviceType = detectServiceType(tx.type);
@@ -5089,17 +5092,15 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         }
       }
 
-      // 🔥 FIXED: Ensure commission is properly calculated and displayed
       return {
         ...tx,
         serviceType: serviceType,
         serviceLabel: serviceLabel,
         serviceIcon: serviceIcon,
         serviceColor: serviceColor,
-        commissionEarned: Math.round(commission * 100) / 100, // Round to 2 decimals
+        commissionEarned: Math.round(commission * 100) / 100,
         commissionRate: rate,
         rateType: rateType,
-        // Add rate display for frontend
         rateDisplay: rateType === 'flat' 
           ? `₦${rate.toFixed(0)} flat` 
           : `${(rate * 100).toFixed(1)}%`
@@ -5107,7 +5108,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
 
     // ================================================
-    // 10. CALCULATE TOTALS FOR CURRENT VIEW
+    // 11. CALCULATE TOTALS FOR CURRENT VIEW
     // ================================================
     let totalAmount = 0;
     let totalCommission = 0;
@@ -5146,14 +5147,14 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     // ================================================
-    // 11. BUILD RESPONSE
+    // 12. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
         // Summary
         totalTransactions: totalTransactions,
-        totalAmount: totalAmount,
+        totalAmount: Math.round(totalAmount * 100) / 100,
         totalCommission: Math.round(totalCommission * 100) / 100,
         totalCount: totalTransactions,
 
@@ -5249,7 +5250,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
   }
 });
-
 
 
 // ==================== COMMISSION RATES ENDPOINT ====================
