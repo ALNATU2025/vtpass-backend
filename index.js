@@ -1008,7 +1008,7 @@ app.get('/api/app/version', async (req, res) => {
     const versions = {
       android: {
           minimum: '1.3.0',      // ← Change from 1.2.0 to 1.3.0
-          latest: '1.4.0',       // ← Change from 1.3.0 to 1.4.0
+          latest: '1.4.1',       // ← Change from 1.3.0 to 1.4.0
         updateUrl: 'https://play.google.com/store/apps/details?id=com.dalabapay.official',
         whatsNew: [
           '🎉 New CableTV Bill Payment Feature',
