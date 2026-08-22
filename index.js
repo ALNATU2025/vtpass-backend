@@ -1022,7 +1022,7 @@ app.get('/api/app/version', async (req, res) => {
       },
       ios: {
          minimum: '1.3.0',
-        latest: '1.4.0',
+        latest: '1.4.1',
         updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
         whatsNew: [
           '🎉 New Electricity Bill Payment Feature',
