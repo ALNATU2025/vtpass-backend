@@ -4748,9 +4748,11 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIXED VERSION ====================
-// @desc    Get commission statistics for admin (Super Admin only)
-// @route   GET /api/admin/commission-stats
-// @access  Private/SuperAdmin
+/**
+ * @desc    Get commission statistics for admin (Super Admin only)
+ * @route   GET /api/admin/commission-stats
+ * @access  Private/SuperAdmin
+ */
 app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
   try {
     // Check if user is Super Admin
@@ -4910,7 +4912,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     // ================================================
     // 6. BUILD BASE FILTER FOR SUCCESSFUL TRANSACTIONS
     // ================================================
-    // ✅ EXCLUDE commission/credit/withdrawal transactions from calculations
     const baseFilter = {
       ...timeFilterQuery,
       ...serviceFilterQuery,
@@ -4951,8 +4952,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       
       const txs = await Transaction.find(filter).select('type amount').lean();
       
-      let totalAmount = 0;      // Total transaction volume
-      let totalCommission = 0;  // Total commission earned
+      let totalAmount = 0;
+      let totalCommission = 0;
       let totalCount = txs.length;
       
       for (const tx of txs) {
@@ -4973,8 +4974,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       
       return { 
         count: totalCount, 
-        amount: totalAmount,        // Transaction volume
-        commission: totalCommission // Commission earned
+        amount: totalAmount,
+        commission: totalCommission
       };
     };
 
@@ -5006,7 +5007,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       
       const txs = await Transaction.find(filter).select('type amount').lean();
       
-      // Initialize breakdown with all services
       const breakdown = {};
       Object.keys(serviceCommissionRates).forEach(key => {
         breakdown[key] = {
@@ -5014,12 +5014,11 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
           icon: serviceCommissionRates[key].icon || '📦',
           color: serviceCommissionRates[key].color || '#6B7280',
           count: 0,
-          amount: 0,        // Transaction volume
-          commission: 0     // Commission earned
+          amount: 0,
+          commission: 0
         };
       });
       
-      // Add 'other' category
       breakdown['other'] = {
         label: 'Other',
         icon: '📦',
@@ -5033,7 +5032,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         const serviceType = detectServiceType(tx.type);
         const amount = tx.amount || 0;
         
-        // Skip commission transactions
         if (serviceType === 'commission') continue;
         
         if (breakdown[serviceType]) {
@@ -5054,7 +5052,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       return breakdown;
     };
 
-    // Get service breakdown for each period
     const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
       getServiceBreakdown({ createdAt: { $gte: today } }),
       getServiceBreakdown({ createdAt: { $gte: weekStart } }),
@@ -5152,13 +5149,11 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     const response = {
       success: true,
       data: {
-        // Summary
         totalTransactions: totalTransactions,
         totalAmount: Math.round(totalAmount * 100) / 100,
         totalCommission: Math.round(totalCommission * 100) / 100,
         totalCount: totalTransactions,
 
-        // Period Stats with CORRECT commissions
         periodStats: {
           today: {
             count: todayStats.count,
@@ -5192,7 +5187,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
           }
         },
 
-        // Service Breakdown by Period
         serviceBreakdownByPeriod: {
           today: todayBreakdown,
           week: weekBreakdown,
@@ -5201,16 +5195,10 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
           allTime: allTimeBreakdown
         },
 
-        // Current Service Breakdown (paginated data)
         serviceBreakdown: serviceBreakdown,
-
-        // Transaction list with commission calculation
         transactions: transactionList,
-
-        // Commission Rates
         commissionRates: serviceCommissionRates,
 
-        // Pagination
         pagination: {
           total: totalTransactions,
           page: parseInt(page),
@@ -5232,10 +5220,6 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log('✅ [COMMISSION STATS] Response built successfully');
     console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
     console.log(`   Total Transactions: ${totalTransactions}`);
-    console.log(`   Today: ${todayStats.count} transactions, ₦${(todayStats.commission).toFixed(2)} commission`);
-    console.log(`   Week: ${weekStats.count} transactions, ₦${(weekStats.commission).toFixed(2)} commission`);
-    console.log(`   Month: ${monthStats.count} transactions, ₦${(monthStats.commission).toFixed(2)} commission`);
-    console.log(`   Year: ${yearStats.count} transactions, ₦${(yearStats.commission).toFixed(2)} commission`);
 
     res.json(response);
 
@@ -5252,10 +5236,17 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
 });
 
 
-// ==================== COMMISSION RATES ENDPOINT ====================
-// @desc    Get commission rates for all services
-// @route   GET /api/admin/commission-rates
-// @access  Private/SuperAdmin
+
+
+
+// ================================================
+// GET COMMISSION RATES ENDPOINT
+// ================================================
+/**
+ * @desc    Get commission rates for all services
+ * @route   GET /api/admin/commission-rates
+ * @access  Private/SuperAdmin
+ */
 app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
   try {
     if (!req.user.isSuperAdmin && !req.user.isAdmin) {
@@ -5266,14 +5257,14 @@ app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
     }
 
     const commissionRates = {
-      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
-      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
-      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
-      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
-      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
-      'betting': { rate: 0.012, label: 'Betting', type: 'percentage' },
-      'education': { rate: 100, label: 'Education', type: 'flat' },
-      'ticket': { rate: 150, label: 'Ticket', type: 'flat' }
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
+      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
+      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰', color: '#7C3AED' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
     };
 
     res.json({
@@ -5287,6 +5278,64 @@ app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch commission rates'
+    });
+  }
+});
+
+
+
+// ================================================
+// GET TOTAL COMMISSION SUMMARY
+// ================================================
+/**
+ * @desc    Get total commission summary
+ * @route   GET /api/admin/commission-summary
+ * @access  Private/SuperAdmin
+ */
+app.get('/api/admin/commission-summary', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Super Admin access required'
+      });
+    }
+
+    // Get total commission from all successful service transactions
+    const result = await Transaction.aggregate([
+      {
+        $match: {
+          status: { $regex: /^success|completed$/i },
+          type: { 
+            $not: { 
+              $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i 
+            } 
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalTransactions: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      summary: {
+        totalTransactions: result[0]?.totalTransactions || 0,
+        totalAmount: result[0]?.totalAmount || 0,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching commission summary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch commission summary'
     });
   }
 });
