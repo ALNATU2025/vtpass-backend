@@ -4747,7 +4747,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
 
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULLY FIXED ====================
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - FULLY CORRECTED ====================
 
 app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
   try {
@@ -4897,23 +4897,32 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     }
 
     // ================================================
-    // 🔥 FIXED: BUILD SERVICE FILTER - CORRECTLY
+    // 🔥 FIXED: BUILD SERVICE FILTER CORRECTLY
     // ================================================
-    let serviceFilterQuery = {};
-    let serviceTypeList = [];
+    const excludeRegex = /commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer/i;
     
-    if (service !== 'all') {
-      // Get the keywords for the selected service
+    let typeFilter = {};
+    const isAllServices = service === 'all';
+    
+    if (isAllServices) {
+      // All services: exclude commission/credit transactions
+      typeFilter = {
+        type: { $not: { $regex: excludeRegex } }
+      };
+      console.log('📋 Filter: All services (excluding commissions)');
+    } else {
+      // Specific service: filter by service type AND exclude commissions
       const keywords = serviceKeywords[service] || [];
       if (keywords.length > 0) {
-        // ✅ CORRECT FIX: Use $in or $regex for service type matching
-        serviceFilterQuery = { 
-          type: { $regex: keywords.join('|'), $options: 'i' } 
+        typeFilter = {
+          $and: [
+            { type: { $regex: keywords.join('|'), $options: 'i' } },
+            { type: { $not: { $regex: excludeRegex } } }
+          ]
         };
-        serviceTypeList = keywords;
-        console.log(`🔧 Service Filter: ${service} -> ${keywords.join('|')}`);
+        console.log(`🔧 Service Filter: ${service} -> ${keywords.join('|')} (excluding commissions)`);
       } else {
-        // Fallback: try to match by exact type
+        // Fallback: use exact type match
         const typeMap = {
           'airtime': 'Airtime Purchase',
           'international_airtime': 'International Airtime Purchase',
@@ -4923,27 +4932,25 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
           'education': { $in: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase'] },
           'ticket': 'Ticket Purchase'
         };
-        const typeFilter = typeMap[service];
-        if (typeFilter) {
-          serviceFilterQuery = { type: typeFilter };
+        const exactType = typeMap[service];
+        if (exactType) {
+          typeFilter = {
+            $and: [
+              { type: exactType },
+              { type: { $not: { $regex: excludeRegex } } }
+            ]
+          };
         }
       }
     }
 
-    console.log('📋 Service Filter Query:', JSON.stringify(serviceFilterQuery, null, 2));
-
     // ================================================
-    // 6. BASE FILTER - CORRECTLY COMBINED
+    // 6. BUILD BASE FILTER - CORRECTLY COMBINED
     // ================================================
     const baseFilter = {
       ...timeFilterQuery,
-      ...serviceFilterQuery,  // ✅ This is now correctly applied
-      status: { $regex: /^success|completed|successful$/i },
-      type: { 
-        $not: { 
-          $regex: /commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer/i 
-        } 
-      }
+      ...typeFilter,
+      status: { $regex: /^success|completed|successful$/i }
     };
 
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
@@ -4969,13 +4976,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     const getPeriodStats = async (dateFilter) => {
       const filter = {
         ...dateFilter,
-        ...serviceFilterQuery,  // ✅ Apply service filter to period stats
-        status: { $regex: /^success|completed|successful$/i },
-        type: { 
-          $not: { 
-            $regex: /commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer/i 
-          } 
-        }
+        ...typeFilter,  // ✅ Apply the same type filter
+        status: { $regex: /^success|completed|successful$/i }
       };
       
       const txs = await Transaction.find(filter).select('type amount').lean();
@@ -5029,13 +5031,8 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     const getServiceBreakdown = async (dateFilter) => {
       const filter = {
         ...dateFilter,
-        ...serviceFilterQuery,  // ✅ Apply service filter to breakdown
-        status: { $regex: /^success|completed|successful$/i },
-        type: { 
-          $not: { 
-            $regex: /commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer/i 
-          } 
-        }
+        ...typeFilter,  // ✅ Apply the same type filter
+        status: { $regex: /^success|completed|successful$/i }
       };
       
       const txs = await Transaction.find(filter).select('type amount').lean();
