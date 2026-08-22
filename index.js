@@ -4745,25 +4745,24 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
 
 
 
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
 
-
-// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIXED VERSION ====================
 /**
- * @desc    Get commission statistics for admin (Super Admin only)
- * @route   GET /api/admin/commission-stats
+ * @desc    Get service commission statistics for admin
+ * @route   GET /api/admin/service-commission-stats
  * @access  Private/SuperAdmin
  */
-app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
+app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
   try {
-    // Check if user is Super Admin
+    // Check if user is Super Admin or Admin
     if (!req.user.isSuperAdmin && !req.user.isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Super Admin access required'
+        message: 'Admin access required'
       });
     }
 
-    console.log('📊 [COMMISSION STATS] Fetching commission statistics...');
+    console.log('📊 [COMMISSION STATS] Fetching service commission statistics...');
     console.log(`👤 User: ${req.user.email} (${req.user._id})`);
 
     const {
@@ -4772,7 +4771,8 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
       startDate: customStartDate,
       endDate: customEndDate,
       page = 1,
-      limit = 50
+      limit = 50,
+      transactionType = 'all' // 'successful', 'pending', 'failed'
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -4790,81 +4790,107 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     const yearStart = new Date(now.getFullYear(), 0, 1);
 
     // ================================================
-    // 2. SERVICE TYPE MAPPING & COMMISSION RATES
+    // 2. SERVICE COMMISSION RATES
     // ================================================
-    const serviceCommissionRates = {
-      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
-      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
-      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
-      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
-      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
-      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
-      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰', color: '#7C3AED' },
-      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
+    const COMMISSION_RATES = {
+      'international_airtime': { 
+        rate: 0.02, 
+        label: 'International Airtime', 
+        type: 'percentage', 
+        icon: '🌍', 
+        color: '#7C3AED',
+        serviceTypes: ['International Airtime Purchase', 'International Airtime']
+      },
+      'airtime': { 
+        rate: 0.02, 
+        label: 'Airtime', 
+        type: 'percentage', 
+        icon: '📱', 
+        color: '#4F46E5',
+        serviceTypes: ['Airtime Purchase']
+      },
+      'data': { 
+        rate: 0.015, 
+        label: 'Data', 
+        type: 'percentage', 
+        icon: '📶', 
+        color: '#0891B2',
+        serviceTypes: ['Data Purchase']
+      },
+      'cable': { 
+        rate: 0.013, 
+        label: 'Cable TV', 
+        type: 'percentage', 
+        icon: '📺', 
+        color: '#059669',
+        serviceTypes: ['Cable TV Subscription', 'Cable TV Purchase']
+      },
+      'electricity': { 
+        rate: 0.01, 
+        label: 'Electricity', 
+        type: 'percentage', 
+        icon: '⚡', 
+        color: '#D97706',
+        serviceTypes: ['Electricity Purchase']
+      },
+      'education': { 
+        rate: 100, 
+        label: 'Education', 
+        type: 'flat', 
+        icon: '🎓', 
+        color: '#DC2626',
+        serviceTypes: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase']
+      },
+      'ticket': { 
+        rate: 150, 
+        label: 'Ticket', 
+        type: 'flat', 
+        icon: '🎫', 
+        color: '#2563EB',
+        serviceTypes: ['Ticket Purchase', 'Event Ticket']
+      }
     };
 
     // ================================================
-    // 3. SERVICE TYPE DETECTION - CASE INSENSITIVE, PARTIAL MATCH
+    // 3. SERVICE TYPE DETECTION
     // ================================================
-    const serviceTypeMap = {
-      'airtime': {
-        keywords: ['airtime', 'airtime purchase'],
-        commissionKey: 'airtime'
-      },
-      'international_airtime': {
-        keywords: ['international airtime', 'international airtime purchase', 'foreign airtime'],
-        commissionKey: 'international_airtime'
-      },
-      'cable': {
-        keywords: ['cable tv', 'cable tv subscription', 'cable tv purchase', 'dstv', 'gotv', 'startimes', 'tv subscription'],
-        commissionKey: 'cable'
-      },
-      'data': {
-        keywords: ['data purchase', 'data', 'mtn data', 'airtel data', 'glo data'],
-        commissionKey: 'data'
-      },
-      'electricity': {
-        keywords: ['electricity purchase', 'electricity', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
-        commissionKey: 'electricity'
-      },
-      'education': {
-        keywords: ['education purchase', 'education', 'waec', 'jamb', 'exam', 'result checker'],
-        commissionKey: 'education'
-      },
-      'betting': {
-        keywords: ['betting', 'betting funding', 'betting purchase', 'sportybet', 'bet9ja', 'betking'],
-        commissionKey: 'betting'
-      },
-      'ticket': {
-        keywords: ['ticket purchase', 'ticket', 'event ticket'],
-        commissionKey: 'ticket'
-      }
+    const serviceTypeMap = {};
+    
+    // Build reverse mapping for service detection
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
     };
 
     // Helper to detect service type from transaction
     const detectServiceType = (transactionType) => {
-      if (!transactionType) return 'other';
+      if (!transactionType) return 'unknown';
       
       const lowerType = transactionType.toLowerCase().trim();
       
-      // Check for commission/credit/withdrawal transactions - EXCLUDE from service breakdown
-      const excludePatterns = ['commission', 'credit', 'withdrawal', 'welcome bonus', 'referral bonus'];
+      // Check for commission/credit/withdrawal transactions - EXCLUDE
+      const excludePatterns = ['commission', 'credit', 'withdrawal', 'welcome bonus', 'referral bonus', 'wallet funding', 'transfer'];
       for (const pattern of excludePatterns) {
         if (lowerType.includes(pattern)) {
-          return 'commission';
+          return 'excluded';
         }
       }
       
       // Check each service type
-      for (const [key, config] of Object.entries(serviceTypeMap)) {
-        for (const keyword of config.keywords) {
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
           if (lowerType.includes(keyword)) {
             return key;
           }
         }
       }
       
-      return 'other';
+      return 'unknown';
     };
 
     // ================================================
@@ -4899,34 +4925,42 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     }
 
     // ================================================
-    // 5. BUILD SERVICE FILTER QUERY
+    // 5. BUILD STATUS FILTER
+    // ================================================
+    let statusFilterQuery = {};
+    if (transactionType === 'successful') {
+      statusFilterQuery = { status: { $regex: /^success|completed|successful$/i } };
+    } else if (transactionType === 'pending') {
+      statusFilterQuery = { status: { $regex: /^pending|processing$/i } };
+    } else if (transactionType === 'failed') {
+      statusFilterQuery = { status: { $regex: /^failed|cancelled$/i } };
+    }
+
+    // ================================================
+    // 6. BUILD SERVICE FILTER
     // ================================================
     let serviceFilterQuery = {};
-    if (service !== 'all' && serviceTypeMap[service]) {
-      const keywords = serviceTypeMap[service].keywords;
+    if (service !== 'all' && COMMISSION_RATES[service]) {
+      const types = COMMISSION_RATES[service].serviceTypes;
       serviceFilterQuery = { 
-        type: { $regex: keywords.join('|'), $options: 'i' } 
+        type: { $in: types } 
       };
     }
 
     // ================================================
-    // 6. BUILD BASE FILTER FOR SUCCESSFUL TRANSACTIONS
+    // 7. BASE FILTER FOR SUCCESSFUL TRANSACTIONS
     // ================================================
     const baseFilter = {
       ...timeFilterQuery,
+      ...statusFilterQuery,
       ...serviceFilterQuery,
-      status: { $regex: /^success|completed$/i },
-      type: { 
-        $not: { 
-          $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i 
-        } 
-      }
+      status: { $regex: /^success|completed|successful$/i }
     };
 
     console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
 
     // ================================================
-    // 7. GET TOTAL COUNT AND TRANSACTIONS
+    // 8. GET TOTAL COUNT AND TRANSACTIONS
     // ================================================
     const [totalTransactions, transactions] = await Promise.all([
       Transaction.countDocuments(baseFilter),
@@ -4941,41 +4975,119 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log(`📊 Returned ${transactions.length} transactions`);
 
     // ================================================
-    // 8. GET PERIOD STATS WITH CORRECT COMMISSION
+    // 9. GET PERIOD STATS - DYNAMIC DETECTION
     // ================================================
     const getPeriodStats = async (dateFilter) => {
       const filter = {
         ...dateFilter,
-        status: { $regex: /^success|completed$/i },
-        type: { $not: { $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i } }
+        status: { $regex: /^success|completed|successful$/i }
       };
       
-      const txs = await Transaction.find(filter).select('type amount').lean();
+      const txs = await Transaction.find(filter).lean();
       
       let totalAmount = 0;
       let totalCommission = 0;
       let totalCount = txs.length;
+      let serviceBreakdown = {};
       
+      // Initialize service breakdown
+      Object.keys(COMMISSION_RATES).forEach(key => {
+        serviceBreakdown[key] = {
+          label: COMMISSION_RATES[key].label,
+          icon: COMMISSION_RATES[key].icon || '📦',
+          color: COMMISSION_RATES[key].color || '#6B7280',
+          count: 0,
+          amount: 0,
+          commission: 0,
+          transactions: []
+        };
+      });
+      
+      serviceBreakdown['unknown'] = {
+        label: 'Other',
+        icon: '📦',
+        color: '#6B7280',
+        count: 0,
+        amount: 0,
+        commission: 0,
+        transactions: []
+      };
+
       for (const tx of txs) {
         const amount = tx.amount || 0;
         totalAmount += amount;
         
         const serviceType = detectServiceType(tx.type);
-        const rateConfig = serviceCommissionRates[serviceType];
+        
+        if (serviceType === 'excluded') continue;
+        
+        const rateConfig = COMMISSION_RATES[serviceType];
+        let commission = 0;
+        let serviceLabel = serviceType;
         
         if (rateConfig) {
+          serviceLabel = rateConfig.label;
           if (rateConfig.type === 'flat') {
-            totalCommission += rateConfig.rate;
+            commission = rateConfig.rate;
           } else {
-            totalCommission += amount * (rateConfig.rate || 0);
+            commission = amount * (rateConfig.rate || 0);
           }
+        } else {
+          commission = 0;
+        }
+        
+        totalCommission += commission;
+        
+        if (serviceBreakdown[serviceType]) {
+          serviceBreakdown[serviceType].count += 1;
+          serviceBreakdown[serviceType].amount += amount;
+          serviceBreakdown[serviceType].commission += commission;
+          serviceBreakdown[serviceType].transactions.push({
+            _id: tx._id,
+            amount: tx.amount,
+            type: tx.type,
+            status: tx.status,
+            reference: tx.reference,
+            commission: commission,
+            createdAt: tx.createdAt,
+            userId: tx.userId,
+            metadata: tx.metadata || {}
+          });
+        } else {
+          if (!serviceBreakdown['unknown']) {
+            serviceBreakdown['unknown'] = {
+              label: 'Other',
+              icon: '📦',
+              color: '#6B7280',
+              count: 0,
+              amount: 0,
+              commission: 0,
+              transactions: []
+            };
+          }
+          serviceBreakdown['unknown'].count += 1;
+          serviceBreakdown['unknown'].amount += amount;
+          serviceBreakdown['unknown'].commission += commission;
+          serviceBreakdown['unknown'].transactions.push({
+            _id: tx._id,
+            amount: tx.amount,
+            type: tx.type,
+            status: tx.status,
+            reference: tx.reference,
+            commission: commission,
+            createdAt: tx.createdAt,
+            userId: tx.userId,
+            metadata: tx.metadata || {}
+          });
         }
       }
       
       return { 
         count: totalCount, 
         amount: totalAmount,
-        commission: totalCommission
+        commission: totalCommission,
+        serviceBreakdown: serviceBreakdown,
+        transactions: txs
       };
     };
 
@@ -4996,76 +5108,38 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission, ₦${allTimeStats.amount.toFixed(2)} volume`);
 
     // ================================================
-    // 9. SERVICE BREAKDOWN WITH CORRECT COMMISSION
+    // 10. USER INFO FOR TRANSACTIONS
     // ================================================
-    const getServiceBreakdown = async (dateFilter) => {
-      const filter = {
-        ...dateFilter,
-        status: { $regex: /^success|completed$/i },
-        type: { $not: { $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i } }
-      };
+    const userIds = [...new Set(
+      transactions.map(tx => tx.userId?.toString())
+        .filter(id => id && id !== 'null' && id !== 'system' && id !== 'unknown')
+    )];
+
+    let userMap = {};
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
       
-      const txs = await Transaction.find(filter).select('type amount').lean();
-      
-      const breakdown = {};
-      Object.keys(serviceCommissionRates).forEach(key => {
-        breakdown[key] = {
-          label: serviceCommissionRates[key].label,
-          icon: serviceCommissionRates[key].icon || '📦',
-          color: serviceCommissionRates[key].color || '#6B7280',
-          count: 0,
-          amount: 0,
-          commission: 0
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
         };
-      });
-      
-      breakdown['other'] = {
-        label: 'Other',
-        icon: '📦',
-        color: '#6B7280',
-        count: 0,
-        amount: 0,
-        commission: 0
-      };
-
-      for (const tx of txs) {
-        const serviceType = detectServiceType(tx.type);
-        const amount = tx.amount || 0;
-        
-        if (serviceType === 'commission') continue;
-        
-        if (breakdown[serviceType]) {
-          breakdown[serviceType].count += 1;
-          breakdown[serviceType].amount += amount;
-          
-          const rateConfig = serviceCommissionRates[serviceType];
-          if (rateConfig) {
-            if (rateConfig.type === 'flat') {
-              breakdown[serviceType].commission += rateConfig.rate;
-            } else {
-              breakdown[serviceType].commission += amount * (rateConfig.rate || 0);
-            }
-          }
-        }
-      }
-      
-      return breakdown;
-    };
-
-    const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
-      getServiceBreakdown({ createdAt: { $gte: today } }),
-      getServiceBreakdown({ createdAt: { $gte: weekStart } }),
-      getServiceBreakdown({ createdAt: { $gte: monthStart } }),
-      getServiceBreakdown({ createdAt: { $gte: yearStart } }),
-      getServiceBreakdown({})
-    ]);
+        return map;
+      }, {});
+    }
 
     // ================================================
-    // 10. BUILD TRANSACTION LIST WITH COMMISSION DATA
+    // 11. BUILD TRANSACTION LIST WITH COMMISSION DATA
     // ================================================
     const transactionList = transactions.map(tx => {
       const serviceType = detectServiceType(tx.type);
-      const rateConfig = serviceCommissionRates[serviceType];
+      const rateConfig = COMMISSION_RATES[serviceType];
       
       let commission = 0;
       let rate = 0;
@@ -5089,8 +5163,19 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
         }
       }
 
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+
       return {
         ...tx,
+        user: userData,
+        userId: userId || 'system',
         serviceType: serviceType,
         serviceLabel: serviceLabel,
         serviceIcon: serviceIcon,
@@ -5105,100 +5190,81 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     });
 
     // ================================================
-    // 11. CALCULATE TOTALS FOR CURRENT VIEW
-    // ================================================
-    let totalAmount = 0;
-    let totalCommission = 0;
-    let serviceBreakdown = {};
-    
-    Object.keys(serviceCommissionRates).forEach(key => {
-      serviceBreakdown[key] = {
-        label: serviceCommissionRates[key].label,
-        icon: serviceCommissionRates[key].icon || '📦',
-        color: serviceCommissionRates[key].color || '#6B7280',
-        count: 0,
-        amount: 0,
-        commission: 0
-      };
-    });
-    serviceBreakdown['other'] = {
-      label: 'Other',
-      icon: '📦',
-      color: '#6B7280',
-      count: 0,
-      amount: 0,
-      commission: 0
-    };
-
-    for (const tx of transactionList) {
-      const amount = tx.amount || 0;
-      totalAmount += amount;
-      totalCommission += tx.commissionEarned || 0;
-      
-      const serviceType = tx.serviceType || 'other';
-      if (serviceBreakdown[serviceType]) {
-        serviceBreakdown[serviceType].count += 1;
-        serviceBreakdown[serviceType].amount += amount;
-        serviceBreakdown[serviceType].commission += tx.commissionEarned || 0;
-      }
-    }
-
-    // ================================================
     // 12. BUILD RESPONSE
     // ================================================
     const response = {
       success: true,
       data: {
-        totalTransactions: totalTransactions,
-        totalAmount: Math.round(totalAmount * 100) / 100,
-        totalCommission: Math.round(totalCommission * 100) / 100,
-        totalCount: totalTransactions,
-
+        // Summary totals
+        summary: {
+          totalTransactions: totalTransactions,
+          totalVolume: Math.round(allTimeStats.amount * 100) / 100,
+          totalCommission: Math.round(allTimeStats.commission * 100) / 100,
+          totalCount: allTimeStats.count
+        },
+        
+        // Period Stats
         periodStats: {
           today: {
             count: todayStats.count,
             amount: Math.round(todayStats.amount * 100) / 100,
             commission: Math.round(todayStats.commission * 100) / 100,
-            label: 'Today'
+            label: 'Today',
+            breakdown: todayStats.serviceBreakdown
           },
           week: {
             count: weekStats.count,
             amount: Math.round(weekStats.amount * 100) / 100,
             commission: Math.round(weekStats.commission * 100) / 100,
-            label: 'This Week'
+            label: 'This Week',
+            breakdown: weekStats.serviceBreakdown
           },
           month: {
             count: monthStats.count,
             amount: Math.round(monthStats.amount * 100) / 100,
             commission: Math.round(monthStats.commission * 100) / 100,
-            label: 'This Month'
+            label: 'This Month',
+            breakdown: monthStats.serviceBreakdown
           },
           year: {
             count: yearStats.count,
             amount: Math.round(yearStats.amount * 100) / 100,
             commission: Math.round(yearStats.commission * 100) / 100,
-            label: 'This Year'
+            label: 'This Year',
+            breakdown: yearStats.serviceBreakdown
           },
           allTime: {
             count: allTimeStats.count,
             amount: Math.round(allTimeStats.amount * 100) / 100,
             commission: Math.round(allTimeStats.commission * 100) / 100,
-            label: 'All Time'
+            label: 'All Time',
+            breakdown: allTimeStats.serviceBreakdown
           }
         },
 
-        serviceBreakdownByPeriod: {
-          today: todayBreakdown,
-          week: weekBreakdown,
-          month: monthBreakdown,
-          year: yearBreakdown,
-          allTime: allTimeBreakdown
-        },
+        // Commission Rates
+        commissionRates: COMMISSION_RATES,
 
-        serviceBreakdown: serviceBreakdown,
+        // Service Summary (best performing services)
+        serviceSummary: Object.entries(COMMISSION_RATES).map(([key, config]) => {
+          const breakdown = allTimeStats.serviceBreakdown[key] || { count: 0, amount: 0, commission: 0 };
+          return {
+            key: key,
+            label: config.label,
+            icon: config.icon || '📦',
+            color: config.color || '#6B7280',
+            rate: config.type === 'flat' ? `₦${config.rate} flat` : `${(config.rate * 100).toFixed(1)}%`,
+            rateType: config.type,
+            count: breakdown.count || 0,
+            volume: Math.round((breakdown.amount || 0) * 100) / 100,
+            commission: Math.round((breakdown.commission || 0) * 100) / 100
+          };
+        }).sort((a, b) => b.commission - a.commission),
+
+        // Transactions with user info
         transactions: transactionList,
-        commissionRates: serviceCommissionRates,
 
+        // Pagination
         pagination: {
           total: totalTransactions,
           page: parseInt(page),
@@ -5206,9 +5272,11 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
           totalPages: Math.ceil(totalTransactions / maxLimit)
         },
 
+        // Applied Filters
         appliedFilters: {
           timeFilter: timeFilter,
           service: service,
+          transactionType: transactionType,
           startDate: customStartDate || null,
           endDate: customEndDate || null
         },
@@ -5218,7 +5286,7 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
     };
 
     console.log('✅ [COMMISSION STATS] Response built successfully');
-    console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
+    console.log(`   Total Commission: ₦${(allTimeStats.commission).toFixed(2)}`);
     console.log(`   Total Transactions: ${totalTransactions}`);
 
     res.json(response);
@@ -5235,41 +5303,78 @@ app.get('/api/admin/commission-stats', adminProtect, async (req, res) => {
   }
 });
 
-
-
-
-
-// ================================================
-// GET COMMISSION RATES ENDPOINT
-// ================================================
-/**
- * @desc    Get commission rates for all services
- * @route   GET /api/admin/commission-rates
- * @access  Private/SuperAdmin
- */
+// ==================== GET COMMISSION RATES ENDPOINT ====================
 app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
   try {
     if (!req.user.isSuperAdmin && !req.user.isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Super Admin access required'
+        message: 'Admin access required'
       });
     }
 
-    const commissionRates = {
-      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
-      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
-      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
-      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
-      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
-      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
-      'betting': { rate: 0.012, label: 'Betting', type: 'percentage', icon: '🎰', color: '#7C3AED' },
-      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
+    const COMMISSION_RATES = {
+      'international_airtime': { 
+        rate: 0.02, 
+        label: 'International Airtime', 
+        type: 'percentage', 
+        icon: '🌍', 
+        color: '#7C3AED',
+        serviceTypes: ['International Airtime Purchase', 'International Airtime']
+      },
+      'airtime': { 
+        rate: 0.02, 
+        label: 'Airtime', 
+        type: 'percentage', 
+        icon: '📱', 
+        color: '#4F46E5',
+        serviceTypes: ['Airtime Purchase']
+      },
+      'data': { 
+        rate: 0.015, 
+        label: 'Data', 
+        type: 'percentage', 
+        icon: '📶', 
+        color: '#0891B2',
+        serviceTypes: ['Data Purchase']
+      },
+      'cable': { 
+        rate: 0.013, 
+        label: 'Cable TV', 
+        type: 'percentage', 
+        icon: '📺', 
+        color: '#059669',
+        serviceTypes: ['Cable TV Subscription', 'Cable TV Purchase']
+      },
+      'electricity': { 
+        rate: 0.01, 
+        label: 'Electricity', 
+        type: 'percentage', 
+        icon: '⚡', 
+        color: '#D97706',
+        serviceTypes: ['Electricity Purchase']
+      },
+      'education': { 
+        rate: 100, 
+        label: 'Education', 
+        type: 'flat', 
+        icon: '🎓', 
+        color: '#DC2626',
+        serviceTypes: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase']
+      },
+      'ticket': { 
+        rate: 150, 
+        label: 'Ticket', 
+        type: 'flat', 
+        icon: '🎫', 
+        color: '#2563EB',
+        serviceTypes: ['Ticket Purchase', 'Event Ticket']
+      }
     };
 
     res.json({
       success: true,
-      rates: commissionRates,
+      rates: COMMISSION_RATES,
       timestamp: new Date().toISOString()
     });
 
@@ -5282,51 +5387,144 @@ app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
   }
 });
 
-
-
-// ================================================
-// GET TOTAL COMMISSION SUMMARY
-// ================================================
-/**
- * @desc    Get total commission summary
- * @route   GET /api/admin/commission-summary
- * @access  Private/SuperAdmin
- */
+// ==================== GET COMMISSION SUMMARY BY SERVICE ====================
 app.get('/api/admin/commission-summary', adminProtect, async (req, res) => {
   try {
     if (!req.user.isSuperAdmin && !req.user.isAdmin) {
       return res.status(403).json({
         success: false,
-        message: 'Super Admin access required'
+        message: 'Admin access required'
       });
     }
 
-    // Get total commission from all successful service transactions
-    const result = await Transaction.aggregate([
-      {
-        $match: {
-          status: { $regex: /^success|completed$/i },
-          type: { 
-            $not: { 
-              $regex: /commission|credit|withdrawal|welcome bonus|referral bonus/i 
-            } 
+    const { service, timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    // Service type mapping
+    const serviceTypeMap = {
+      'airtime': ['Airtime Purchase'],
+      'international_airtime': ['International Airtime Purchase', 'International Airtime'],
+      'data': ['Data Purchase'],
+      'cable': ['Cable TV Subscription', 'Cable TV Purchase'],
+      'electricity': ['Electricity Purchase'],
+      'education': ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase'],
+      'ticket': ['Ticket Purchase', 'Event Ticket']
+    };
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    if (service && service !== 'all' && serviceTypeMap[service]) {
+      filter.type = { $in: serviceTypeMap[service] };
+    }
+
+    const transactions = await Transaction.find(filter).lean();
+    
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
+      'education': { rate: 100, label: 'Education', type: 'flat' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
           }
         }
-      },
-      {
-        $group: {
-          _id: null,
-          totalTransactions: { $sum: 1 },
-          totalAmount: { $sum: '$amount' }
+      }
+      return 'unknown';
+    };
+
+    let totalAmount = 0;
+    let totalCommission = 0;
+    let serviceStats = {};
+
+    Object.keys(COMMISSION_RATES).forEach(key => {
+      serviceStats[key] = { count: 0, amount: 0, commission: 0, label: COMMISSION_RATES[key].label };
+    });
+    serviceStats['unknown'] = { count: 0, amount: 0, commission: 0, label: 'Other' };
+
+    for (const tx of transactions) {
+      const amount = tx.amount || 0;
+      totalAmount += amount;
+      
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      
+      let commission = 0;
+      if (rateConfig) {
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+        } else {
+          commission = amount * (rateConfig.rate || 0);
+        }
+        totalCommission += commission;
+        if (serviceStats[serviceType]) {
+          serviceStats[serviceType].count += 1;
+          serviceStats[serviceType].amount += amount;
+          serviceStats[serviceType].commission += commission;
+        }
+      } else {
+        if (serviceStats['unknown']) {
+          serviceStats['unknown'].count += 1;
+          serviceStats['unknown'].amount += amount;
         }
       }
-    ]);
+    }
 
     res.json({
       success: true,
       summary: {
-        totalTransactions: result[0]?.totalTransactions || 0,
-        totalAmount: result[0]?.totalAmount || 0,
+        totalTransactions: transactions.length,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        totalCommission: Math.round(totalCommission * 100) / 100,
+        serviceStats: serviceStats,
         timestamp: new Date().toISOString()
       }
     });
@@ -5339,6 +5537,311 @@ app.get('/api/admin/commission-summary', adminProtect, async (req, res) => {
     });
   }
 });
+
+// ==================== BEST PERFORMING SERVICES ENDPOINT ====================
+app.get('/api/admin/best-performing-services', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    const transactions = await Transaction.find(filter).lean();
+    
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
+      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    let serviceStats = {};
+    Object.keys(COMMISSION_RATES).forEach(key => {
+      serviceStats[key] = {
+        count: 0,
+        amount: 0,
+        commission: 0,
+        label: COMMISSION_RATES[key].label,
+        icon: COMMISSION_RATES[key].icon || '📦',
+        color: COMMISSION_RATES[key].color || '#6B7280',
+        rate: COMMISSION_RATES[key].type === 'flat' 
+          ? `₦${COMMISSION_RATES[key].rate} flat` 
+          : `${(COMMISSION_RATES[key].rate * 100).toFixed(1)}%`,
+        rateType: COMMISSION_RATES[key].type
+      };
+    });
+
+    for (const tx of transactions) {
+      const amount = tx.amount || 0;
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      
+      if (rateConfig && serviceStats[serviceType]) {
+        serviceStats[serviceType].count += 1;
+        serviceStats[serviceType].amount += amount;
+        if (rateConfig.type === 'flat') {
+          serviceStats[serviceType].commission += rateConfig.rate;
+        } else {
+          serviceStats[serviceType].commission += amount * (rateConfig.rate || 0);
+        }
+      }
+    }
+
+    // Sort by commission (best performing first)
+    const sortedServices = Object.entries(serviceStats)
+      .map(([key, data]) => ({ key, ...data }))
+      .filter(s => s.count > 0)
+      .sort((a, b) => b.commission - a.commission);
+
+    res.json({
+      success: true,
+      timeFilter: timeFilter,
+      bestPerforming: sortedServices,
+      totalTransactions: transactions.length,
+      totalCommission: Math.round(sortedServices.reduce((sum, s) => sum + s.commission, 0) * 100) / 100,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching best performing services:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch best performing services'
+    });
+  }
+});
+
+// ==================== EXPORT COMMISSION DATA TO CSV ====================
+app.get('/api/admin/export-commission-data', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    const transactions = await Transaction.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Get user info
+    const userIds = [...new Set(
+      transactions.map(tx => tx.userId?.toString())
+        .filter(id => id && id !== 'null' && id !== 'system')
+    )];
+
+    let userMap = {};
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
+      'education': { rate: 100, label: 'Education', type: 'flat' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    // Build CSV data
+    let csvRows = [
+      ['Transaction ID', 'Date', 'User', 'Email', 'Phone', 'Service', 'Type', 'Amount (₦)', 'Commission (₦)', 'Rate', 'Status', 'Reference']
+    ];
+
+    for (const tx of transactions) {
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      let commission = 0;
+      let rateDisplay = 'N/A';
+      
+      if (rateConfig) {
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+          rateDisplay = `₦${rateConfig.rate} flat`;
+        } else {
+          commission = (tx.amount || 0) * (rateConfig.rate || 0);
+          rateDisplay = `${(rateConfig.rate * 100).toFixed(1)}%`;
+        }
+      }
+
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || { fullName: 'System', email: 'N/A', phone: 'N/A' };
+
+      csvRows.push([
+        tx._id?.toString() || 'N/A',
+        tx.createdAt ? new Date(tx.createdAt).toISOString().split('T')[0] : 'N/A',
+        userData.fullName,
+        userData.email,
+        userData.phone,
+        rateConfig?.label || 'Other',
+        tx.type || 'N/A',
+        (tx.amount || 0).toFixed(2),
+        commission.toFixed(2),
+        rateDisplay,
+        tx.status || 'N/A',
+        tx.reference || 'N/A'
+      ]);
+    }
+
+    const csvContent = csvRows.map(row => row.join(',')).join('\n');
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=commission_data_${timeFilter}_${Date.now()}.csv`);
+    res.send(csvContent);
+
+  } catch (error) {
+    console.error('❌ Error exporting commission data:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export commission data'
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
 
 
 
