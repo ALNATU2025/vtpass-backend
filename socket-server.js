@@ -46,6 +46,30 @@ function initSocketServer(server) {
     socket.join(`user:${userId}`);
     console.log(`✅ User ${userId} joined room: user:${userId}`);
 
+        // Join user's personal room
+    socket.join(`user:${userId}`);
+    console.log(`✅ User ${userId} joined room: user:${userId}`);
+
+    // ✅ ADD THIS - Handle join-user event from Flutter
+    socket.on('join-user', (userId) => {
+      if (userId) {
+        // Leave all previous rooms except this socket's own room
+        socket.rooms.forEach((room) => {
+          if (room !== socket.id) {
+            socket.leave(room);
+          }
+        });
+        socket.join(`user:${userId}`);
+        console.log(`📱 Flutter app joined room: user:${userId}`);
+        
+        // Send connection confirmation back to Flutter
+        socket.emit('connected', { 
+          userId: userId,
+          message: 'Connected to notification server'
+        });
+      }
+    });
+
     // ==================== EVENT HANDLERS ====================
     
     // 1. Authenticate (re-auth if needed)
@@ -323,6 +347,34 @@ async function emitBadgeUpdate(userId) {
   }
 }
 
+// ==================== ADD THESE FUNCTIONS ====================
+
+function emitNotificationToAll(notification) {
+  try {
+    io.emit('notification', notification);
+    console.log('📤 Broadcast notification sent to all');
+  } catch (error) {
+    console.error('❌ Emit to all error:', error);
+  }
+}
+
+function isUserOnline(userId) {
+  try {
+    const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+    return room && room.size > 0;
+  } catch (error) {
+    return false;
+  }
+}
+
+function getConnectedUsersCount() {
+  try {
+    return io.sockets.sockets.size;
+  } catch (error) {
+    return 0;
+  }
+}
+
 // ==================== EXPORT ====================
 
 module.exports = { 
@@ -330,5 +382,9 @@ module.exports = {
   get io() { return io; },
   emitNotificationToUser,
   emitBadgeUpdate,
-  getUnreadCount
+  getUnreadCount,
+  // ✅ ADD THESE
+  emitNotificationToAll,
+  isUserOnline,
+  getConnectedUsersCount
 };
