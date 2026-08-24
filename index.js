@@ -15,7 +15,15 @@ const { body, validationResult, query } = require('express-validator');
 const NodeCache = require('node-cache');
 const { sendVerificationEmail } = require('./emailService');
 const referralRoutes = require('./routes/referralRoutes');
-const { initSocketServer } = require('./socket-server');
+const { 
+  initSocketServer, 
+  emitNotificationToUser, 
+  emitBadgeUpdate,
+  emitNotificationToAll,
+  isUserOnline,
+  getConnectedUsersCount,
+  getUnreadCount
+} = require('./socket-server');
 
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
@@ -209,11 +217,12 @@ const server = http.createServer(app);
 // ✅ Initialize Socket.IO
 const io = initSocketServer(server);
 global.io = io;
-global.emitNotificationToUser = require('./socket-server').emitNotificationToUser;
-global.emitBadgeUpdate = require('./socket-server').emitBadgeUpdate;
-global.emitNotificationToAll = require('./socket-server').emitNotificationToAll;
-global.isUserOnline = require('./socket-server').isUserOnline;
-global.getConnectedUsersCount = require('./socket-server').getConnectedUsersCount;
+global.emitNotificationToUser = emitNotificationToUser;
+global.emitBadgeUpdate = emitBadgeUpdate;
+global.emitNotificationToAll = emitNotificationToAll;
+global.isUserOnline = isUserOnline;
+global.getConnectedUsersCount = getConnectedUsersCount;
+global.getUnreadCount = getUnreadCount;
 
 const agent = new https.Agent({
   keepAlive: true,
