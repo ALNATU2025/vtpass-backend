@@ -1015,32 +1015,36 @@ app.get('/api/app/version', async (req, res) => {
     
     const versions = {
       android: {
-        minimum: '1.3.0',
-        latest: '1.4.0', // Set this to match your current pubspec version without build number
+        minimum: '1.4.0',  // ✅ Updated minimum version
+        latest: '1.5.0',   // ✅ Updated to 1.5.0
         updateUrl: 'https://play.google.com/store/apps/details?id=com.dalabapay.official',
         whatsNew: [
-          '🎉 New CableTV Bill Payment Feature',
-          '⚡ Faster transaction processing',
-          '🔒 Enhanced security with biometric login',
-          '📱 Improved UI/UX for better experience',
-          '🐛 Bug fixes and performance improvements'
+          '🎉 New Service Commission Management',
+          '⚡ Improved electricity bill payment',
+          '🔒 Enhanced PIN security with lockout protection',
+          '📱 Modernized UI/UX across all screens',
+          '🐛 Bug fixes and performance improvements',
+          '🔄 Better app update detection',
+          '📊 Enhanced transaction history'
         ],
         isRequired: false,
-        releaseDate: '2025-05-7'
+        releaseDate: '2025-08-25'
       },
       ios: {
-        minimum: '1.3.0',
-        latest: '1.4.0',
+        minimum: '1.4.0',  // ✅ Updated minimum version
+        latest: '1.5.0',   // ✅ Updated to 1.5.0
         updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
         whatsNew: [
-          '🎉 New Electricity Bill Payment Feature',
-          '⚡ Faster transaction processing',
-          '🔒 Enhanced security with Face ID',
-          '📱 Improved UI/UX for better experience',
-          '🐛 Bug fixes and performance improvements'
+          '🎉 New Service Commission Management',
+          '⚡ Improved electricity bill payment',
+          '🔒 Enhanced PIN security with lockout protection',
+          '📱 Modernized UI/UX across all screens',
+          '🐛 Bug fixes and performance improvements',
+          '🔄 Better app update detection',
+          '📊 Enhanced transaction history'
         ],
         isRequired: false,
-        releaseDate: '2026-05-7'
+        releaseDate: '2025-08-25'
       }
     };
     
@@ -1097,7 +1101,6 @@ function compareVersions(v1, v2) {
   }
   return 0;
 }
-
 
 
 // @desc    Validate referral code (REF format only)
