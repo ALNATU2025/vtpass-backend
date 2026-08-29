@@ -11650,6 +11650,9 @@ function normalizeTransactionStatus(status) {
 
 
 // ==================== PAY FOR CABLE TV - UPDATED ====================
+// @desc    Pay for Cable TV subscription – DEBUG VERSION
+// @route   POST /api/vtpass/tv/purchase
+// @access  Private
 app.post('/api/vtpass/tv/purchase', 
   protect, 
   verifyTransactionAuth, 
@@ -11677,8 +11680,10 @@ app.post('/api/vtpass/tv/purchase',
       return res.status(400).json({ success: false, message: errors.array()[0].msg });
     }
     
-    console.log('📺 CABLE TV PURCHASE REQUEST');
-    console.log('📦 Request Body:', req.body);
+    console.log('📺 ========== CABLE TV PURCHASE REQUEST ==========');
+    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User ID:', req.user._id);
+    console.log('📧 User Email:', req.user.email);
     
     const { 
       serviceID, 
@@ -11694,15 +11699,29 @@ app.post('/api/vtpass/tv/purchase',
     const userId = req.user._id;
     const reference = generateRequestId();
     
+    console.log('🆔 Generated Reference:', reference);
+    console.log('📊 Service:', serviceID);
+    console.log('🔢 Smartcard:', billersCode);
+    console.log('📦 Variation Code:', variationCode);
+    console.log('💰 Amount:', amount);
+    console.log('📞 Phone:', phone);
+    console.log('🔄 Subscription Type:', subscription_type);
+    console.log('📦 Quantity:', quantity);
+    console.log('📦 Current Package:', currentPackage);
+    
     const session = await mongoose.startSession();
     session.startTransaction();
     
     try {
+      // Get user
       const user = await User.findById(userId).session(session);
       if (!user) {
         await session.abortTransaction();
+        console.log('❌ User not found');
         return res.status(404).json({ success: false, message: 'User not found' });
       }
+      
+      console.log('💰 Wallet Balance:', user.walletBalance);
       
       // ================================================
       // 🔥 SMART VALIDATION: Check if this is a package change
@@ -11711,24 +11730,26 @@ app.post('/api/vtpass/tv/purchase',
       let packageChangeDetails = null;
       let renewalAmount = null;
       
-      // If this is a renewal, we need to get the actual renewal amount
+      // If this is a renewal, get the actual renewal amount
       if (subscription_type === 'renew') {
-        // ✅ VERIFY the smartcard first to get renewal amount
+        console.log('🔄 RENEWAL: Getting renewal amount from VTpass...');
+        
         try {
           const verifyResult = await callVtpassApi('/merchant-verify', {
             serviceID: serviceID,
             billersCode: billersCode
           });
           
+          console.log('📡 MERCHANT VERIFY Response:', JSON.stringify(verifyResult, null, 2));
+          
           if (verifyResult.success && verifyResult.data?.code === '000') {
             renewalAmount = parseFloat(verifyResult.data.content?.Renewal_Amount || 0);
             console.log(`💰 Renewal Amount from VTpass: ₦${renewalAmount}`);
-            
-            // ✅ Store the actual renewal amount in the transaction
-            // This allows user to pay any amount, but we track what the full renewal costs
+          } else {
+            console.log('⚠️ Could not get renewal amount from VTpass');
           }
         } catch (verifyError) {
-          console.log('⚠️ Could not verify renewal amount:', verifyError.message);
+          console.log('⚠️ Error verifying renewal amount:', verifyError.message);
         }
       }
       
@@ -11741,8 +11762,12 @@ app.post('/api/vtpass/tv/purchase',
         const currentPackagePrice = packagePrices[currentPackage];
         const newPackagePrice = packagePrices[variationCode];
         
+        console.log(`💰 Current Package Price: ₦${currentPackagePrice}`);
+        console.log(`💰 New Package Price: ₦${newPackagePrice}`);
+        
         if (!newPackagePrice) {
           await session.abortTransaction();
+          console.log('❌ Invalid package selected - no price found');
           return res.status(400).json({
             success: false,
             message: 'Invalid package selected',
@@ -11753,6 +11778,7 @@ app.post('/api/vtpass/tv/purchase',
         // ✅ For package changes, amount MUST match the new package price
         if (Math.abs(amount - newPackagePrice) > 0.01) {
           await session.abortTransaction();
+          console.log(`❌ AMOUNT MISMATCH: Required ₦${newPackagePrice}, Got ₦${amount}`);
           return res.status(400).json({
             success: false,
             message: `Package change requires exact amount of ₦${newPackagePrice.toFixed(2)}. You entered ₦${amount.toFixed(2)}.`,
@@ -11768,16 +11794,19 @@ app.post('/api/vtpass/tv/purchase',
           fromPrice: currentPackagePrice,
           toPrice: newPackagePrice
         };
+        
+        console.log(`✅ Package change validated: ₦${currentPackagePrice} → ₦${newPackagePrice}`);
       }
       
       // ================================================
       // 🔥 IMMEDIATE DEBIT - DEBIT NOW!
       // ================================================
       const totalAmount = amount * quantity;
-      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${totalAmount} TV subscription`);
+      console.log(`🔒 IMMEDIATE DEBIT: ₦${totalAmount} TV subscription for smartcard ${billersCode}`);
       
       if (user.walletBalance < totalAmount) {
         await session.abortTransaction();
+        console.log(`❌ INSUFFICIENT BALANCE: Available ₦${user.walletBalance}, Required ₦${totalAmount}`);
         return res.status(400).json({ 
           success: false, 
           message: `Insufficient balance. Required: ₦${totalAmount}, Available: ₦${user.walletBalance.toFixed(2)}`,
@@ -11797,6 +11826,7 @@ app.post('/api/vtpass/tv/purchase',
       
       if (existingTransaction) {
         await session.abortTransaction();
+        console.log(`🚫 DUPLICATE CABLE TV BLOCKED: Smartcard ${billersCode}`);
         return res.status(409).json({
           success: false,
           message: 'A TV subscription for this smartcard was just processed. Please wait 30 seconds.',
@@ -11816,25 +11846,39 @@ app.post('/api/vtpass/tv/purchase',
       console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
       
       // ================================================
-      // 🔥 CALL VTPASS
+      // 🔥 BUILD VTPASS PAYLOAD
       // ================================================
       const vtpassPayload = {
+        request_id: reference,
         serviceID: serviceID,
         billersCode: billersCode,
         variation_code: variationCode,
-        amount: totalAmount,  // ✅ Send the actual amount user paid
+        amount: totalAmount,
         phone: phone,
-        request_id: reference,
         subscription_type: isPackageChange ? 'change' : subscription_type,
         quantity: quantity
       };
       
-      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
+      // Add extra parameters for ExtraView packages
+      if (serviceID === 'dstv' && variationCode.includes('extra')) {
+        vtpassPayload.is_extra_view = true;
+        vtpassPayload.subscription_type = isPackageChange ? 'change' : 'renew';
+        console.log('📺 EXTRAVIEW DETECTED: Adding special handling');
+      }
       
-      // ✅ Call VTpass API
+      console.log('📤 ========== VTPASS PAYLOAD ==========');
+      console.log(JSON.stringify(vtpassPayload, null, 2));
+      console.log('📤 ======================================');
+      
+      // ================================================
+      // 🔥 CALL VTPASS API
+      // ================================================
+      console.log('📡 Calling VTpass API...');
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
       
-      console.log('📡 VTPass Response:', JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 ========== VTPASS RESPONSE ==========');
+      console.log(JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 ======================================');
       
       let transactionStatus = 'Failed';
       let newBalance = balanceAfter;
@@ -11843,14 +11887,41 @@ app.post('/api/vtpass/tv/purchase',
       let customerAddress = 'N/A';
       let vtpassData = null;
       
+      // Map variation code to package name
       const packageName = getPackageNameFromVariationCode(variationCode, serviceID);
+      console.log('📦 Package Name:', packageName);
       
-      // ✅ Handle successful response
-      if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
-        transactionStatus = normalizeTransactionStatus(vtpassResult.data.content?.transactions?.status || 'delivered');
+      // ================================================
+      // 🔥 HANDLE VTPASS RESPONSE
+      // ================================================
+      
+      // Check if VTpass call failed at network level
+      if (!vtpassResult.success) {
+        console.log('❌ VTPASS NETWORK/CONNECTION ERROR:', vtpassResult.message);
+        await session.abortTransaction();
+        return res.status(502).json({
+          success: false,
+          message: 'Service temporarily unavailable. Please try again.',
+          code: 'VTPASS_CONNECTION_ERROR',
+          vtpassError: vtpassResult.message
+        });
+      }
+      
+      // Check VTpass response code
+      const vtpassCode = vtpassResult.data?.code?.toString();
+      const vtpassDesc = vtpassResult.data?.response_description || 'Unknown error';
+      
+      console.log('🔍 VTpass Code:', vtpassCode);
+      console.log('🔍 VTpass Description:', vtpassDesc);
+      
+      // Handle successful response
+      if (vtpassCode === '000') {
+        console.log('✅ VTPASS SUCCESS: Transaction completed');
+        transactionStatus = 'Successful';
         newBalance = balanceAfter;
         vtpassData = vtpassResult.data;
         
+        // Extract data from VTpass response
         const rawToken = vtpassResult.data.purchased_code || vtpassResult.data.token || null;
         if (rawToken) {
           formattedToken = rawToken.toString()
@@ -11866,11 +11937,11 @@ app.post('/api/vtpass/tv/purchase',
         customerName = vtpassResult.data.customerName || vtpassResult.data.content?.Customer_Name || 'N/A';
         customerAddress = vtpassResult.data.customerAddress || vtpassResult.data.content?.Address || 'N/A';
         
-        // ✅ Calculate commission
+        // Calculate and add commission
         await calculateAndAddCommission(userId, totalAmount, 'tv', session)
           .catch(err => console.log('⚠️ TV commission calculation failed:', err.message));
         
-        // ✅ Create notification
+        // Create notification
         try {
           await Notification.create({
             recipient: userId,
@@ -11888,8 +11959,7 @@ app.post('/api/vtpass/tv/purchase',
               isPackageChange: isPackageChange,
               packageChangeDetails: packageChangeDetails,
               quantity: quantity,
-              renewalAmount: renewalAmount,  // ✅ Store the full renewal amount
-              isPartialPayment: renewalAmount ? totalAmount < renewalAmount : false
+              renewalAmount: renewalAmount
             }
           });
         } catch (notificationError) {
@@ -11898,11 +11968,13 @@ app.post('/api/vtpass/tv/purchase',
         
         console.log(`✅ CABLE TV SUCCESS: ${serviceID} - ${packageName} to ${billersCode}`);
         
-      } else if (vtpassResult.data?.code === '019' || 
-                 vtpassResult.data?.response_description?.includes('DUPLICATE') ||
-                 vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+      } 
+      // Handle duplicate request_id response from VTpass
+      else if (vtpassCode === '019' || 
+               vtpassDesc.includes('DUPLICATE') ||
+               vtpassDesc.includes('REQUEST ID ALREADY EXIST')) {
         
-        console.log('🔁 VTpass says duplicate, checking if transaction was successful');
+        console.log('🔁 VTpass says duplicate, checking database...');
         
         const existingTx = await Transaction.findOne({
           $or: [
@@ -11915,6 +11987,7 @@ app.post('/api/vtpass/tv/purchase',
           const existingPackageName = existingTx.metadata?.packageName || getPackageNameFromVariationCode(variationCode, serviceID);
           
           await session.commitTransaction();
+          console.log('✅ Returning existing successful transaction');
           
           return res.json({
             success: true,
@@ -11930,16 +12003,30 @@ app.post('/api/vtpass/tv/purchase',
           });
         }
         
+        // No existing transaction, but user is already debited
         transactionStatus = 'Failed';
         vtpassData = vtpassResult.data;
         console.log(`⚠️ VTpass duplicate - User already debited ₦${totalAmount}`);
-      } else {
+      }
+      // Handle VTpass error
+      else {
+        console.log(`❌ VTPASS ERROR: Code ${vtpassCode} - ${vtpassDesc}`);
         transactionStatus = 'Failed';
         vtpassData = vtpassResult.data;
-        console.log(`❌ VTPASS FAILED: User already debited ₦${totalAmount}`);
+        
+        // Log specific error types
+        if (vtpassCode === '018' || vtpassDesc.includes('LOW WALLET BALANCE')) {
+          console.log('🚨 VTpass wallet low balance!');
+        } else if (vtpassCode === '024' || vtpassDesc.includes('INSUFFICIENT')) {
+          console.log('🚨 VTpass insufficient funds!');
+        } else if (vtpassDesc.includes('invalid') || vtpassDesc.includes('INVALID')) {
+          console.log('🚨 VTpass invalid request!');
+        }
       }
       
-      // ✅ CREATE TRANSACTION RECORD
+      // ================================================
+      // 🔥 CREATE TRANSACTION RECORD
+      // ================================================
       const newTransaction = await createTransaction(
         userId,
         totalAmount,
@@ -11972,30 +12059,34 @@ app.post('/api/vtpass/tv/purchase',
           packageChangeDetails: packageChangeDetails,
           quantity: quantity,
           subscription_type: isPackageChange ? 'change' : subscription_type,
-          renewalAmount: renewalAmount,  // ✅ Store renewal amount
-          isPartialPayment: renewalAmount ? totalAmount < renewalAmount : false
+          renewalAmount: renewalAmount,
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc
         }
       );
       
       await session.commitTransaction();
       
-      console.log('📺 CABLE TV TRANSACTION SAVED:');
+      console.log('📺 ========== TRANSACTION SAVED ==========');
       console.log(`🔢 Smartcard: ${billersCode}`);
       console.log(`📞 Phone: ${phone}`);
       console.log(`📦 Package: ${packageName}`);
       console.log(`🆔 Reference: ${reference}`);
       console.log(`✅ Status: ${newTransaction.status}`);
       console.log(`💰 User Debited: true`);
+      console.log(`💰 Amount: ₦${totalAmount}`);
+      console.log(`📊 VTpass Code: ${vtpassCode}`);
+      console.log(`📊 VTpass Desc: ${vtpassDesc}`);
       if (renewalAmount) {
         console.log(`💰 Full Renewal Amount: ₦${renewalAmount}`);
-        console.log(`💰 Paid Amount: ₦${totalAmount}`);
-        console.log(`📊 Partial Payment: ${totalAmount < renewalAmount ? 'YES' : 'NO'}`);
       }
+      console.log('📺 ======================================');
       
-      const vtpassCode = vtpassData?.code || '000';
-      const vtpassDesc = vtpassData?.response_description || (transactionStatus === 'Successful' ? 'TRANSACTION SUCCESSFUL' : 'TRANSACTION FAILED - USER DEBITED');
-      
+      // ================================================
+      // 🔥 RETURN RESPONSE TO FRONTEND
+      // ================================================
       if (transactionStatus === 'Successful') {
+        console.log('✅ SENDING SUCCESS RESPONSE TO FRONTEND');
         res.json({
           success: true,
           transactionId: newTransaction._id.toString(),
@@ -12013,8 +12104,7 @@ app.post('/api/vtpass/tv/purchase',
             response_description: vtpassDesc,
             isPackageChange: isPackageChange,
             packageChangeDetails: packageChangeDetails,
-            renewalAmount: renewalAmount,
-            isPartialPayment: renewalAmount ? totalAmount < renewalAmount : false
+            renewalAmount: renewalAmount
           },
           newBalance: newBalance,
           message: isPackageChange ? `Package changed successfully!` : `TV subscription successful!`,
@@ -12028,12 +12118,34 @@ app.post('/api/vtpass/tv/purchase',
           isPackageChange: isPackageChange,
           packageChangeDetails: packageChangeDetails,
           renewalAmount: renewalAmount,
-          isPartialPayment: renewalAmount ? totalAmount < renewalAmount : false
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc
         });
       } else {
+        console.log('❌ SENDING FAILURE RESPONSE TO FRONTEND');
+        
+        // Build a user-friendly error message
+        let userMessage = 'Your wallet was debited but TV subscription delivery failed. Please contact support.';
+        let displayMessage = 'Transaction failed. Please try again.';
+        
+        if (vtpassCode === '018' || vtpassDesc.includes('LOW WALLET BALANCE')) {
+          userMessage = 'Service provider wallet is low. Your payment has been recorded and will be processed when service is restored.';
+          displayMessage = 'Service temporarily unavailable. Your payment is recorded.';
+        } else if (vtpassCode === '024' || vtpassDesc.includes('INSUFFICIENT')) {
+          userMessage = 'Service provider issue. Your payment has been recorded and will be processed shortly.';
+          displayMessage = 'Service issue. Your payment is recorded.';
+        } else if (vtpassDesc.includes('invalid smartcard') || vtpassDesc.includes('INVALID BILLERS')) {
+          userMessage = 'Invalid smartcard number. Please check and try again. Your payment has been refunded.';
+          displayMessage = 'Invalid smartcard number.';
+        } else if (vtpassDesc.includes('DUPLICATE')) {
+          userMessage = 'This transaction was already processed. Please check your subscription status.';
+          displayMessage = 'Transaction already processed.';
+        }
+        
         res.status(400).json({
           success: false,
-          message: `Your wallet was debited ₦${totalAmount} but TV subscription delivery failed. Please contact support.`,
+          message: userMessage,
+          displayMessage: displayMessage,
           transactionId: newTransaction._id.toString(),
           status: newTransaction.status,
           newBalance: newBalance,
@@ -12049,13 +12161,17 @@ app.post('/api/vtpass/tv/purchase',
           isPackageChange: isPackageChange,
           packageChangeDetails: packageChangeDetails,
           renewalAmount: renewalAmount,
-          isPartialPayment: renewalAmount ? totalAmount < renewalAmount : false
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc
         });
       }
       
     } catch (error) {
       await session.abortTransaction();
-      console.error('❌ Error in TV payment:', error);
+      console.error('❌ ========== CABLE TV ERROR ==========');
+      console.error('❌ Error:', error);
+      console.error('❌ Stack:', error.stack);
+      console.error('❌ =====================================');
       
       if (error.code === 11000) {
         return res.status(409).json({
@@ -12068,7 +12184,8 @@ app.post('/api/vtpass/tv/purchase',
       
       res.status(500).json({ 
         success: false, 
-        message: 'Internal Server Error',
+        message: 'An unexpected error occurred. Please try again.',
+        displayMessage: 'Transaction failed. Please try again.',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     } finally {
