@@ -8,30 +8,84 @@ const User = require('../models/User'); // <<< CORRECTED: Import from '../models
  * @param   {object} res - Express response object
  * @param   {function} next - Express next middleware function
  */
+// middleware/authMiddleware.js - OPTIONAL ENHANCEMENT
+
 const protect = async (req, res, next) => {
     let token;
 
-    // Check for token in headers (Bearer token)
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
         try {
-            // Get token from header
             token = req.headers.authorization.split(' ')[1];
-
-            // Verify token
+            
+            // ✅ Try to verify token
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            
+            // ✅ Check if token is about to expire (within 1 day)
+            const tokenExp = decoded.exp * 1000;
+            const now = Date.now();
+            const timeToExpiry = tokenExp - now;
+            const oneDayMs = 24 * 60 * 60 * 1000;
 
-            // Attach user to the request (excluding password)
-            req.user = await User.findById(decoded.id).select('-password');
-
-            if (!req.user) {
+            const user = await User.findById(decoded.id).select('-password');
+            
+            if (!user) {
                 return res.status(401).json({ message: 'Not authorized, user not found' });
             }
 
-            next(); // Proceed to the next middleware/route handler
+            // ✅ Auto-extend token if close to expiry
+            if (timeToExpiry < oneDayMs && timeToExpiry > 0) {
+                const newToken = jwt.sign(
+                    { id: user._id },
+                    process.env.JWT_SECRET,
+                    { expiresIn: '7d' }
+                );
+                res.set('x-new-token', newToken);
+            }
+
+            req.user = user;
+            next();
+            
         } catch (error) {
             console.error('❌ Auth middleware error:', error.message);
+            
+            // ✅ Handle expired token
             if (error.name === 'TokenExpiredError') {
-                return res.status(401).json({ message: 'Not authorized, token expired' });
+                // Try to refresh using refresh token header
+                const refreshToken = req.headers['x-refresh-token'];
+                if (refreshToken) {
+                    try {
+                        const decodedRefresh = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+                        const user = await User.findById(decodedRefresh.id);
+                        
+                        if (user && user.refreshToken === refreshToken) {
+                            const newToken = jwt.sign(
+                                { id: user._id },
+                                process.env.JWT_SECRET,
+                                { expiresIn: '7d' }
+                            );
+                            const newRefreshToken = jwt.sign(
+                                { id: user._id },
+                                process.env.REFRESH_TOKEN_SECRET,
+                                { expiresIn: '90d' }
+                            );
+                            
+                            user.refreshToken = newRefreshToken;
+                            await user.save();
+                            
+                            res.set('x-new-token', newToken);
+                            res.set('x-new-refresh-token', newRefreshToken);
+                            
+                            req.user = user;
+                            return next();
+                        }
+                    } catch (refreshError) {
+                        console.error('❌ Refresh failed:', refreshError.message);
+                    }
+                }
+                return res.status(401).json({ 
+                    message: 'Not authorized, token expired',
+                    code: 'TOKEN_EXPIRED'
+                });
             }
             return res.status(401).json({ message: 'Not authorized, token failed' });
         }
@@ -41,6 +95,7 @@ const protect = async (req, res, next) => {
         return res.status(401).json({ message: 'Not authorized, no token' });
     }
 };
+
 
 /**
  * @desc    Authorize user roles (e.g., admin only)
