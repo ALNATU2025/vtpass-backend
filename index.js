@@ -11648,8 +11648,7 @@ function normalizeTransactionStatus(status) {
 
 
 
-
-// @desc    Pay for Cable TV subscription – DEBUG VERSION WITH FULL LOGGING
+// @desc    Pay for Cable TV subscription – RACE CONDITION PROTECTED + IMMEDIATE DEBIT (2026)
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
 app.post('/api/vtpass/tv/purchase', 
@@ -11664,30 +11663,31 @@ app.post('/api/vtpass/tv/purchase',
   }),
   userServiceRateLimiter('cabletv', 2, 60000),
   [
-  body('serviceID').notEmpty().withMessage('Service ID is required'),
-  body('billersCode').notEmpty().withMessage('Billers code is required'),
-  body('variationCode').notEmpty().withMessage('Variation code is required'),
-  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
-  body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
-  body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
-  // ✅ FIXED: Use custom validator that accepts null/undefined
-  body('currentPackage').optional({ nullable: true }).isString().withMessage('Current package must be a string')
-]
+    body('serviceID').notEmpty().withMessage('Service ID is required'),
+    body('billersCode').notEmpty().withMessage('Billers code is required'),
+    body('variationCode').notEmpty().withMessage('Variation code is required'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+    body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
+    body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
+    // ✅ FIXED: Custom validator that accepts null, undefined, or string
+    body('currentPackage').custom(value => {
+      if (value === null || value === undefined) return true;
+      if (typeof value === 'string') return true;
+      throw new Error('Current package must be a string');
+    }).withMessage('Current package must be a string')
+  ], 
   async (req, res) => {
-    // ================================================
-    // 🔍 STEP 1: LOG THE ENTIRE REQUEST
-    // ================================================
-    console.log('📺 ========== CABLE TV PURCHASE REQUEST ==========');
-    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('👤 User ID:', req.user?._id);
-    console.log('📧 User Email:', req.user?.email);
-    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({ success: false, message: errors.array()[0].msg });
     }
+    
+    console.log('📺 ========== CABLE TV PURCHASE REQUEST ==========');
+    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User ID:', req.user?._id);
+    console.log('📧 User Email:', req.user?.email);
     
     const { 
       serviceID, 
@@ -11727,7 +11727,7 @@ app.post('/api/vtpass/tv/purchase',
       console.log('💰 Wallet Balance:', user.walletBalance);
       
       // ================================================
-      // 🔍 STEP 2: CHECK PACKAGE CHANGE
+      // 🔥 SMART VALIDATION: Check if this is a package change
       // ================================================
       let isPackageChange = false;
       let packageChangeDetails = null;
@@ -11776,6 +11776,7 @@ app.post('/api/vtpass/tv/purchase',
           });
         }
         
+        // ✅ For package changes, amount MUST match the new package price
         if (Math.abs(amount - newPackagePrice) > 0.01) {
           await session.abortTransaction();
           console.log(`❌ AMOUNT MISMATCH: Required ₦${newPackagePrice}, Got ₦${amount}`);
@@ -11794,10 +11795,12 @@ app.post('/api/vtpass/tv/purchase',
           fromPrice: currentPackagePrice,
           toPrice: newPackagePrice
         };
+        
+        console.log(`✅ Package change validated: ₦${currentPackagePrice} → ₦${newPackagePrice}`);
       }
       
       // ================================================
-      // 🔍 STEP 3: DEBIT USER
+      // 🔥 IMMEDIATE DEBIT - DEBIT NOW!
       // ================================================
       const totalAmount = amount * quantity;
       console.log(`🔒 IMMEDIATE DEBIT: ₦${totalAmount}`);
@@ -11841,7 +11844,7 @@ app.post('/api/vtpass/tv/purchase',
       console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
       
       // ================================================
-      // 🔍 STEP 4: BUILD VTPASS PAYLOAD
+      // 🔥 BUILD VTPASS PAYLOAD
       // ================================================
       const vtpassPayload = {
         request_id: reference,
@@ -11857,6 +11860,7 @@ app.post('/api/vtpass/tv/purchase',
       if (serviceID === 'dstv' && variationCode.includes('extra')) {
         vtpassPayload.is_extra_view = true;
         vtpassPayload.subscription_type = isPackageChange ? 'change' : 'renew';
+        console.log('📺 EXTRAVIEW DETECTED: Adding special handling');
       }
       
       console.log('📤 ========== VTPASS PAYLOAD ==========');
@@ -11864,7 +11868,7 @@ app.post('/api/vtpass/tv/purchase',
       console.log('📤 ======================================');
       
       // ================================================
-      // 🔍 STEP 5: CALL VTPASS API
+      // 🔥 CALL VTPASS API
       // ================================================
       console.log('📡 Calling VTpass API...');
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
@@ -11873,9 +11877,6 @@ app.post('/api/vtpass/tv/purchase',
       console.log(JSON.stringify(vtpassResult, null, 2));
       console.log('📡 ======================================');
       
-      // ================================================
-      // 🔍 STEP 6: ANALYZE RESPONSE
-      // ================================================
       const vtpassCode = vtpassResult.data?.code?.toString() || 'UNKNOWN';
       const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
       
@@ -11888,7 +11889,7 @@ app.post('/api/vtpass/tv/purchase',
       const packageName = getPackageNameFromVariationCode(variationCode, serviceID);
       
       // ================================================
-      // 🔍 STEP 7: HANDLE RESPONSE
+      // 🔥 HANDLE RESPONSE
       // ================================================
       
       // Check network error
@@ -12075,9 +12076,6 @@ app.post('/api/vtpass/tv/purchase',
     }
   }
 );
-
-
-
 
 // Helper function to get package prices
 async function getPackagePrices(serviceID) {
