@@ -11664,15 +11664,16 @@ app.post('/api/vtpass/tv/purchase',
   }),
   userServiceRateLimiter('cabletv', 2, 60000),
   [
-    body('serviceID').notEmpty().withMessage('Service ID is required'),
-    body('billersCode').notEmpty().withMessage('Billers code is required'),
-    body('variationCode').notEmpty().withMessage('Variation code is required'),
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
-    body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
-    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
-    body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
-    body('currentPackage').optional().isString().withMessage('Current package must be a string')
-  ], 
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
+  body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
+  // ✅ FIXED: Use custom validator that accepts null/undefined
+  body('currentPackage').optional({ nullable: true }).isString().withMessage('Current package must be a string')
+]
   async (req, res) => {
     // ================================================
     // 🔍 STEP 1: LOG THE ENTIRE REQUEST
