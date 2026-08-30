@@ -18634,8 +18634,6 @@ app.get('/api/international-airtime/countries', protect, async (req, res) => {
   }
 });
 
-
-
 // @desc    Get International Airtime Product Types
 // @route   GET /api/international-airtime/product-types/:countryCode
 // @access  Private
@@ -18672,6 +18670,7 @@ app.get('/api/international-airtime/product-types/:countryCode', protect, async 
     );
 
     console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
 
     const vtpassData = response.data;
 
@@ -18756,6 +18755,7 @@ app.get('/api/international-airtime/operators', protect, async (req, res) => {
     );
 
     console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
 
     const vtpassData = response.data;
 
@@ -18772,6 +18772,10 @@ app.get('/api/international-airtime/operators', protect, async (req, res) => {
     const operators = vtpassData.content || [];
     
     console.log(`✅ Found ${operators.length} operators`);
+    // Log operator names for debugging
+    operators.forEach(op => {
+      console.log(`  📌 Operator: ${op.name} (ID: ${op.operator_id})`);
+    });
 
     cache.set(cacheKey, operators, 3600);
 
@@ -18823,6 +18827,8 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     }
 
     console.log('🚀 Calling VTpass API for variations...');
+    console.log(`  📌 Operator ID: ${operatorId}`);
+    console.log(`  📌 Product Type ID: ${productTypeId}`);
 
     const response = await axios.get(
       'https://vtpass.com/api/service-variations',
@@ -18842,6 +18848,7 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     );
 
     console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
 
     const vtpassData = response.data;
 
@@ -18860,6 +18867,10 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     const serviceName = vtpassData.content?.ServiceName || 'International Airtime';
     
     console.log(`✅ Found ${variations.length} variations`);
+    // Log first 3 variations for debugging
+    variations.slice(0, 3).forEach(v => {
+      console.log(`  📌 Variation: ${v.name} (Code: ${v.variation_code}, Fixed: ${v.fixedPrice})`);
+    });
 
     cache.set(cacheKey, variations, 3600);
 
@@ -19003,10 +19014,13 @@ app.post('/api/international-airtime/purchase',
       // 🔥 CALL VTPASS API FIRST TO GET NAIRA AMOUNT
       // ================================================
       console.log('📡 Calling VTpass API...');
+      console.log('🌐 Endpoint: /pay');
+      console.log('📦 Payload sent to VTpass:', JSON.stringify(vtpassPayload, null, 2));
+      
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
       console.log('📡 ========== VTPASS RESPONSE ==========');
-      console.log(JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 Full VTpass Response:', JSON.stringify(vtpassResult, null, 2));
       console.log('📡 ======================================');
 
       // ================================================
@@ -19031,20 +19045,39 @@ app.post('/api/international-airtime/purchase',
         vtpassData = vtpassResult.data;
         transactionStatus = 'Successful';
 
-        // ✅ EXTRACT NAIRA AMOUNT (VTpass returns in Naira)
-        if (vtpassResult.data.amount) {
-          nairaAmount = parseFloat(vtpassResult.data.amount);
-          console.log(`💰 Naira amount from vtpass.data.amount: ₦${nairaAmount}`);
-        } else if (vtpassResult.data.content?.transactions?.amount) {
+        // ✅ EXTRACT NAIRA AMOUNT FROM VTpass RESPONSE
+        // The VTpass API returns the amount in Naira (NGN)
+        console.log('🔍 Extracting Naira amount from VTpass response...');
+        console.log('🔍 vtpassResult.data:', JSON.stringify(vtpassResult.data, null, 2));
+        
+        // Try different paths where VTpass might return the amount
+        if (vtpassResult.data?.content?.transactions?.amount) {
           nairaAmount = parseFloat(vtpassResult.data.content.transactions.amount);
           console.log(`💰 Naira amount from content.transactions.amount: ₦${nairaAmount}`);
-        } else if (vtpassResult.data.content?.transactions?.total_amount) {
+        } else if (vtpassResult.data?.content?.transactions?.total_amount) {
           nairaAmount = parseFloat(vtpassResult.data.content.transactions.total_amount);
           console.log(`💰 Naira amount from content.transactions.total_amount: ₦${nairaAmount}`);
+        } else if (vtpassResult.data?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.amount);
+          console.log(`💰 Naira amount from data.amount: ₦${nairaAmount}`);
+        } else if (vtpassResult.data?.content?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.amount);
+          console.log(`💰 Naira amount from content.amount: ₦${nairaAmount}`);
         } else {
           // Fallback - use amount with approximate conversion
-          nairaAmount = amount * 1.0;
-          console.log(`⚠️ Using fallback Naira amount: ₦${nairaAmount}`);
+          console.log('⚠️ No amount found in VTpass response, using fallback');
+          // Use a more accurate fallback rate for common currencies
+          let fallbackRate = 1.0;
+          switch(currency) {
+            case 'GHS': fallbackRate = 137.78; break; // 1 GHS ≈ 137.78 NGN
+            case 'USD': fallbackRate = 1550.0; break;
+            case 'EUR': fallbackRate = 1650.0; break;
+            case 'GBP': fallbackRate = 1900.0; break;
+            case 'SLE': fallbackRate = 69.59; break;
+            default: fallbackRate = 1.0;
+          }
+          nairaAmount = amount * fallbackRate;
+          console.log(`⚠️ Using fallback Naira amount: ₦${nairaAmount} (rate: ${fallbackRate})`);
         }
 
         // ✅ Calculate exchange rate
@@ -19066,7 +19099,10 @@ app.post('/api/international-airtime/purchase',
             message: `Insufficient balance. Required: ₦${nairaAmount.toFixed(2)}, Available: ₦${user.walletBalance.toFixed(2)}`,
             code: 'INSUFFICIENT_BALANCE',
             nairaRequired: nairaAmount,
-            currency: 'NGN'
+            currency: 'NGN',
+            // Return the Naira amount so frontend can show it
+            nairaAmount: nairaAmount,
+            exchangeRate: exchangeRate
           });
         }
 
@@ -19111,7 +19147,9 @@ app.post('/api/international-airtime/purchase',
             debitAmount: nairaAmount,
             vtpassDelivered: true,
             vtpassCode: vtpassCode,
-            vtpassDescription: vtpassDesc
+            vtpassDescription: vtpassDesc,
+            // Store the full VTpass response for debugging
+            vtpassFullResponse: vtpassResult.data
           }
         });
 
@@ -19164,8 +19202,10 @@ app.post('/api/international-airtime/purchase',
           reference: requestId,
           status: 'Successful',
           newBalance: balanceAfter,
-          amount: amount,
+          // Foreign amount (what user entered)
+          foreignAmount: amount,
           currency: currency,
+          // Naira amount (what was deducted)
           nairaAmount: nairaAmount,
           nairaEquivalent: nairaAmount,
           exchangeRate: exchangeRate,
@@ -19175,7 +19215,9 @@ app.post('/api/international-airtime/purchase',
           amountDebited: nairaAmount,
           vtpassResponse: vtpassData,
           vtpassCode: vtpassCode,
-          vtpassDescription: vtpassDesc
+          vtpassDescription: vtpassDesc,
+          // Original fields for backward compatibility
+          amount: amount
         });
 
       } else {
@@ -19183,6 +19225,7 @@ app.post('/api/international-airtime/purchase',
         // 🔥 VTPASS FAILED - USER IS NOT DEBITED
         // ================================================
         console.log(`❌ VTPASS ERROR: Code ${vtpassCode} - ${vtpassDesc}`);
+        console.log('❌ Full VTpass error response:', JSON.stringify(vtpassResult, null, 2));
 
         await session.abortTransaction();
         session.endSession();
@@ -19250,8 +19293,6 @@ app.post('/api/international-airtime/purchase',
   }
 );
 
-
-
 // @desc    Requery International Airtime Transaction Status
 // @route   POST /api/international-airtime/requery
 // @access  Private
@@ -19287,6 +19328,45 @@ app.post('/api/international-airtime/requery', protect, [
     });
   }
 });
+
+// ================================================
+// 🔥 HELPER: callVtpassApi
+// ================================================
+async function callVtpassApi(endpoint, payload) {
+  try {
+    const url = `https://vtpass.com/api${endpoint}`;
+    console.log(`🌐 VTpass API Call: ${endpoint}`);
+    console.log(`📦 Payload:`, JSON.stringify(payload, null, 2));
+
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 30000
+    });
+
+    console.log(`📡 VTpass Response Status: ${response.status}`);
+    console.log(`📡 VTpass Response Data:`, JSON.stringify(response.data, null, 2));
+
+    return {
+      success: true,
+      data: response.data
+    };
+  } catch (error) {
+    console.error(`❌ VTpass API Error (${endpoint}):`, error.message);
+    if (error.response) {
+      console.error('❌ Response data:', JSON.stringify(error.response.data, null, 2));
+      console.error('❌ Response status:', error.response.status);
+    }
+    return {
+      success: false,
+      message: error.response?.data?.response_description || error.message,
+      data: error.response?.data || null
+    };
+  }
+}
 
 
 
