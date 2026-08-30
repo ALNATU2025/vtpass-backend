@@ -19329,44 +19329,7 @@ app.post('/api/international-airtime/requery', protect, [
   }
 });
 
-// ================================================
-// 🔥 HELPER: callVtpassApi
-// ================================================
-async function callVtpassApi(endpoint, payload) {
-  try {
-    const url = `https://vtpass.com/api${endpoint}`;
-    console.log(`🌐 VTpass API Call: ${endpoint}`);
-    console.log(`📦 Payload:`, JSON.stringify(payload, null, 2));
 
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': process.env.VTPASS_API_KEY,
-        'secret-key': process.env.VTPASS_SECRET_KEY,
-      },
-      timeout: 30000
-    });
-
-    console.log(`📡 VTpass Response Status: ${response.status}`);
-    console.log(`📡 VTpass Response Data:`, JSON.stringify(response.data, null, 2));
-
-    return {
-      success: true,
-      data: response.data
-    };
-  } catch (error) {
-    console.error(`❌ VTpass API Error (${endpoint}):`, error.message);
-    if (error.response) {
-      console.error('❌ Response data:', JSON.stringify(error.response.data, null, 2));
-      console.error('❌ Response status:', error.response.status);
-    }
-    return {
-      success: false,
-      message: error.response?.data?.response_description || error.message,
-      data: error.response?.data || null
-    };
-  }
-}
 
 
 
