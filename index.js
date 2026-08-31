@@ -674,19 +674,18 @@ const generateToken = (id) => {
     console.error('❌ JWT_SECRET is not set!');
     throw new Error('JWT_SECRET not configured');
   }
-  // ✅ INCREASED TO 7 DAYS (was 24h)
-  return jwt.sign({ id }, jwtSecret, { expiresIn: '7d' });
+  // ✅ 30 DAYS
+  return jwt.sign({ id }, jwtSecret, { expiresIn: '30d' });
 };
 
-// Generate Refresh Token - 90 DAYS (was 30d)
 const generateRefreshToken = (id) => {
   const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
   if (!refreshSecret) {
     console.error('❌ REFRESH_TOKEN_SECRET is not set!');
     throw new Error('REFRESH_TOKEN_SECRET not configured');
   }
-  // ✅ INCREASED TO 90 DAYS
-  return jwt.sign({ id }, refreshSecret, { expiresIn: '90d' });
+  // ✅ 180 DAYS
+  return jwt.sign({ id }, refreshSecret, { expiresIn: '180d' });
 };
 
 
@@ -782,6 +781,7 @@ const autoRefreshToken = async (req, res, next) => {
 
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
 // ==================== FIXED PROTECT MIDDLEWARE ====================
+// ==================== UPDATED PROTECT MIDDLEWARE ====================
 const protect = async (req, res, next) => {
   let token = req.headers.authorization?.split(' ')[1];
 
@@ -804,44 +804,7 @@ const protect = async (req, res, next) => {
       });
     }
 
-    // ✅ Verify token with extended expiry
     const decoded = jwt.verify(token, jwtSecret);
-    
-    // ✅ Check if token is about to expire (within 1 day) and auto-extend
-    const tokenExp = decoded.exp * 1000;
-    const now = Date.now();
-    const timeToExpiry = tokenExp - now;
-    const oneDayMs = 24 * 60 * 60 * 1000;
-
-    // If token expires in less than 1 day, extend it silently
-    if (timeToExpiry < oneDayMs && timeToExpiry > 0) {
-      console.log(`🔄 Token expiring in ${Math.round(timeToExpiry / 3600000)}h, extending...`);
-      
-      // Find user and issue new token
-      const user = await User.findById(decoded.id).select('-password');
-      if (user && user.isActive) {
-        const newToken = generateToken(user._id);
-        const newRefreshToken = generateRefreshToken(user._id);
-        
-        // Update refresh token in database
-        user.refreshToken = newRefreshToken;
-        await user.save();
-        
-        // Set new tokens in response headers
-        res.set('x-new-token', newToken);
-        res.set('x-new-refresh-token', newRefreshToken);
-        
-        // Attach user to request
-        req.user = user;
-        req.tokenRefreshed = true;
-        req.tokenRefreshedAt = new Date();
-        
-        console.log('✅ Token auto-extended successfully');
-        return next();
-      }
-    }
-
-    // ✅ Regular token verification
     const user = await User.findById(decoded.id).select('-password').lean();
     
     if (!user) {
@@ -864,12 +827,46 @@ const protect = async (req, res, next) => {
 
     req.user = user;
     req.userId = user._id;
+    
+    // ✅ Auto-refresh token if about to expire
+    const tokenExp = decoded.exp * 1000;
+    const now = Date.now();
+    const timeToExpiry = tokenExp - now;
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    if (timeToExpiry < oneDayMs && timeToExpiry > 0) {
+      console.log(`🔄 Auto-refreshing token (expires in ${Math.round(timeToExpiry / 3600000)}h)`);
+      
+      try {
+        const refreshToken = req.headers['x-refresh-token'];
+        if (refreshToken) {
+          const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+          const decodedRefresh = jwt.verify(refreshToken, refreshSecret);
+          
+          if (decodedRefresh.id.toString() === user._id.toString()) {
+            const newToken = generateToken(user._id);
+            const newRefreshToken = generateRefreshToken(user._id);
+            
+            await User.findByIdAndUpdate(user._id, { 
+              refreshToken: newRefreshToken,
+              lastTokenRefresh: new Date()
+            });
+            
+            res.set('x-new-token', newToken);
+            res.set('x-new-refresh-token', newRefreshToken);
+            console.log('✅ Token auto-refreshed successfully');
+          }
+        }
+      } catch (refreshError) {
+        console.log('⚠️ Auto-refresh failed:', refreshError.message);
+      }
+    }
+
     next();
 
   } catch (error) {
     console.error('❌ Protect middleware error:', error.name, error.message);
     
-    // ✅ TOKEN EXPIRED - Try to refresh using refresh token
     if (error.name === 'TokenExpiredError') {
       const refreshToken = req.headers['x-refresh-token'];
       
@@ -879,15 +876,14 @@ const protect = async (req, res, next) => {
           const decodedRefresh = jwt.verify(refreshToken, refreshSecret);
           
           const user = await User.findById(decodedRefresh.id);
-          if (user && user.refreshToken === refreshToken && user.isActive) {
-            // Issue new tokens
+          if (user && user.isActive) {
             const newToken = generateToken(user._id);
             const newRefreshToken = generateRefreshToken(user._id);
             
             user.refreshToken = newRefreshToken;
+            user.lastTokenRefresh = new Date();
             await user.save();
             
-            // Set new tokens
             res.set('x-new-token', newToken);
             res.set('x-new-refresh-token', newRefreshToken);
             
@@ -3724,6 +3720,7 @@ async function resetFailedLoginAttempts(userId) {
 // @route   POST /api/users/refresh-token
 // @access  Public (MUST be public!)
 // ==================== FIXED REFRESH TOKEN ENDPOINT ====================
+// ==================== REFRESH TOKEN ENDPOINT - FIXED ====================
 app.post('/api/users/refresh-token', async (req, res) => {
   const { refreshToken } = req.body;
 
@@ -3748,10 +3745,9 @@ app.post('/api/users/refresh-token', async (req, res) => {
     
     console.log('🔄 Processing refresh token request');
     
-    // Verify refresh token
     const decoded = jwt.verify(refreshToken, refreshSecret);
-    
     const user = await User.findById(decoded.id);
+    
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -3760,22 +3756,6 @@ app.post('/api/users/refresh-token', async (req, res) => {
       });
     }
 
-    // Check if refresh token matches
-    if (user.refreshToken !== refreshToken) {
-      console.log('❌ Refresh token mismatch for user:', user.email);
-      
-      // ✅ If mismatch, clear tokens and force re-login
-      user.refreshToken = null;
-      await user.save();
-      
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid refresh token. Please login again.',
-        code: 'INVALID_REFRESH_TOKEN'
-      });
-    }
-
-    // ✅ Check if user is active
     if (!user.isActive) {
       return res.status(401).json({
         success: false,
@@ -3788,7 +3768,7 @@ app.post('/api/users/refresh-token', async (req, res) => {
     const newAccessToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
-    // ✅ Update refresh token in database
+    // ✅ Always update refresh token in database
     user.refreshToken = newRefreshToken;
     user.lastTokenRefresh = new Date();
     await user.save();
@@ -3804,60 +3784,52 @@ app.post('/api/users/refresh-token', async (req, res) => {
         _id: user._id,
         email: user.email,
         fullName: user.fullName,
-        isAdmin: user.isAdmin || false
+        isAdmin: user.isAdmin || false,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance
       }
     });
 
   } catch (error) {
     console.error('❌ Refresh token error:', error.name, error.message);
 
-    if (error.name === 'TokenExpiredError') {
+    if (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        message: 'Refresh token expired. Please login again.',
-        code: 'REFRESH_TOKEN_EXPIRED'
+        message: 'Session expired. Please login again.',
+        code: 'SESSION_EXPIRED',
+        requiresLogin: true
       });
     }
 
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid refresh token. Please login again.',
-        code: 'INVALID_REFRESH_TOKEN'
-      });
-    }
-
-    return res.status(401).json({
+    return res.status(500).json({
       success: false,
-      message: 'Refresh failed. Please login again.',
+      message: 'Refresh failed. Please try again.',
       code: 'REFRESH_FAILED'
     });
   }
 });
 
 
-
 // ==================== SESSION HEALTH CHECK ====================
 // @desc    Check session health and auto-refresh if needed
 // @route   GET /api/users/session-health
 // @access  Private
+// ==================== SESSION HEALTH CHECK ====================
 app.get('/api/users/session-health', protect, async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const newToken = res.get('x-new-token');
-    
-    // Get token expiration info
     const decoded = jwt.decode(token);
     const tokenExp = decoded.exp * 1000;
     const now = Date.now();
     const timeToExpiry = tokenExp - now;
     const hoursToExpiry = timeToExpiry / (1000 * 60 * 60);
-    
     res.json({
       success: true,
       sessionValid: true,
       tokenRefreshed: !!newToken,
-      expiresIn: Math.round(timeToExpiry / 1000), // seconds
+      expiresIn: Math.round(timeToExpiry / 1000),
       expiresInHours: Math.round(hoursToExpiry * 10) / 10,
       user: {
         id: req.user._id,
