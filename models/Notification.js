@@ -55,21 +55,30 @@ const notificationSchema = new mongoose.Schema({
     ],
     default: 'general'
   },
-  metadata: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
-  },
-  // NEW: Track if notification was sent via socket
-  sentViaSocket: {
-    type: Boolean,
-    default: false
-  },
-  // NEW: Socket delivery status
-  deliveredAt: {
-    type: Date,
-    default: null
-  }
-}, { 
+metadata: {
+  type: mongoose.Schema.Types.Mixed,
+  default: {}
+},
+// NEW: Track if notification was sent via socket
+sentViaSocket: {
+  type: Boolean,
+  default: false
+},
+// NEW: Socket delivery status
+deliveredAt: {
+  type: Date,
+  default: null
+},
+// NEW: Track if push notification was sent
+pushSent: {
+  type: Boolean,
+  default: false
+},
+pushError: {
+  type: String,
+  default: null
+},
+  { 
   timestamps: true 
 });
 
