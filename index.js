@@ -1314,6 +1314,19 @@ app.get('/api/users/token-status', protect, async (req, res) => {
 
 
 
+app.post('/api/user/update-fcm-token', protect, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    const userId = req.user._id;
+
+    await User.findByIdAndUpdate(userId, { fcmToken });
+
+    res.json({ success: true, message: 'FCM token updated' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 
 
 // @desc    Check token health and auto-refresh if needed
