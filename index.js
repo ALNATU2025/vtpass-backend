@@ -36,6 +36,7 @@ const Referral = require('./models/Referral');
 
 const formatCurrency = (amount) => `₦${(amount || 0).toFixed(2)}`;
 const adminExportRoutes = require('./routes/adminExportRoutes');
+const { createNotificationAndSendPush, getUserUnreadCount } = require('./helpers/notificationHelper');
 
 // ==================== COMMISSION STATS CACHE ====================
 const commissionStatsCache = new Map();
@@ -1313,20 +1314,55 @@ app.get('/api/users/token-status', protect, async (req, res) => {
 });
 
 
-
+// @desc    Update FCM token
+// @route   POST /api/user/update-fcm-token
+// @access  Private
 app.post('/api/user/update-fcm-token', protect, async (req, res) => {
   try {
     const { fcmToken } = req.body;
     const userId = req.user._id;
 
-    await User.findByIdAndUpdate(userId, { fcmToken });
+    console.log('📱 Updating FCM token for user:', userId);
+    console.log('📱 Token length:', fcmToken?.length || 0);
 
-    res.json({ success: true, message: 'FCM token updated' });
+    if (!fcmToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'fcmToken is required'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.fcmToken = fcmToken;
+    await user.save();
+
+    console.log(`✅ FCM token updated for user: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: 'FCM token updated successfully',
+      data: {
+        userId: user._id,
+        email: user.email,
+        fcmTokenUpdated: true
+      }
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('❌ FCM token update error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update FCM token',
+      error: error.message
+    });
   }
 });
-
 
 
 // @desc    Check token health and auto-refresh if needed
@@ -11000,6 +11036,8 @@ app.get('/api/announcements', protect, async (req, res) => {
 
 
 
+// ==================== NOTIFICATION ROUTES - FIXED WITH FIREBASE ====================
+
 // @desc    Get user's personal notifications ONLY
 // @route   GET /api/notifications
 // @access  Private
@@ -11029,8 +11067,12 @@ app.get('/api/notifications', protect, [
       .lean();
     
     const total = await Notification.countDocuments(query);
+    const unreadCount = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
     
-    console.log(`📊 Found ${notifications.length} personal notifications`);
+    console.log(`📊 Found ${notifications.length} personal notifications, ${unreadCount} unread`);
     
     res.json({
       success: true,
@@ -11038,17 +11080,41 @@ app.get('/api/notifications', protect, [
       totalPages: Math.ceil(total / limit),
       currentPage: parseInt(page),
       totalItems: total,
+      unreadCount: unreadCount,
       statistics: {
         total: total,
-        unread: await Notification.countDocuments({ 
-          recipient: userId, 
-          isRead: false 
-        })
+        unread: unreadCount
       }
     });
   } catch (error) {
     console.error('❌ Error fetching notifications:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notifications' 
+    });
+  }
+});
+
+// @desc    Get unread notification count
+// @route   GET /api/notifications/unread-count
+// @access  Private
+app.get('/api/notifications/unread-count', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    console.log(`📊 Unread count for user ${userId}: ${unreadCount}`);
+    
+    res.json({
+      success: true,
+      unreadCount: unreadCount
+    });
+  } catch (error) {
+    console.error('❌ Error getting unread count:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get unread count'
+    });
   }
 });
 
@@ -11098,9 +11164,18 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
       }
     }
     
+    // Get updated unread count
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: unreadCount });
+    }
+    
     res.json({ 
       success: true, 
       message: 'Notification marked as read',
+      unreadCount: unreadCount,
       notification: {
         id: notification._id,
         isRead: notification.recipient === null ? notification.readBy.includes(userId) : notification.isRead
@@ -11108,16 +11183,6 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ [NOTIFICATIONS] Error marking as read:', error);
-    
-    // Handle validation errors specifically
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid notification data',
-        error: error.message 
-      });
-    }
-    
     res.status(500).json({ 
       success: false, 
       message: 'Failed to mark notification as read' 
@@ -11125,20 +11190,93 @@ app.post('/api/notifications/:id/read', protect, async (req, res) => {
   }
 });
 
+// @desc    Mark all notifications as read
+// @route   POST /api/notifications/mark-all-read
+// @access  Private
+app.post('/api/notifications/mark-all-read', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📌 [NOTIFICATIONS] Marking all as read for user: ${userId}`);
+    
+    const result = await Notification.updateMany(
+      { recipient: userId, isRead: false },
+      { $set: { isRead: true } }
+    );
+    
+    console.log(`✅ [NOTIFICATIONS] Marked ${result.modifiedCount} notifications as read`);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: 0 });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Marked ${result.modifiedCount} notifications as read`,
+      unreadCount: 0
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error marking all as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notifications as read' 
+    });
+  }
+});
 
-
-
-
-
-
-
+// @desc    Delete notification
+// @route   DELETE /api/notifications/:id
+// @access  Private
+app.delete('/api/notifications/:id', protect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    
+    console.log(`🗑️ [NOTIFICATIONS] Deleting notification: ${id} for user: ${userId}`);
+    
+    const notification = await Notification.findOneAndDelete({
+      _id: id,
+      recipient: userId
+    });
+    
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+    
+    // Get updated unread count
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: unreadCount });
+    }
+    
+    console.log(`✅ [NOTIFICATIONS] Notification ${id} deleted`);
+    
+    res.json({
+      success: true,
+      message: 'Notification deleted successfully',
+      unreadCount: unreadCount
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error deleting notification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notification'
+    });
+  }
+});
 
 // @desc    Send notification (Admin only - supports bulk or personal)
 // @route   POST /api/notifications/send
 // @access  Private (Admin)
 app.post('/api/notifications/send', protect, async (req, res) => {
   try {
-    const { title, message, recipientId, sendToAll = false } = req.body;
+    const { title, message, recipientId, sendToAll = false, type = 'announcement', screen = 'notifications' } = req.body;
     
     console.log(`📨 [ADMIN] Sending notification:`, { title, recipientId, sendToAll });
     
@@ -11158,21 +11296,23 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       });
     }
     
-    let notifications = [];
+    let results = [];
+    let pushResults = [];
     
     if (sendToAll) {
-      // BULK: Send to ALL users
-      console.log('👥 [ADMIN] Sending bulk notification to all users');
+      // BULK: Send to ALL active users
+      console.log('👥 [ADMIN] Sending bulk notification to all active users');
       
       const users = await User.find({ isActive: true });
       
       for (const user of users) {
-        const notification = new Notification({
-          recipient: user._id, // Personal for each user
+        // Use the helper to create notification AND send push
+        const result = await createNotificationAndSendPush({
+          recipientId: user._id,
           title: title.trim(),
           message: message.trim(),
-          type: 'announcement',
-          isRead: false,
+          type: type,
+          screen: screen,
           metadata: {
             sentByAdmin: req.user._id,
             bulk: true,
@@ -11180,15 +11320,24 @@ app.post('/api/notifications/send', protect, async (req, res) => {
           }
         });
         
-        await notification.save();
-        notifications.push({
-          userId: user._id,
-          email: user.email,
-          notificationId: notification._id
-        });
+        if (result.success) {
+          results.push({
+            userId: user._id,
+            email: user.email,
+            notificationId: result.notification._id,
+            pushSent: result.pushSent
+          });
+        }
       }
       
-      console.log(`✅ [ADMIN] Sent bulk notification to ${users.length} users`);
+      console.log(`✅ [ADMIN] Sent bulk notification to ${results.length} users`);
+      
+      res.json({ 
+        success: true, 
+        message: `Notification sent to ${results.length} users`,
+        sentCount: results.length,
+        results: results
+      });
       
     } else if (recipientId) {
       // SINGLE: Send to specific user
@@ -11202,26 +11351,32 @@ app.post('/api/notifications/send', protect, async (req, res) => {
         });
       }
       
-      const notification = new Notification({
-        recipient: user._id, // Personal for this user
+      const result = await createNotificationAndSendPush({
+        recipientId: user._id,
         title: title.trim(),
         message: message.trim(),
-        type: 'announcement',
-        isRead: false,
+        type: type,
+        screen: screen,
         metadata: {
           sentByAdmin: req.user._id,
           sentAt: new Date()
         }
       });
       
-      await notification.save();
-      notifications.push({
-        userId: user._id,
-        email: user.email,
-        notificationId: notification._id
-      });
-      
-      console.log(`✅ [ADMIN] Sent notification to ${user.email}`);
+      if (result.success) {
+        res.json({ 
+          success: true, 
+          message: 'Notification sent successfully',
+          notificationId: result.notification._id,
+          pushSent: result.pushSent
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to send notification',
+          error: result.error
+        });
+      }
       
     } else {
       // ERROR: Neither recipientId nor sendToAll specified
@@ -11231,15 +11386,6 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       });
     }
     
-    res.json({ 
-      success: true, 
-      message: sendToAll ? 
-        `Notification sent to ${notifications.length} users` : 
-        'Notification sent successfully',
-      sentCount: notifications.length,
-      notifications: notifications
-    });
-    
   } catch (error) {
     console.error('❌ [ADMIN] Error sending notification:', error);
     res.status(500).json({ 
@@ -11248,7 +11394,6 @@ app.post('/api/notifications/send', protect, async (req, res) => {
     });
   }
 });
-
 
 // @desc    Clean up old notifications
 // @route   POST /api/notifications/cleanup
@@ -11293,6 +11438,53 @@ app.post('/api/notifications/cleanup', protect, async (req, res) => {
   }
 });
 
+// @desc    Get notification statistics (ONLY personal)
+// @route   GET /api/notifications/statistics
+// @access  Private
+app.get('/api/notifications/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📊 [NOTIFICATIONS] Getting PERSONAL statistics for user: ${userId}`);
+    
+    // ONLY count personal notifications
+    const totalPersonal = await Notification.countDocuments({ recipient: userId });
+    const unreadPersonal = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
+    
+    // Latest PERSONAL notification
+    const latestNotification = await Notification.findOne({
+      recipient: userId
+    })
+    .sort({ createdAt: -1 })
+    .select('title createdAt type')
+    .lean();
+    
+    const statistics = {
+      personal: {
+        total: totalPersonal,
+        unread: unreadPersonal,
+        read: totalPersonal - unreadPersonal
+      },
+      latestNotification: latestNotification || null
+    };
+    
+    console.log(`📈 [NOTIFICATIONS] Personal statistics for ${userId}:`, statistics);
+    
+    res.json({
+      success: true,
+      statistics: statistics
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error getting statistics:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notification statistics' 
+    });
+  }
+});
 
 // @desc    Get app settings
 // @route   GET /api/settings
