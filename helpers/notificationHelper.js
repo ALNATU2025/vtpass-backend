@@ -62,23 +62,39 @@ async function createNotificationAndSendPush({
     notification.metadata.pushError = pushResult.error || null;
     await notification.save();
 
+    // 4. Emit via Socket.IO if available
+    try {
+      if (global.io) {
+        const notificationData = notification.toJSON ? notification.toJSON() : notification;
+        global.io.to(`user:${recipientId}`).emit('notification', notificationData);
+        global.io.to(`user:${recipientId}`).emit('badge_update', { count: unreadCount });
+        console.log('📡 Socket notification emitted for user:', recipientId);
+      }
+    } catch (socketError) {
+      console.log('⚠️ Socket emission error:', socketError.message);
+    }
+
     if (pushResult.success) {
       console.log('✅ Push notification sent via FCM');
     } else {
-      console.log('⚠️ Push notification failed:', pushResult.error);
+      console.log('⚠️ Push notification failed:', pushResult.error || 'Unknown error');
     }
 
     return {
       success: true,
       notification: notification,
-      pushSent: pushResult.success,
-      pushError: pushResult.error || null
+      pushSent: pushResult.success || false,
+      pushError: pushResult.error || null,
+      unreadCount: unreadCount
     };
   } catch (error) {
     console.error('❌ Notification creation error:', error.message);
+    console.error('Error stack:', error.stack);
     return {
       success: false,
-      error: error.message
+      error: error.message,
+      notification: null,
+      pushSent: false
     };
   }
 }
