@@ -10,6 +10,14 @@ const userSchema = mongoose.Schema(
       required: true,
       trim: true,
     },
+
+    // Add this inside your User schema definition
+fcmToken: {
+  type: String,
+  default: null,
+  index: true
+},
+    
     email: {
       type: String,
       required: true,
