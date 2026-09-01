@@ -30,6 +30,7 @@
     "nodemailer": "^6.9.14",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
+    "firebase-admin": "^13.0.0",
     "@getbrevo/brevo": "^3.0.1"
   },
   "devDependencies": {
