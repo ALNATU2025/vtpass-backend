@@ -18867,7 +18867,7 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
   }
 });
 
-// @desc    Purchase International Airtime – RACE CONDITION PROTECTED + NAIRA CONVERSION
+// @desc    Purchase International Airtime – RACE CONDITION PROTECTED + EXACT NAIRA AMOUNT FROM VTPASS
 // @route   POST /api/international-airtime/purchase
 // @access  Private
 app.post('/api/international-airtime/purchase', 
@@ -18893,14 +18893,18 @@ app.post('/api/international-airtime/purchase',
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Validation errors:', errors.array());
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
+      return res.status(400).json({ 
+        success: false, 
+        message: errors.array()[0].msg 
+      });
     }
 
-    console.log('🌍 ========== INTERNATIONAL AIRTIME PURCHASE ==========');
+    console.log('🌍 ========== INTERNATIONAL AIRTIME PURCHASE START ==========');
     console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
     console.log('👤 User ID:', req.user?._id);
     console.log('📧 User Email:', req.user?.email);
+    console.log('🔐 Auth Method:', req.authenticationMethod || 'pin');
 
     const {
       operatorId,
@@ -18916,13 +18920,14 @@ app.post('/api/international-airtime/purchase',
     const userId = req.user._id;
     const requestId = generateVtpassRequestId();
 
-    console.log('🆔 Request ID:', requestId);
+    console.log('🆔 Generated Request ID:', requestId);
     console.log('📊 Operator ID:', operatorId);
-    console.log('🌍 Country:', countryCode);
-    console.log('📦 Product Type:', productTypeId);
+    console.log('🌍 Country Code:', countryCode);
+    console.log('📦 Product Type ID:', productTypeId);
     console.log('🔢 Variation Code:', variationCode);
-    console.log('📞 Phone:', phoneNumber);
-    console.log('💰 Amount:', amount, currency);
+    console.log('📞 Phone Number:', phoneNumber);
+    console.log('💰 Requested Amount:', amount, currency);
+    console.log('📧 Email:', email || 'Not provided');
 
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -18931,11 +18936,16 @@ app.post('/api/international-airtime/purchase',
       const user = await User.findById(userId).session(session);
       if (!user) {
         await session.abortTransaction();
-        console.log('❌ User not found');
-        return res.status(404).json({ success: false, message: 'User not found' });
+        session.endSession();
+        console.log('❌ User not found for ID:', userId);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'User not found' 
+        });
       }
 
-      console.log('💰 Wallet Balance:', user.walletBalance);
+      console.log('💰 Current Wallet Balance: ₦', user.walletBalance.toFixed(2));
+      console.log('👤 User Status:', user.isActive ? 'Active' : 'Inactive');
 
       // ================================================
       // 🔥 DUPLICATE CHECK: Check for recent transaction
@@ -18952,7 +18962,12 @@ app.post('/api/international-airtime/purchase',
       
       if (existingTransaction) {
         await session.abortTransaction();
-        console.log(`🚫 DUPLICATE INTERNATIONAL AIRTIME BLOCKED: ${phoneNumber}`);
+        session.endSession();
+        console.log(`🚫 DUPLICATE TRANSACTION BLOCKED:`);
+        console.log(`   Phone: ${phoneNumber}`);
+        console.log(`   Country: ${countryCode}`);
+        console.log(`   Existing Transaction ID: ${existingTransaction._id}`);
+        console.log(`   Existing Transaction Time: ${existingTransaction.createdAt}`);
         return res.status(409).json({
           success: false,
           message: 'An international airtime transaction to this number was just processed. Please wait 30 seconds.',
@@ -18970,7 +18985,7 @@ app.post('/api/international-airtime/purchase',
         serviceID: 'foreign-airtime',
         billersCode: phoneNumber,
         variation_code: variationCode,
-        amount: amount,
+        amount: amount, // Send the foreign amount, VTpass will determine Naira equivalent
         phone: phoneNumber,
         operator_id: operatorId,
         country_code: countryCode,
@@ -18983,22 +18998,23 @@ app.post('/api/international-airtime/purchase',
       console.log('📤 ======================================');
 
       // ================================================
-      // 🔥 CALL VTPASS API FIRST TO GET NAIRA AMOUNT
+      // 🔥 CALL VTPASS API TO GET EXACT NAIRA AMOUNT
       // ================================================
       console.log('📡 Calling VTpass API...');
-      console.log('🌐 Endpoint: /pay');
-      console.log('📦 Payload sent to VTpass:', JSON.stringify(vtpassPayload, null, 2));
+      console.log('🌐 Endpoint: /api/pay');
+      console.log('⏰ Time:', new Date().toISOString());
       
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
-      console.log('📡 ========== VTPASS RESPONSE ==========');
-      console.log('📡 Full VTpass Response:', JSON.stringify(vtpassResult, null, 2));
-      console.log('📡 ======================================');
+      console.log('📡 ========== VTPASS RESPONSE RECEIVED ==========');
+      console.log('📡 Success:', vtpassResult.success);
+      console.log('📡 Full Response:', JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 ==============================================');
 
       // ================================================
       // 🔥 EXTRACT NAIRA AMOUNT FROM VTPASS RESPONSE
       // ================================================
-      const vtpassCode = vtpassResult.data?.code?.toString() || 'UNKNOWN';
+      const vtpassCode = vtpassResult.data?.code?.toString() || vtpassResult.data?.response_description?.toString() || 'UNKNOWN';
       const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
 
       console.log('🔍 VTpass Code:', vtpassCode);
@@ -19008,86 +19024,167 @@ app.post('/api/international-airtime/purchase',
       let transactionStatus = 'Failed';
       let vtpassData = null;
       let exchangeRate = 0;
+      let actualForeignAmount = amount;
 
       // ================================================
       // 🔥 HANDLE SUCCESSFUL VTPASS RESPONSE
       // ================================================
       if (vtpassResult.success && vtpassCode === '000') {
-        console.log('✅ VTPASS SUCCESS');
+        console.log('✅ VTPASS TRANSACTION SUCCESSFUL');
         vtpassData = vtpassResult.data;
         transactionStatus = 'Successful';
 
-        // ✅ EXTRACT NAIRA AMOUNT FROM VTpass RESPONSE
-        // The VTpass API returns the amount in Naira (NGN)
-        console.log('🔍 Extracting Naira amount from VTpass response...');
-        console.log('🔍 vtpassResult.data:', JSON.stringify(vtpassResult.data, null, 2));
+        // ================================================
+        // 🔥 EXTRACT NAIRA AMOUNT - NO FALLBACK RATES
+        // ================================================
+        console.log('🔍 ========== EXTRACTING NAIRA AMOUNT ==========');
+        console.log('🔍 Checking VTpass response structure...');
         
-        // Try different paths where VTpass might return the amount
-        if (vtpassResult.data?.content?.transactions?.amount) {
-          nairaAmount = parseFloat(vtpassResult.data.content.transactions.amount);
-          console.log(`💰 Naira amount from content.transactions.amount: ₦${nairaAmount}`);
-        } else if (vtpassResult.data?.content?.transactions?.total_amount) {
-          nairaAmount = parseFloat(vtpassResult.data.content.transactions.total_amount);
-          console.log(`💰 Naira amount from content.transactions.total_amount: ₦${nairaAmount}`);
-        } else if (vtpassResult.data?.amount) {
+        // Method 1: Check top-level amount field
+        if (vtpassResult.data?.amount) {
           nairaAmount = parseFloat(vtpassResult.data.amount);
-          console.log(`💰 Naira amount from data.amount: ₦${nairaAmount}`);
-        } else if (vtpassResult.data?.content?.amount) {
-          nairaAmount = parseFloat(vtpassResult.data.content.amount);
-          console.log(`💰 Naira amount from content.amount: ₦${nairaAmount}`);
-        } else {
-          // Fallback - use amount with approximate conversion
-          console.log('⚠️ No amount found in VTpass response, using fallback');
-          // Use a more accurate fallback rate for common currencies
-          let fallbackRate = 1.0;
-          switch(currency) {
-            case 'GHS': fallbackRate = 137.78; break; // 1 GHS ≈ 137.78 NGN
-            case 'USD': fallbackRate = 1550.0; break;
-            case 'EUR': fallbackRate = 1650.0; break;
-            case 'GBP': fallbackRate = 1900.0; break;
-            case 'SLE': fallbackRate = 69.59; break;
-            default: fallbackRate = 1.0;
+          console.log(`💰 Method 1 - Top-level amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 2: Check top-level Amount field (e.g., "NGN2")
+        if (nairaAmount === 0 && vtpassResult.data?.Amount) {
+          const amountStr = vtpassResult.data.Amount.toString();
+          console.log(`🔍 Top-level Amount string: "${amountStr}"`);
+          const nairaMatch = amountStr.match(/NGN(\d+\.?\d*)/i);
+          if (nairaMatch) {
+            nairaAmount = parseFloat(nairaMatch[1]);
+            console.log(`💰 Method 2 - Top-level Amount (NGN): ₦${nairaAmount}`);
           }
-          nairaAmount = amount * fallbackRate;
-          console.log(`⚠️ Using fallback Naira amount: ₦${nairaAmount} (rate: ${fallbackRate})`);
+        }
+        
+        // Method 3: Check content.transactions.amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.transactions.amount);
+          console.log(`💰 Method 3 - content.transactions.amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 4: Check content.transactions.total_amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.total_amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.transactions.total_amount);
+          console.log(`💰 Method 4 - content.transactions.total_amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 5: Check content.amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.amount);
+          console.log(`💰 Method 5 - content.amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 6: Check unit_price * quantity
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.unit_price) {
+          const unitPrice = parseFloat(vtpassResult.data.content.transactions.unit_price);
+          const quantity = vtpassResult.data.content.transactions.quantity || 1;
+          nairaAmount = unitPrice * quantity;
+          console.log(`💰 Method 6 - unit_price * quantity: ₦${unitPrice} * ${quantity} = ₦${nairaAmount}`);
         }
 
-        // ✅ Calculate exchange rate
-        if (amount > 0 && nairaAmount > 0) {
-          exchangeRate = nairaAmount / amount;
-          console.log(`📊 Exchange Rate: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
-        }
-
-        console.log(`💰 Final Naira Amount to deduct: ₦${nairaAmount.toFixed(2)}`);
+        console.log('🔍 =============================================');
 
         // ================================================
-        // 🔥 CHECK BALANCE AGAINST NAIRA AMOUNT
+        // 🔥 IF NO NAIRA AMOUNT FOUND, RE-QUERY VTPASS
+        // ================================================
+        if (nairaAmount <= 0) {
+          console.log('⚠️ No Naira amount found in initial response');
+          console.log('🔄 Re-querying VTpass for transaction status...');
+          
+          const requeryResult = await callVtpassApi('/requery', { 
+            request_id: requestId 
+          });
+
+          console.log('📡 ========== VTPASS RE-QUERY RESPONSE ==========');
+          console.log('📡 Requery Success:', requeryResult.success);
+          console.log('📡 Full Requery Response:', JSON.stringify(requeryResult, null, 2));
+          console.log('📡 ==============================================');
+
+          if (requeryResult.success && requeryResult.data) {
+            // Extract from requery response
+            if (requeryResult.data?.amount) {
+              nairaAmount = parseFloat(requeryResult.data.amount);
+              console.log(`💰 Requery - Top-level amount: ₦${nairaAmount}`);
+            }
+            
+            if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.amount) {
+              nairaAmount = parseFloat(requeryResult.data.content.transactions.amount);
+              console.log(`💰 Requery - content.transactions.amount: ₦${nairaAmount}`);
+            }
+            
+            if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.total_amount) {
+              nairaAmount = parseFloat(requeryResult.data.content.transactions.total_amount);
+              console.log(`💰 Requery - content.transactions.total_amount: ₦${nairaAmount}`);
+            }
+          }
+        }
+
+        // ================================================
+        // 🔥 FAIL SAFELY IF NO NAIRA AMOUNT DETERMINED
+        // ================================================
+        if (nairaAmount <= 0) {
+          await session.abortTransaction();
+          session.endSession();
+          console.error('❌ CRITICAL: Could not determine exact Naira amount from VTpass');
+          console.error('❌ VTpass Response:', JSON.stringify(vtpassResult, null, 2));
+          console.error('❌ Requery Response:', JSON.stringify(requeryResult || {}, null, 2));
+          
+          return res.status(400).json({
+            success: false,
+            message: 'Could not determine exact amount. Your wallet was NOT debited. Please try again.',
+            code: 'AMOUNT_DETERMINATION_FAILED',
+            userDebited: false,
+            vtpassCode: vtpassCode,
+            vtpassDescription: vtpassDesc
+          });
+        }
+
+        // ✅ Calculate exchange rate (for display purposes only)
+        if (amount > 0 && nairaAmount > 0) {
+          exchangeRate = nairaAmount / amount;
+          actualForeignAmount = amount;
+          console.log(`📊 Exchange Rate Calculated: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
+        }
+
+        console.log(`💰 FINAL NAIRA AMOUNT TO DEDUCT: ₦${nairaAmount.toFixed(2)}`);
+        console.log(`💰 Foreign Amount: ${currency} ${actualForeignAmount}`);
+
+        // ================================================
+        // 🔥 CHECK BALANCE AGAINST EXACT NAIRA AMOUNT
         // ================================================
         if (user.walletBalance < nairaAmount) {
           await session.abortTransaction();
-          console.log(`❌ INSUFFICIENT BALANCE: Available ₦${user.walletBalance}, Required ₦${nairaAmount}`);
+          session.endSession();
+          console.log(`❌ INSUFFICIENT BALANCE:`);
+          console.log(`   Available: ₦${user.walletBalance.toFixed(2)}`);
+          console.log(`   Required: ₦${nairaAmount.toFixed(2)}`);
+          console.log(`   Difference: ₦${(nairaAmount - user.walletBalance).toFixed(2)}`);
+          
           return res.status(400).json({ 
             success: false, 
             message: `Insufficient balance. Required: ₦${nairaAmount.toFixed(2)}, Available: ₦${user.walletBalance.toFixed(2)}`,
             code: 'INSUFFICIENT_BALANCE',
             nairaRequired: nairaAmount,
             currency: 'NGN',
-            // Return the Naira amount so frontend can show it
             nairaAmount: nairaAmount,
-            exchangeRate: exchangeRate
+            exchangeRate: exchangeRate,
+            userDebited: false
           });
         }
 
         // ================================================
-        // 🔥 IMMEDIATE DEBIT - DEDUCT NAIRA AMOUNT
+        // 🔥 DEBIT EXACT NAIRA AMOUNT FROM WALLET
         // ================================================
         const balanceBefore = user.walletBalance;
         user.walletBalance -= nairaAmount;
         const balanceAfter = user.walletBalance;
         await user.save({ session });
 
-        console.log(`💰 WALLET DEBITED: ₦${nairaAmount.toFixed(2)}`);
-        console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
+        console.log(`💰 WALLET DEBITED SUCCESSFULLY:`);
+        console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
+        console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
+        console.log(`   Debited: ₦${nairaAmount.toFixed(2)}`);
 
         // ================================================
         // 🔥 CREATE TRANSACTION RECORD
@@ -19097,7 +19194,7 @@ app.post('/api/international-airtime/purchase',
           amount: nairaAmount,
           type: 'International Airtime Purchase',
           status: 'Successful',
-          description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${amount}`,
+          description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${actualForeignAmount}`,
           balanceBefore: balanceBefore,
           balanceAfter: balanceAfter,
           reference: requestId,
@@ -19111,7 +19208,7 @@ app.post('/api/international-airtime/purchase',
             productTypeId: productTypeId,
             variationCode: variationCode,
             currency: currency,
-            originalAmount: amount,
+            originalAmount: actualForeignAmount,
             nairaAmount: nairaAmount,
             exchangeRate: exchangeRate,
             vtpassResponse: vtpassData,
@@ -19120,7 +19217,6 @@ app.post('/api/international-airtime/purchase',
             vtpassDelivered: true,
             vtpassCode: vtpassCode,
             vtpassDescription: vtpassDesc,
-            // Store the full VTpass response for debugging
             vtpassFullResponse: vtpassResult.data
           }
         });
@@ -19129,11 +19225,13 @@ app.post('/api/international-airtime/purchase',
         await session.commitTransaction();
         session.endSession();
 
+        console.log(`✅ TRANSACTION RECORD SAVED: ${newTransaction._id}`);
+
         // ================================================
         // 🔥 CALCULATE COMMISSION (OUTSIDE TRANSACTION)
         // ================================================
         await calculateAndAddCommission(userId, nairaAmount, 'airtime')
-          .catch(err => console.log('⚠️ Commission error:', err.message));
+          .catch(err => console.log('⚠️ Commission calculation error:', err.message));
 
         // ================================================
         // 🔥 CREATE NOTIFICATION
@@ -19142,12 +19240,12 @@ app.post('/api/international-airtime/purchase',
           await Notification.create({
             recipient: userId,
             title: "International Airtime Purchase Successful 🌍",
-            message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${nairaAmount.toFixed(2)}`,
+            message: `International airtime of ${currency} ${actualForeignAmount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${nairaAmount.toFixed(2)}`,
             type: 'transaction',
             isRead: false,
             metadata: {
               phoneNumber: phoneNumber,
-              amount: amount,
+              amount: actualForeignAmount,
               currency: currency,
               countryCode: countryCode,
               nairaAmount: nairaAmount,
@@ -19156,26 +19254,30 @@ app.post('/api/international-airtime/purchase',
               userDebited: true
             }
           });
+          console.log('📧 Notification created successfully');
         } catch (notifError) {
-          console.error('Notification error:', notifError);
+          console.error('❌ Notification creation error:', notifError);
         }
 
-        console.log(`✅ INTERNATIONAL AIRTIME SUCCESS: ${countryCode} - ${currency} ${amount} to ${phoneNumber}`);
+        console.log('🎉 ========== TRANSACTION COMPLETE ==========');
+        console.log(`✅ Success: ${countryCode} - ${currency} ${actualForeignAmount} to ${phoneNumber}`);
         console.log(`💰 Naira Deducted: ₦${nairaAmount.toFixed(2)}`);
         console.log(`📊 Exchange Rate: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
+        console.log(`💳 New Balance: ₦${balanceAfter.toFixed(2)}`);
+        console.log('============================================');
 
         // ================================================
-        // 🔥 RETURN SUCCESS RESPONSE WITH NAIRA AMOUNT
+        // 🔥 RETURN SUCCESS RESPONSE
         // ================================================
         return res.json({
           success: true,
-          message: `International airtime purchase successful! ${currency} ${amount} sent to ${phoneNumber}.`,
+          message: `International airtime purchase successful! ${currency} ${actualForeignAmount} sent to ${phoneNumber}.`,
           transactionId: newTransaction._id.toString(),
           reference: requestId,
           status: 'Successful',
           newBalance: balanceAfter,
           // Foreign amount (what user entered)
-          foreignAmount: amount,
+          foreignAmount: actualForeignAmount,
           currency: currency,
           // Naira amount (what was deducted)
           nairaAmount: nairaAmount,
@@ -19189,14 +19291,16 @@ app.post('/api/international-airtime/purchase',
           vtpassCode: vtpassCode,
           vtpassDescription: vtpassDesc,
           // Original fields for backward compatibility
-          amount: amount
+          amount: actualForeignAmount
         });
 
       } else {
         // ================================================
         // 🔥 VTPASS FAILED - USER IS NOT DEBITED
         // ================================================
-        console.log(`❌ VTPASS ERROR: Code ${vtpassCode} - ${vtpassDesc}`);
+        console.log(`❌ VTPASS TRANSACTION FAILED:`);
+        console.log(`   Code: ${vtpassCode}`);
+        console.log(`   Description: ${vtpassDesc}`);
         console.log('❌ Full VTpass error response:', JSON.stringify(vtpassResult, null, 2));
 
         await session.abortTransaction();
@@ -19220,7 +19324,8 @@ app.post('/api/international-airtime/purchase',
           displayMessage = 'Transaction already processed.';
         }
 
-        console.log('❌ SENDING FAILURE RESPONSE');
+        console.log('📤 Sending failure response to client');
+        console.log('============================================');
 
         return res.status(400).json({
           success: false,
@@ -19241,12 +19346,17 @@ app.post('/api/international-airtime/purchase',
       await session.abortTransaction();
       session.endSession();
 
-      console.error('💥 ========== INTERNATIONAL AIRTIME ERROR ==========');
+      console.error('💥 ========== INTERNATIONAL AIRTIME CRITICAL ERROR ==========');
       console.error('❌ Error:', error);
       console.error('❌ Stack:', error.stack);
-      console.error('💥 ================================================');
+      console.error('❌ Request ID:', requestId);
+      console.error('❌ User ID:', userId);
+      console.error('❌ Phone:', phoneNumber);
+      console.error('❌ Country:', countryCode);
+      console.error('💥 ===========================================================');
 
       if (error.code === 11000) {
+        console.error('❌ DUPLICATE KEY ERROR - Transaction already exists');
         return res.status(409).json({
           success: false,
           message: 'This transaction was already processed.',
@@ -19264,7 +19374,6 @@ app.post('/api/international-airtime/purchase',
     }
   }
 );
-
 // @desc    Requery International Airtime Transaction Status
 // @route   POST /api/international-airtime/requery
 // @access  Private
