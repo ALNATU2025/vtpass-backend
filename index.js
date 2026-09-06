@@ -420,7 +420,6 @@ const userActivityTracker = async (req, res, next) => {
 // Apply the middleware
 app.use(userActivityTracker);
 
-
 // ==================== MAINTENANCE MODE MIDDLEWARE ====================
 app.use(async (req, res, next) => {
   try {
@@ -462,7 +461,25 @@ app.use(async (req, res, next) => {
 
 
 
+// ================================================
+// 📡 MAINTENANCE STATUS - PUBLIC
+// ================================================
 
+app.get('/api/maintenance-status', async (req, res) => {
+  try {
+    const settings = await Settings.findOne();
+    res.json({
+      maintenanceMode: settings?.isMaintenanceMode || false,
+      message: settings?.maintenanceMessage || '',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.json({ 
+      maintenanceMode: false,
+      message: 'Unable to fetch maintenance status'
+    });
+  }
+});
 
 
 
@@ -964,6 +981,249 @@ const checkServiceEnabled = (serviceKey) => {
 };
 
 
+
+// ================================================
+// 📊 TRANSACTION LIMITS
+// ================================================
+
+const TRANSACTION_LIMITS = {
+  daily: {
+    airtime: 5000,
+    data: 5000,
+    electricity: 50000,
+    cableTv: 20000,
+    transfer: 100000,
+    internationalAirtime: 20000,
+    walletFunding: 1000000,
+    default: 100000
+  },
+  perTransaction: {
+    airtime: 1000,
+    data: 5000,
+    electricity: 20000,
+    cableTv: 10000,
+    transfer: 50000,
+    internationalAirtime: 5000,
+    default: 50000
+  }
+};
+
+const checkTransactionLimit = (serviceType) => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user?._id;
+      if (!userId) return next();
+      
+      const amount = parseFloat(req.body.amount || req.body.Amount || 0);
+      if (amount <= 0) return next();
+      
+      // Check per-transaction limit
+      const perTxLimit = TRANSACTION_LIMITS.perTransaction[serviceType] || 
+                         TRANSACTION_LIMITS.perTransaction.default;
+      
+      if (amount > perTxLimit) {
+        return res.status(400).json({
+          success: false,
+          message: `Maximum ${serviceType} per transaction is ₦${perTxLimit.toFixed(2)}`,
+          code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
+          limit: perTxLimit,
+          requested: amount
+        });
+      }
+      
+      // Check daily limit
+      const dailyLimit = TRANSACTION_LIMITS.daily[serviceType] || 
+                         TRANSACTION_LIMITS.daily.default;
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const todayTotal = await Transaction.aggregate([
+        {
+          $match: {
+            userId: new mongoose.Types.ObjectId(userId),
+            type: { $regex: serviceType, $options: 'i' },
+            status: 'Successful',
+            createdAt: { $gte: today }
+          }
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]);
+      
+      const dailyTotal = todayTotal[0]?.total || 0;
+      
+      if (dailyTotal + amount > dailyLimit) {
+        return res.status(400).json({
+          success: false,
+          message: `Daily ${serviceType} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Contact admin for increase.`,
+          code: 'DAILY_LIMIT_EXCEEDED',
+          dailyLimit: dailyLimit,
+          dailyTotal: dailyTotal,
+          requested: amount,
+          remaining: Math.max(0, dailyLimit - dailyTotal)
+        });
+      }
+      
+      next();
+    } catch (error) {
+      console.error('Limit check error:', error);
+      next();
+    }
+  };
+};
+
+
+
+// ================================================
+// 🚫 PER-MINUTE TRANSACTION LIMIT
+// Prevents multiple transactions in the same minute
+// ================================================
+
+const userTransactionTracker = new Map(); // Tracks recent transactions per user
+
+const checkPerMinuteLimit = (serviceType) => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user?._id?.toString();
+      if (!userId) return next();
+
+      const now = Date.now();
+      const oneMinuteAgo = now - 60000; // 60 seconds
+
+      // Get user's transaction history
+      if (!userTransactionTracker.has(userId)) {
+        userTransactionTracker.set(userId, []);
+      }
+
+      const userHistory = userTransactionTracker.get(userId);
+      
+      // Clean old entries (older than 1 minute)
+      const recentTransactions = userHistory.filter(t => t.timestamp > oneMinuteAgo);
+      
+      // Update the tracker with cleaned history
+      userTransactionTracker.set(userId, recentTransactions);
+
+      // Count transactions in the last minute
+      const transactionCount = recentTransactions.length;
+      
+      // ⚠️ MAX 3 TRANSACTIONS PER MINUTE (adjust as needed)
+      const MAX_PER_MINUTE = 3;
+
+      if (transactionCount >= MAX_PER_MINUTE) {
+        console.log(`🚫 [RATE LIMIT] User ${userId} exceeded ${MAX_PER_MINUTE} transactions in 1 minute`);
+        console.log(`   Transactions in last minute: ${transactionCount}`);
+        console.log(`   Timestamps: ${recentTransactions.map(t => new Date(t.timestamp).toISOString()).join(', ')}`);
+        
+        return res.status(429).json({
+          success: false,
+          message: `Too many transactions. Maximum ${MAX_PER_MINUTE} transactions per minute allowed. Please wait a moment.`,
+          code: 'PER_MINUTE_LIMIT_EXCEEDED',
+          limit: MAX_PER_MINUTE,
+          currentCount: transactionCount,
+          retryAfter: 60 // seconds
+        });
+      }
+
+      // Store this transaction (will be removed after 1 minute)
+      // We use a unique key to prevent duplicate tracking
+      const uniqueKey = `${serviceType}_${req.body.phone || req.body.billersCode || Date.now()}`;
+      recentTransactions.push({
+        timestamp: now,
+        key: uniqueKey,
+        serviceType: serviceType,
+        amount: parseFloat(req.body.amount || 0)
+      });
+
+      // Store back
+      userTransactionTracker.set(userId, recentTransactions);
+
+      next();
+    } catch (error) {
+      console.error('Per-minute limit check error:', error);
+      next();
+    }
+  };
+};
+
+// Clean up old entries every minute
+setInterval(() => {
+  const now = Date.now();
+  const oneMinuteAgo = now - 60000;
+  
+  for (const [userId, history] of userTransactionTracker.entries()) {
+    const recent = history.filter(t => t.timestamp > oneMinuteAgo);
+    if (recent.length === 0) {
+      userTransactionTracker.delete(userId);
+    } else {
+      userTransactionTracker.set(userId, recent);
+    }
+  }
+}, 60000); // Run every minute
+
+
+// ================================================
+// 🚫 GLOBAL PER-MINUTE LIMIT (All Services)
+// ================================================
+
+const globalTransactionTracker = new Map();
+
+const checkGlobalPerMinuteLimit = async (req, res, next) => {
+  try {
+    const userId = req.user?._id?.toString();
+    if (!userId) return next();
+
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+
+    if (!globalTransactionTracker.has(userId)) {
+      globalTransactionTracker.set(userId, []);
+    }
+
+    const history = globalTransactionTracker.get(userId);
+    const recent = history.filter(t => t > oneMinuteAgo);
+    
+    globalTransactionTracker.set(userId, recent);
+
+    // ⚠️ MAX 5 TRANSACTIONS PER MINUTE ACROSS ALL SERVICES
+    const MAX_GLOBAL_PER_MINUTE = 5;
+
+    if (recent.length >= MAX_GLOBAL_PER_MINUTE) {
+      console.log(`🚫 [GLOBAL LIMIT] User ${userId} exceeded ${MAX_GLOBAL_PER_MINUTE} total transactions in 1 minute`);
+      
+      return res.status(429).json({
+        success: false,
+        message: `Too many transactions. Maximum ${MAX_GLOBAL_PER_MINUTE} transactions per minute across all services. Please wait.`,
+        code: 'GLOBAL_PER_MINUTE_LIMIT_EXCEEDED',
+        limit: MAX_GLOBAL_PER_MINUTE,
+        currentCount: recent.length,
+        retryAfter: 60
+      });
+    }
+
+    recent.push(now);
+    globalTransactionTracker.set(userId, recent);
+
+    next();
+  } catch (error) {
+    console.error('Global per-minute limit error:', error);
+    next();
+  }
+};
+
+// Clean up every minute
+setInterval(() => {
+  const now = Date.now();
+  const oneMinuteAgo = now - 60000;
+  
+  for (const [userId, timestamps] of globalTransactionTracker.entries()) {
+    const recent = timestamps.filter(t => t > oneMinuteAgo);
+    if (recent.length === 0) {
+      globalTransactionTracker.delete(userId);
+    } else {
+      globalTransactionTracker.set(userId, recent);
+    }
+  }
+}, 60000);
 
 
 
@@ -12428,6 +12688,9 @@ app.post('/api/vtpass/airtime/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
+  checkGlobalPerMinuteLimit, 
+  checkTransactionLimit('airtime'),
+  checkPerMinuteLimit('airtime'),
   preventRaceCondition({ 
     windowMs: 30000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
@@ -16427,199 +16690,7 @@ app.post('/api/wallet/quick-test', async (req, res) => {
 
 
 
-// @desc    Top up wallet from virtual account / PayStack webhook - WITH REFERRAL BONUSES (UPDATED)
-// @route   POST /api/wallet/top-up
-// @access  Public (called by virtual-account-backend)
-app.post('/api/wallet/top-up', async (req, res) => {
-  console.log('MAIN BACKEND: Wallet top-up request received', req.body);
 
-  const { userId, amount, reference, source = 'paystack_funding' } = req.body;
-
-  if (!userId || !reference || amount === undefined) {
-    return res.status(400).json({
-      success: false,
-      message: 'userId, amount, and reference are required'
-    });
-  }
-
-  const amountInKobo = Number(amount);
-  const amountInNaira = amountInKobo / 100;
-
-  if (isNaN(amountInNaira) || amountInNaira <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid amount'
-    });
-  }
-
-  const session = await mongoose.startSession();
-
-  try {
-    await session.withTransaction(async () => {
-      const user = await User.findById(userId).session(session);
-      if (!user) throw new Error('User not found');
-
-      // FINAL DUPLICATE PROTECTION
-      const existing = await Transaction.findOne({
-        reference,
-        status: 'Successful'
-      }).session(session);
-
-      if (existing) {
-        console.log(`REPLAY ATTACK BLOCKED: ${reference} already processed`);
-        throw new Error('ALREADY_PROCESSED');
-      }
-
-      // Delete any failed/pending duplicates
-      await Transaction.deleteMany({
-        reference,
-        status: { $ne: 'Successful' }
-      }).session(session);
-
-      const balanceBefore = user.walletBalance;
-      user.walletBalance += amountInNaira;
-      await user.save({ session });
-
-      // Create main wallet transaction with isDeposit flag
-      await Transaction.create([{
-        userId,
-        type: 'Wallet Funding',
-        amount: amountInNaira,
-        status: 'Successful',
-        reference,
-        description: `Wallet funding via ${source} - Ref: ${reference}`,
-        balanceBefore,
-        balanceAfter: user.walletBalance,
-        gateway: 'Dalabapay App',
-        metadata: { 
-          source: 'webhook', 
-          processedAt: new Date(),
-          isDeposit: true, // Mark as deposit for referral bonus tracking
-          depositAmount: amountInNaira,
-          reference: reference,
-          paymentMethod: source.includes('paystack') ? 'paystack' : 'virtual_account',
-          transactionType: 'wallet_funding'
-        }
-      }], { session });
-
-      console.log(`MAIN SUCCESS: +₦${amountInNaira} | Ref: ${reference} | Balance: ₦${user.walletBalance}`);
-
-                    // ================================================
-      // 🔥 DEPOSIT BONUS SYSTEM: Check and award first deposit bonus
-      // NEW RULE: Minimum ₦1,000 to qualify (changed from ₦5,000)
-      // ================================================
-      try {
-        // Check for ANY successful deposit
-        const previousDeposits = await Transaction.countDocuments({
-          userId: userId,
-          type: 'Wallet Funding',
-          status: 'Successful',
-          'metadata.isDeposit': true,
-          _id: { $ne: existing?._id }
-        }).session(session);
-        
-        console.log(`🔍 [REFERRAL] Checking first deposit: Found ${previousDeposits} previous Wallet Funding transactions`);
-        
-        if (previousDeposits === 0) {
-          console.log(`🎉 [REFERRAL] FIRST DEPOSIT DETECTED for user ${userId} (₦${amountInNaira})`);
-          
-          // ✅ Award first deposit bonus (₦200 if deposit ≥ ₦1,000)
-          const depositBonusAwarded = await awardFirstDepositBonus(userId, amountInNaira, session);
-          console.log(`✅ [REFERRAL] First deposit bonus result: ${depositBonusAwarded ? 'AWARDED' : 'NOT AWARDED'}`);
-          
-          if (depositBonusAwarded) {
-            await Notification.create([{
-              recipient: userId,
-              title: "First Deposit Bonus! 🎉",
-              message: `You received ₦200 bonus for your first deposit of ₦${amountInNaira}!`,
-              type: 'deposit_bonus',
-              isRead: false,
-              metadata: {
-                amount: amountInNaira,
-                bonus: 200,
-                newBalance: user.walletBalance,
-                newCommissionBalance: user.commissionBalance || 0,
-                isFirstDeposit: true,
-                reference: reference,
-                bonusType: 'first_deposit'
-              }
-            }], { session });
-          } else if (amountInNaira < 1000) {
-            await Notification.create([{
-              recipient: userId,
-              title: "Deposit to Unlock Welcome Bonus 💰",
-              message: `₦${amountInNaira} added to your wallet. Deposit ₦${(1000 - amountInNaira).toFixed(2)} more to unlock ₦200 welcome bonus!`,
-              type: 'wallet_credit',
-              isRead: false,
-              metadata: {
-                amount: amountInNaira,
-                newBalance: user.walletBalance,
-                reference: reference,
-                isDeposit: true,
-                isFirstDeposit: true,
-                bonusEligible: false,
-                minimumRequired: 1000,
-                neededAmount: 1000 - amountInNaira
-              }
-            }], { session });
-          }
-        } else {
-          console.log(`ℹ️ [REFERRAL] Not first deposit (${previousDeposits} previous deposits), no bonus`);
-          
-          // Create regular deposit notification
-          await Notification.create([{
-            recipient: userId,
-            title: "Wallet Credited 💰",
-            message: `₦${amountInNaira.toFixed(2)} added to your wallet. New balance: ₦${user.walletBalance.toFixed(2)}`,
-            type: 'wallet_credit',
-            isRead: false,
-            metadata: {
-              amount: amountInNaira,
-              newBalance: user.walletBalance,
-              reference: reference,
-              isDeposit: true,
-              isFirstDeposit: false
-            }
-          }], { session });
-        }
-      } catch (bonusError) {
-        console.error('⚠️ [REFERRAL] Error processing deposit bonuses:', bonusError);
-        // Don't fail the main transaction if bonus processing fails
-      }
-    });
-
-    // Get updated user info to return commission balance
-    const updatedUser = await User.findById(userId);
-    
-    return res.json({
-      success: true,
-      newBalance: null, // Flutter reads from local storage
-      amount: amountInNaira,
-      commissionBalance: updatedUser?.commissionBalance || 0,
-      message: 'Wallet funded successfully'
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-
-    if (error.message === 'ALREADY_PROCESSED') {
-      return res.json({
-        success: true,
-        alreadyProcessed: true,
-        message: 'Transaction already processed',
-      });
-    }
-
-    console.error('MAIN TOP-UP ERROR:', error);
-    console.error('Error stack:', error.stack);
-    return res.status(500).json({
-      success: false,
-      message: 'Funding failed'
-    });
-  } finally {
-    session.endSession();
-  }
-});
 
 
 
@@ -16774,292 +16845,9 @@ app.get('/api/users/find-by-email/:email', async (req, res) => {
 
 
 
-// @desc    Verify PayStack transaction (Backend Proxy)
-// @route   POST /api/paystack/verify-transaction
-// @access  Public
-app.post('/api/paystack/verify-transaction', async (req, res) => {
-  try {
-    const { reference } = req.body;
-    
-    console.log('🔍 Verifying PayStack transaction via backend:', reference);
-
-    if (!reference) {
-      return res.status(400).json({
-        success: false,
-        message: 'Transaction reference is required'
-      });
-    }
-
-    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
-    
-    if (!PAYSTACK_SECRET_KEY) {
-      return res.status(500).json({
-        success: false,
-        message: 'PayStack configuration error'
-      });
-    }
-
-    // Verify with PayStack
-    const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'VTPass-Backend/1.0'
-      },
-      timeout: 30000
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ PayStack API Error:', response.status, errorText);
-      
-      return res.status(response.status).json({
-        success: false,
-        message: `PayStack verification failed: ${response.statusText}`,
-        status: response.status
-      });
-    }
-
-    const data = await response.json();
-    
-    console.log('✅ PayStack verification result:', {
-      success: data.status,
-      message: data.message,
-      transactionStatus: data.data?.status,
-      amount: data.data?.amount
-    });
-
-    // Return the PayStack response
-    res.json({
-      success: data.status === true,
-      data: data.data,
-      message: data.message,
-      status: data.data?.status,
-      amount: data.data?.amount ? data.data.amount / 100 : 0 // Convert from kobo to naira
-    });
-
-  } catch (error) {
-    console.error('💥 PayStack verification error:', error);
-    
-    res.status(500).json({
-      success: false,
-      message: `PayStack verification failed: ${error.message}`,
-      error: error.message
-    });
-  }
-});
-
-// @desc    Force wallet top-up after verification
-// @route   POST /api/wallet/force-topup
-// @access  Public
-app.post('/api/wallet/force-topup', async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const { userId, amount, reference, description } = req.body;
-    
-    console.log('🚀 Force top-up request:', { userId, amount, reference });
-
-    // Validate required fields
-    if (!userId || !amount || !reference) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required fields: userId, amount, reference' 
-      });
-    }
-
-    // Find user
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    // Check if transaction already exists
-    const existingTransaction = await Transaction.findOne({ 
-      reference: reference 
-    }).session(session);
-    
-    if (existingTransaction) {
-      await session.abortTransaction();
-      return res.json({
-        success: true,
-        message: 'Transaction already processed',
-        amount: amount,
-        newBalance: user.walletBalance,
-        alreadyProcessed: true
-      });
-    }
-
-    // Update user balance
-    const balanceBefore = user.walletBalance;
-    user.walletBalance += parseFloat(amount);
-    const balanceAfter = user.walletBalance;
-    
-    await user.save({ session });
-
-    // Create transaction record
-    const newTransaction = await createTransaction(
-      userId,
-      parseFloat(amount),
-      'credit',
-      'successful',
-      description || `Manual wallet funding - Ref: ${reference}`,
-      balanceBefore,
-      balanceAfter,
-      session,
-      false,
-      'manual'
-    );
-
-    await session.commitTransaction();
-    
-    console.log('✅ Force top-up successful:', {
-      userId,
-      amount,
-      newBalance: balanceAfter,
-      reference
-    });
-
-    // Create notification
-    try {
-      await Notification.create({
-        recipientId: userId,
-        title: "Wallet Funded Successfully 💰",
-        message: `Your wallet has been credited with ₦${amount}. New balance: ₦${balanceAfter}`,
-        isRead: false
-      });
-    } catch (notificationError) {
-      console.error('Notification creation error:', notificationError);
-    }
-
-    res.json({
-      success: true,
-      message: 'Wallet topped up successfully',
-      amount: amount,
-      newBalance: balanceAfter,
-      transactionId: newTransaction._id
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('❌ Force top-up error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Force top-up failed: ' + error.message 
-    });
-  } finally {
-    session.endSession();
-  }
-});
 
 
 
-// ==================== WALLET SYNC ENDPOINTS ====================
-
-// @desc    Update user balance
-// @route   POST /api/users/update-balance
-// @access  Public (for virtual account backend)
-app.post('/api/users/update-balance', async (req, res) => {
-  try {
-    const { userId, newBalance, updateType, timestamp } = req.body;
-    
-    console.log('🔄 Updating user balance:', { userId, newBalance });
-
-    if (!userId || newBalance === undefined) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'userId and newBalance are required' 
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    const previousBalance = user.walletBalance;
-    user.walletBalance = parseFloat(newBalance);
-    await user.save();
-
-    console.log('✅ Balance updated successfully:', {
-      userId,
-      previousBalance,
-      newBalance: user.walletBalance
-    });
-
-    res.json({
-      success: true,
-      newBalance: user.walletBalance,
-      previousBalance: previousBalance,
-      message: 'Balance updated successfully'
-    });
-  } catch (error) {
-    console.error('❌ Balance update error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Balance update failed: ' + error.message 
-    });
-  }
-});
-
-// @desc    Sync wallet balance
-// @route   POST /api/wallet/sync-balance
-// @access  Public (for virtual account backend)
-app.post('/api/wallet/sync-balance', async (req, res) => {
-  try {
-    const { userId, newBalance } = req.body;
-    
-    console.log('🔄 Syncing wallet balance:', { userId, newBalance });
-
-    if (!userId || newBalance === undefined) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'userId and newBalance are required' 
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'User not found' 
-      });
-    }
-
-    const previousBalance = user.walletBalance;
-    user.walletBalance = parseFloat(newBalance);
-    await user.save();
-
-    console.log('✅ Wallet synced successfully:', {
-      userId,
-      previousBalance,
-      newBalance: user.walletBalance
-    });
-
-    res.json({ 
-      success: true, 
-      message: 'Wallet synced successfully',
-      previousBalance: previousBalance,
-      newBalance: user.walletBalance
-    });
-  } catch (error) {
-    console.error('❌ Wallet sync error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Wallet sync failed: ' + error.message 
-    });
-  }
-});
 
 
 
@@ -17275,139 +17063,6 @@ app.get('/api/transactions/pending-verifications', protect, [
 
 
 
-// @desc    Enhanced transaction verification with duplicate protection
-// @route   POST /api/transactions/verify-payment
-// @access  Private
-app.post('/api/transactions/verify-payment', protect, [
-  body('reference').notEmpty().withMessage('Reference is required')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { reference } = req.body;
-    const userId = req.user._id;
-
-    console.log('🔍 Enhanced verification for reference:', reference);
-
-    // Check if transaction already exists and is successful
-    const existingTransaction = await Transaction.findOne({
-      reference: reference,
-      status: 'successful'
-    }).session(session);
-
-    if (existingTransaction) {
-      await session.abortTransaction();
-      return res.json({
-        success: true,
-        message: 'Transaction already verified',
-        alreadyProcessed: true,
-        transaction: existingTransaction,
-        newBalance: req.user.walletBalance
-      });
-    }
-
-    // Verify with PayStack
-    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
-    const paystackResponse = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-
-    const paystackData = paystackResponse.data;
-
-    if (paystackData.status === true && paystackData.data.status === 'success') {
-      const amount = paystackData.data.amount / 100; // Convert to Naira
-      
-      // Update user balance
-      const user = await User.findById(userId).session(session);
-      const balanceBefore = user.walletBalance;
-      user.walletBalance += amount;
-      const balanceAfter = user.walletBalance;
-      await user.save({ session });
-
-      // Create transaction record
-      const transaction = await Transaction.create([{
-        userId: userId,
-        type: 'credit',
-        amount: amount,
-        status: 'successful',
-        description: `Wallet funding via PayStack - Ref: ${reference}`,
-        balanceBefore: balanceBefore,
-        balanceAfter: balanceAfter,
-        reference: reference,
-        isCommission: false,
-        authenticationMethod: 'paystack',
-        metadata: {
-          source: 'paystack_direct',
-          verifiedAt: new Date(),
-          customerEmail: paystackData.data.customer?.email,
-          paymentMethod: paystackData.data.channel
-        }
-      }], { session });
-
-      await session.commitTransaction();
-
-      // Create notification
-      await Notification.create({
-        recipientId: userId,
-        title: "Payment Verified Successfully ✅",
-        message: `Your payment of ₦${amount} has been verified and credited to your wallet. New balance: ₦${balanceAfter}`,
-        isRead: false
-      });
-
-      console.log('✅ Payment verified and processed:', reference);
-
-      res.json({
-        success: true,
-        message: 'Payment verified successfully',
-        amount: amount,
-        newBalance: balanceAfter,
-        transaction: transaction[0],
-        paystackData: paystackData.data
-      });
-
-    } else {
-      await session.abortTransaction();
-      res.status(400).json({
-        success: false,
-        message: 'Payment verification failed or not successful',
-        paystackData: paystackData.data
-      });
-    }
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Payment verification error:', error);
-    
-    if (error.response) {
-      res.status(error.response.status).json({
-        success: false,
-        message: `PayStack API error: ${error.response.status}`,
-        details: error.response.data
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: 'Payment verification failed',
-        error: error.message
-      });
-    }
-  } finally {
-    session.endSession();
-  }
-});
 
 
 
@@ -17489,167 +17144,7 @@ app.get('/api/transactions/check-reference/:reference', protect, async (req, res
 
 
 
-// @desc    Enhanced PayStack verification with database duplicate protection
-// @route   POST /api/payments/verify-paystack
-// @access  Private
-app.post('/api/payments/verify-paystack', protect, [
-  body('reference').notEmpty().withMessage('Reference is required')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, message: errors.array()[0].msg });
-  }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { reference } = req.body;
-    const userId = req.user._id;
-
-    console.log('🔍 DATABASE VERIFICATION: Checking reference:', reference);
-
-    // ✅ CRITICAL: Database-level duplicate check
-    const existingTransaction = await Transaction.findOne({
-      reference: reference,
-      status: 'successful'
-    }).session(session);
-
-    if (existingTransaction) {
-      await session.abortTransaction();
-      console.log('✅ DATABASE: Transaction already processed:', reference);
-      
-      return res.json({
-        success: false,
-        message: 'This transaction was already verified and processed',
-        alreadyProcessed: true,
-        amount: existingTransaction.amount,
-        newBalance: req.user.walletBalance,
-        transactionId: existingTransaction._id
-      });
-    }
-
-    // Verify with PayStack API
-    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
-    
-    const paystackResponse = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 15000
-      }
-    );
-
-    const paystackData = paystackResponse.data;
-
-    if (paystackData.status === true && paystackData.data.status === 'success') {
-      const amount = paystackData.data.amount / 100; // Convert to Naira
-      
-      // ✅ Get fresh user data within transaction
-      const user = await User.findById(userId).session(session);
-      if (!user) {
-        await session.abortTransaction();
-        return res.status(404).json({ success: false, message: 'User not found' });
-      }
-
-      const balanceBefore = user.walletBalance;
-      user.walletBalance += amount;
-      const balanceAfter = user.walletBalance;
-      
-      await user.save({ session });
-
-      // ✅ Create transaction record with UNIQUE reference constraint
-      const transaction = await Transaction.create([{
-        userId: userId,
-        type: 'credit',
-        amount: amount,
-        status: 'successful',
-        description: `Wallet funding via PayStack - Ref: ${reference}`,
-        balanceBefore: balanceBefore,
-        balanceAfter: balanceAfter,
-        reference: reference, // This will fail if duplicate due to schema unique constraint
-        isCommission: false,
-        authenticationMethod: 'paystack',
-        metadata: {
-          source: 'paystack_direct',
-          verifiedAt: new Date(),
-          customerEmail: paystackData.data.customer?.email,
-          paymentMethod: paystackData.data.channel,
-          balanceUpdated: true
-        }
-      }], { session });
-
-      await session.commitTransaction();
-
-      // Create notification
-      await Notification.create({
-        recipientId: userId,
-        title: "Payment Verified Successfully ✅",
-        message: `Your payment of ₦${amount} has been verified and credited to your wallet. New balance: ₦${balanceAfter}`,
-        isRead: false
-      });
-
-      console.log('✅ DATABASE VERIFICATION COMPLETE:', {
-        reference,
-        amount,
-        newBalance: balanceAfter,
-        transactionId: transaction[0]._id
-      });
-
-      res.json({
-        success: true,
-        message: 'Payment verified successfully',
-        amount: amount,
-        newBalance: balanceAfter,
-        transaction: transaction[0],
-        paystackData: paystackData.data
-      });
-
-    } else {
-      await session.abortTransaction();
-      res.status(400).json({
-        success: false,
-        message: 'Payment verification failed or not successful',
-        paystackData: paystackData.data
-      });
-    }
-
-  } catch (error) {
-    await session.abortTransaction();
-    
-    // ✅ Handle duplicate key error (MongoDB unique constraint)
-    if (error.code === 11000 || error.message.includes('duplicate key')) {
-      console.log('✅ DATABASE UNIQUE CONSTRAINT: Transaction already exists:', req.body.reference);
-      return res.json({
-        success: false,
-        message: 'Transaction was already processed',
-        alreadyProcessed: true,
-        databaseConstraint: true
-      });
-    }
-    
-    console.error('❌ DATABASE VERIFICATION ERROR:', error);
-    
-    if (error.response) {
-      res.status(error.response.status).json({
-        success: false,
-        message: `PayStack API error: ${error.response.status}`,
-        details: error.response.data
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: 'Payment verification failed',
-        error: error.message
-      });
-    }
-  } finally {
-    session.endSession();
-  }
-});
 
 
 
@@ -18011,80 +17506,6 @@ app.get('/api/debug/status', protect, async (req, res) => {
   } catch (error) {
     console.error('Debug status error:', error);
     res.status(500).json({ success: false, message: 'Debug status check failed' });
-  }
-});
-
-
-// ==================== PAYSTACK INITIALIZATION ENDPOINT ====================
-// This is the missing endpoint your Flutter app is calling
-app.post('/api/payments/initialize-paystack', async (req, res) => {
-  console.log('INITIALIZE-PAYSTACK: Request received', req.body);
-
-  try {
-    const { userId, email, amount, reference, transactionPin, useBiometric } = req.body;
-
-    if (!userId || !email || !amount || !reference) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required fields' 
-      });
-    }
-
-    // Generate proper PayStack reference
-    const paystackReference = `ref_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Call PayStack directly
-    const paystackResponse = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email: email,
-        amount: Math.round(amount * 100), // Convert to kobo
-        reference: paystackReference,
-        callback_url: 'https://your-app.com/payment-callback', // Change to your actual URL
-        metadata: { userId, originalReference: reference }
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    if (paystackResponse.data.status) {
-      console.log('PayStack initialization successful');
-
-      // Store pending transaction
-      const pendingTransaction = new Transaction({
-        userId,
-        amount,
-        reference: paystackReference,
-        originalReference: reference,
-        type: 'wallet_funding',
-        status: 'pending',
-        gateway: 'paystack',
-        metadata: { source: 'initialize-paystack', useBiometric }
-      });
-      await pendingTransaction.save();
-
-      res.json({
-        success: true,
-        authorizationUrl: paystackResponse.data.data.authorization_url,
-        reference: paystackResponse.data.data.reference,
-        accessCode: paystackResponse.data.data.access_code,
-        message: 'Payment initialized successfully'
-      });
-    } else {
-      throw new Error(paystackResponse.data.message || 'PayStack initialization failed');
-    }
-
-  } catch (error) {
-    console.error('initialize-paystack error:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Payment initialization failed',
-      error: error.message
-    });
   }
 });
 
