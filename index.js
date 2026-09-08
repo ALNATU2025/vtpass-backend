@@ -551,8 +551,7 @@ app.use((req, res, next) => {
 // ==================== MAINTENANCE MODE MIDDLEWARE ====================
 app.use(async (req, res, next) => {
   try {
-    // Skip maintenance check for certain routes
-        // Skip maintenance check for certain routes
+    // Skip maintenance check for public routes
     const publicRoutes = [
       '/api/users/login',
       '/api/users/register',
@@ -561,33 +560,58 @@ app.use(async (req, res, next) => {
       '/api/auth/send-verification-otp',
       '/api/auth/verify-otp',
       '/api/debug/ip',
-      // 🚨 CRITICAL SECURITY FIX: REMOVE wallet top-up endpoints from public routes
-      // '/api/wallet/top-up',
-      // '/api/wallet/force-topup',
-      // '/api/payments/verify-paystack',
-      // '/api/paystack/verify-transaction'
+      '/api/maintenance-status', // ✅ Allow checking maintenance status
+      '/api/app/version'
     ];
     
-    if (publicRoutes.some(route => req.path.startsWith(route))) {
+    // ✅ CRITICAL: Allow ALL admin routes to bypass maintenance
+    const isAdminRoute = req.path.startsWith('/api/admin');
+    const isAdminProtected = req.path.startsWith('/api/users') && req.method === 'GET';
+    
+    // Skip maintenance for public routes and ALL admin routes
+    if (publicRoutes.some(route => req.path.startsWith(route)) || isAdminRoute) {
       return next();
     }
-
-
-   
     
+    // Check if user is admin via token
+    let isAdminUser = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.decode(token);
+        if (decoded && decoded.id) {
+          const user = await User.findById(decoded.id).select('isAdmin');
+          if (user && user.isAdmin) {
+            isAdminUser = true;
+          }
+        }
+      } catch (e) {
+        // Token decode failed, continue
+      }
+    }
+    
+    // ✅ Allow admin users to bypass maintenance
+    if (isAdminUser) {
+      console.log(`👑 Admin bypassing maintenance: ${req.path}`);
+      return next();
+    }
+    
+    // Check maintenance mode
     const settings = await Settings.findOne();
     if (settings && settings.isMaintenanceMode === true) {
+      console.log(`🚧 Maintenance mode active - Blocking: ${req.method} ${req.path}`);
       return res.status(503).json({
         success: false,
         message: 'System is currently under maintenance. Please try again later.',
-        code: 'MAINTENANCE_MODE'
+        code: 'MAINTENANCE_MODE',
+        maintenanceMessage: settings.maintenanceMessage || 'System under maintenance'
       });
     }
     
     next();
   } catch (error) {
     console.error('Maintenance check error:', error);
-    next(); // Don't block on error
+    next();
   }
 });
 // ==================== END MAINTENANCE MIDDLEWARE ====================
@@ -601,11 +625,37 @@ app.use(async (req, res, next) => {
 app.get('/api/maintenance-status', async (req, res) => {
   try {
     const settings = await Settings.findOne();
-    res.json({
+    
+    // Check if user is admin (to show additional info)
+    let isAdmin = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.decode(token);
+        if (decoded && decoded.id) {
+          const user = await User.findById(decoded.id).select('isAdmin');
+          if (user && user.isAdmin) {
+            isAdmin = true;
+          }
+        }
+      } catch (e) {}
+    }
+    
+    const response = {
       maintenanceMode: settings?.isMaintenanceMode || false,
       message: settings?.maintenanceMessage || '',
       timestamp: new Date().toISOString()
-    });
+    };
+    
+    // ✅ Add admin info if user is admin
+    if (isAdmin) {
+      response.isAdmin = true;
+      response.maintenanceEnabled = settings?.isMaintenanceMode || false;
+      response.maintenanceMessage = settings?.maintenanceMessage || '';
+      response.adminNote = 'As an admin, you can still access all admin endpoints.';
+    }
+    
+    res.json(response);
   } catch (error) {
     res.json({ 
       maintenanceMode: false,
@@ -7085,6 +7135,8 @@ app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
       settings = new Settings();
     }
     
+    // Update maintenance settings
+    const previousState = settings.isMaintenanceMode || false;
     settings.isMaintenanceMode = isMaintenanceMode === true;
     if (message !== undefined) {
       settings.maintenanceMessage = message;
@@ -7092,18 +7144,50 @@ app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
     
     await settings.save();
     
+    // ✅ Log the change
+    console.log(`🔧 Maintenance mode: ${previousState ? 'OFF' : 'ON'} → ${settings.isMaintenanceMode ? 'ON' : 'OFF'}`);
+    console.log(`📝 Maintenance message: ${settings.maintenanceMessage || 'No message'}`);
+    
+    // ✅ Create notification for admin about the change
+    try {
+      await Notification.create({
+        recipient: req.user._id,
+        title: settings.isMaintenanceMode ? '🔧 Maintenance Mode Enabled' : '✅ Maintenance Mode Disabled',
+        message: settings.isMaintenanceMode 
+          ? `System is now in maintenance mode. Users will see: "${settings.maintenanceMessage || 'System under maintenance'}"`
+          : 'System is back online. Users can now access all services.',
+        type: 'announcement',
+        isRead: false,
+        metadata: {
+          action: 'maintenance_toggle',
+          enabled: settings.isMaintenanceMode,
+          previousState: previousState,
+          message: settings.maintenanceMessage,
+          adminId: req.user._id,
+          adminName: req.user.fullName
+        }
+      });
+    } catch (notifError) {
+      console.error('Maintenance notification error:', notifError);
+    }
+    
     res.json({
       success: true,
       message: `Maintenance mode ${settings.isMaintenanceMode ? 'enabled' : 'disabled'}`,
       maintenanceMode: settings.isMaintenanceMode,
-      maintenanceMessage: settings.maintenanceMessage
+      maintenanceMessage: settings.maintenanceMessage,
+      previousState: previousState,
+      isActive: settings.isMaintenanceMode,
+      adminNote: 'Admin access is always available regardless of maintenance mode.'
     });
   } catch (error) {
     console.error('Maintenance toggle error:', error);
-    res.status(500).json({ success: false, message: 'Failed to toggle maintenance' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to toggle maintenance mode'
+    });
   }
 });
-
 
 // ==================== REGISTRATIONS BY DATE RANGE ====================
 // @desc    Get registrations by date range
