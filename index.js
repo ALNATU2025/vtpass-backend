@@ -420,10 +420,60 @@ const userActivityTracker = async (req, res, next) => {
 // Apply the middleware
 app.use(userActivityTracker);
 
+// ==================== HARD BLOCK UNAUTHORIZED FUNDING ====================
+// 🚫 COMPLETELY DISABLE UNAUTHORIZED WALLET FUNDING ENDPOINTS
+// MUST BE REGISTERED BEFORE ANY OTHER ROUTES THAT MIGHT MATCH
+app.all('/api/wallet/top-up', (req, res) => {
+  console.warn(`🚨 [SECURITY] Unauthorized top-up attempt from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This funding method has been deprecated. Please use your dedicated virtual account.',
+    code: 'FUNDING_METHOD_BLOCKED'
+  });
+});
+
+app.all('/api/wallet/force-topup', (req, res) => {
+  console.warn(`🚨 [SECURITY] Unauthorized force-topup attempt from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This funding method has been disabled for security reasons.',
+    code: 'FUNDING_METHOD_DISABLED'
+  });
+});
+
+app.all('/api/payments/verify-paystack', (req, res) => {
+  console.warn(`🚨 [SECURITY] Deprecated PayStack endpoint accessed from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'PayStack payments are no longer supported.',
+    code: 'PAYMENT_PROVIDER_DISABLED'
+  });
+});
+
+app.all('/api/paystack/verify-transaction', (req, res) => {
+  console.warn(`🚨 [SECURITY] Deprecated PayStack verify endpoint accessed from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'PayStack payments are no longer supported.',
+    code: 'PAYMENT_PROVIDER_DISABLED'
+  });
+});
+
+app.all('/api/paystack/*', (req, res) => {
+  console.warn(`🚨 [SECURITY] Legacy PayStack route accessed from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'PayStack integration has been removed.',
+    code: 'PAYMENT_PROVIDER_REMOVED'
+  });
+});
+// ==================== END OF HARD BLOCK ====================
+
 // ==================== MAINTENANCE MODE MIDDLEWARE ====================
 app.use(async (req, res, next) => {
   try {
     // Skip maintenance check for certain routes
+        // Skip maintenance check for certain routes
     const publicRoutes = [
       '/api/users/login',
       '/api/users/register',
@@ -432,15 +482,19 @@ app.use(async (req, res, next) => {
       '/api/auth/send-verification-otp',
       '/api/auth/verify-otp',
       '/api/debug/ip',
-      '/api/wallet/top-up',  // Allow funding during maintenance
-      '/api/wallet/force-topup',
-      '/api/payments/verify-paystack',
-      '/api/paystack/verify-transaction'
+      // 🚨 CRITICAL SECURITY FIX: REMOVE wallet top-up endpoints from public routes
+      // '/api/wallet/top-up',
+      // '/api/wallet/force-topup',
+      // '/api/payments/verify-paystack',
+      // '/api/paystack/verify-transaction'
     ];
     
     if (publicRoutes.some(route => req.path.startsWith(route))) {
       return next();
     }
+
+
+   
     
     const settings = await Settings.findOne();
     if (settings && settings.isMaintenanceMode === true) {
@@ -994,6 +1048,9 @@ const TRANSACTION_LIMITS = {
     cableTv: 20000,
     transfer: 100000,
     internationalAirtime: 20000,
+    education: 50000,      // ✅ ADD THIS
+    insurance: 50000,      // ✅ ADD THIS
+    proxy: 50000,          // ✅ ADD THIS
     walletFunding: 1000000,
     default: 100000
   },
@@ -1004,6 +1061,9 @@ const TRANSACTION_LIMITS = {
     cableTv: 10000,
     transfer: 50000,
     internationalAirtime: 5000,
+    education: 50000,      // ✅ ADD THIS
+    insurance: 50000,      // ✅ ADD THIS
+    proxy: 50000,          // ✅ ADD THIS
     default: 50000
   }
 };
@@ -6812,6 +6872,135 @@ app.get('/api/admin/users/daily', adminProtect, async (req, res) => {
   }
 });
 
+
+// ==================== ADMIN UPDATE USER ====================
+// @desc    Update user data (Admin only)
+// @route   PUT /api/admin/users/:userId
+// @access  Private/Admin
+app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { customLimits, isActive, isAdmin, walletBalance, commissionBalance } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Update custom limits if provided
+    if (customLimits !== undefined) {
+      user.customLimits = customLimits;
+    }
+    
+    if (isActive !== undefined) user.isActive = isActive;
+    if (isAdmin !== undefined) user.isAdmin = isAdmin;
+    if (walletBalance !== undefined) user.walletBalance = walletBalance;
+    if (commissionBalance !== undefined) user.commissionBalance = commissionBalance;
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        customLimits: user.customLimits,
+        isActive: user.isActive,
+        isAdmin: user.isAdmin
+      }
+    });
+  } catch (error) {
+    console.error('Admin update user error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update user' });
+  }
+});
+
+
+
+// ==================== TOGGLE SERVICE ====================
+// @desc    Enable/disable a service
+// @route   POST /api/admin/service-toggle
+// @access  Private/Admin
+app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
+  try {
+    const { service, enabled } = req.body;
+    
+    if (!service) {
+      return res.status(400).json({ success: false, message: 'Service name required' });
+    }
+    
+    const serviceMap = {
+      'airtime': 'isAirtimeEnabled',
+      'data': 'isDataEnabled',
+      'electricity': 'isElectricityEnabled',
+      'cable': 'isCableTvEnabled',
+      'transfer': 'isTransferEnabled',
+      'international_airtime': 'isInternationalAirtimeEnabled',
+      'education': 'isEducationEnabled',
+      'insurance': 'isInsuranceEnabled'
+    };
+    
+    const settingKey = serviceMap[service];
+    if (!settingKey) {
+      return res.status(400).json({ success: false, message: 'Invalid service name' });
+    }
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    settings[settingKey] = enabled !== false;
+    await settings.save();
+    
+    res.json({
+      success: true,
+      message: `Service ${enabled ? 'enabled' : 'disabled'} successfully`,
+      service,
+      enabled: settings[settingKey]
+    });
+  } catch (error) {
+    console.error('Service toggle error:', error);
+    res.status(500).json({ success: false, message: 'Failed to toggle service' });
+  }
+});
+
+
+// ==================== MAINTENANCE MODE ====================
+// @desc    Toggle maintenance mode
+// @route   POST /api/admin/maintenance
+// @access  Private/Admin
+app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
+  try {
+    const { isMaintenanceMode, message } = req.body;
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    settings.isMaintenanceMode = isMaintenanceMode === true;
+    if (message !== undefined) {
+      settings.maintenanceMessage = message;
+    }
+    
+    await settings.save();
+    
+    res.json({
+      success: true,
+      message: `Maintenance mode ${settings.isMaintenanceMode ? 'enabled' : 'disabled'}`,
+      maintenanceMode: settings.isMaintenanceMode,
+      maintenanceMessage: settings.maintenanceMessage
+    });
+  } catch (error) {
+    console.error('Maintenance toggle error:', error);
+    res.status(500).json({ success: false, message: 'Failed to toggle maintenance' });
+  }
+});
+
+
 // ==================== REGISTRATIONS BY DATE RANGE ====================
 // @desc    Get registrations by date range
 // @route   GET /api/admin/users/by-date-range
@@ -9562,7 +9751,11 @@ app.get('/api/transactions/statistics', adminProtect, [
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
-app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'), [
+app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'),
+checkGlobalPerMinuteLimit, // ✅ Global limit
+checkTransactionLimit('transfer'),
+checkPerMinuteLimit('transfer'), // ✅ Service-specific limit         
+         [
   body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
 ], async (req, res) => {
@@ -12092,6 +12285,9 @@ app.post('/api/vtpass/tv/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit
+  checkTransactionLimit('cableTv'),
+  checkPerMinuteLimit('cabletv'), // ✅ Service-specific limit
   preventRaceCondition({ 
     windowMs: 30000,
     maxRequests: 1,
@@ -12688,16 +12884,16 @@ app.post('/api/vtpass/airtime/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
-  checkGlobalPerMinuteLimit, 
-  checkTransactionLimit('airtime'),
-  checkPerMinuteLimit('airtime'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit (max 5 per minute)
+  checkTransactionLimit('airtime'), // ✅ Per-transaction limit (₦1,000)
+  checkPerMinuteLimit('airtime'), // ✅ Service-specific limit (max 3 per minute)
   preventRaceCondition({ 
     windowMs: 30000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'airtime',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('airtime', 3, 60000), // Max 3 airtime purchases per minute
+  userServiceRateLimiter('airtime', 1, 60000), // Max 1 airtime purchases per minute
   [
     body('network').isIn(['mtn', 'airtel', 'glo', 'etisalat']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
     body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
@@ -12942,13 +13138,16 @@ app.post('/api/vtpass/data/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isDataEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit
+  checkTransactionLimit('data'),
+  checkPerMinuteLimit('data'), // ✅ Service-specific limit
   preventRaceCondition({ 
     windowMs: 30000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'data',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('data', 2, 60000), // Max 2 data purchases per minute
+  userServiceRateLimiter('data', 1, 60000), // Max 1 data purchases per minute
   [
     body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
     body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
@@ -13502,13 +13701,16 @@ app.post('/api/vtpass/electricity/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isElectricityEnabled'),
+  checkGlobalPerMinuteLimit,
+  checkTransactionLimit('electricity'),// ✅ Global limit
+  checkPerMinuteLimit('electricity'), // ✅ Service-specific limit
   preventRaceCondition({ 
     windowMs: 30000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'electricity',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('electricity', 2, 60000), // Max 2 purchases per minute
+  userServiceRateLimiter('electricity', 1, 60000), // Max 1 purchases per minute
   [
     body('serviceID').notEmpty().withMessage('Provider required'),
     body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
@@ -14474,6 +14676,9 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
 // @access  Private
 app.post('/api/vtpass/proxy', 
   protect, 
+  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  checkTransactionLimit('proxy'),
+  checkPerMinuteLimit('proxy'), // ✅ ADD THIS
   preventDuplicateVtpassCall(), // Prevents duplicate VTpass calls
   async (req, res) => {
   console.log('PROXY ENDPOINT HIT - RACE PROTECTED + IMMEDIATE DEBIT 2026');
@@ -15864,7 +16069,11 @@ app.post('/api/education/validate-profile', protect, [
 // @desc    Purchase education service (WAEC, JAMB, etc.)
 // @route   POST /api/education/purchase
 // @access  Private
-app.post('/api/education/purchase', protect, verifyTransactionAuth, [
+app.post('/api/education/purchase', protect, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  checkTransactionLimit('education'),
+  checkPerMinuteLimit('education'), // ✅ ADD THIS
+  checkTransactionLimit('education'), // ✅ ADD THIS[
   body('serviceID').notEmpty().withMessage('Service ID is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
@@ -16178,7 +16387,11 @@ app.get('/api/insurance/variations', protect, async (req, res) => {
 // @desc    Purchase insurance with correct variation codes
 // @route   POST /api/insurance/purchase
 // @access  Private
-app.post('/api/insurance/purchase', protect, verifyTransactionAuth, [
+app.post('/api/insurance/purchase', protect, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  checkTransactionLimit('insurance'), 
+  checkPerMinuteLimit('insurance'), // ✅ ADD THIS
+  checkTransactionLimit('insurance'), // ✅ ADD THIS[
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
   body('insuredName').notEmpty().withMessage('Insured name is required'),
@@ -18500,13 +18713,16 @@ app.post('/api/international-airtime/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit
+  checkTransactionLimit('internationalAirtime'),
+  checkPerMinuteLimit('international_airtime'), // ✅ Service-specific limit
   preventRaceCondition({ 
     windowMs: 30000,
     maxRequests: 1,
     keyPrefix: 'int_airtime',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('int_airtime', 3, 60000),
+  userServiceRateLimiter('int_airtime', 1, 60000),
   [
     body('operatorId').notEmpty().withMessage('Operator ID is required'),
     body('countryCode').notEmpty().withMessage('Country code is required'),
