@@ -548,40 +548,48 @@ app.use((req, res, next) => {
 });
 // ==================== END OF HARD BLOCK ====================
 
-// ==================== MAINTENANCE MODE MIDDLEWARE ====================
+// ==================== MAINTENANCE MODE MIDDLEWARE - WITH READ-ONLY ACCESS ====================
 app.use(async (req, res, next) => {
   try {
-    // Skip maintenance check for public routes
+    // Skip maintenance check for these public routes
     const publicRoutes = [
       '/api/users/login',
       '/api/users/register',
       '/api/settings',
       '/health',
+      '/api/health',
       '/api/auth/send-verification-otp',
       '/api/auth/verify-otp',
       '/api/debug/ip',
-      '/api/maintenance-status', // ✅ Allow checking maintenance status
-      '/api/app/version'
+      '/api/maintenance-status',
+      '/api/app/version',
+      '/api/auth/check-duplicates'
     ];
     
-    // ✅ CRITICAL: Allow ALL admin routes to bypass maintenance
+    // ✅ ALWAYS allow admin routes to bypass maintenance
     const isAdminRoute = req.path.startsWith('/api/admin');
-    const isAdminProtected = req.path.startsWith('/api/users') && req.method === 'GET';
     
-    // Skip maintenance for public routes and ALL admin routes
-    if (publicRoutes.some(route => req.path.startsWith(route)) || isAdminRoute) {
+    // Skip maintenance for public routes
+    if (publicRoutes.some(route => req.path.startsWith(route))) {
       return next();
     }
     
-    // Check if user is admin via token
+    // ✅ Skip maintenance for admin routes
+    if (isAdminRoute) {
+      console.log(`👑 Admin route bypass: ${req.method} ${req.path}`);
+      return next();
+    }
+    
+    // Check if the user is an admin via token
     let isAdminUser = false;
     const token = req.headers.authorization?.split(' ')[1];
+    
     if (token) {
       try {
         const decoded = jwt.decode(token);
         if (decoded && decoded.id) {
-          const user = await User.findById(decoded.id).select('isAdmin');
-          if (user && user.isAdmin) {
+          const user = await User.findById(decoded.id).select('isAdmin role').lean();
+          if (user && (user.isAdmin === true || user.role === 'admin' || user.role === 'super_admin')) {
             isAdminUser = true;
           }
         }
@@ -592,19 +600,47 @@ app.use(async (req, res, next) => {
     
     // ✅ Allow admin users to bypass maintenance
     if (isAdminUser) {
-      console.log(`👑 Admin bypassing maintenance: ${req.path}`);
+      console.log(`👑 Admin user bypass: ${req.method} ${req.path}`);
       return next();
     }
     
-    // Check maintenance mode
-    const settings = await Settings.findOne();
+    // 🔥 NEW: ALLOW READ-ONLY ENDPOINTS during maintenance
+    const readOnlyEndpoints = [
+      '/api/users/balance',
+      '/api/users/commission-balance',
+      '/api/commission/balance',
+      '/api/transactions',
+      '/api/commission/transactions',
+      '/api/commission/stats',
+      '/api/users/security-settings',
+      '/api/beneficiaries',
+      '/api/notifications',
+      '/api/notifications/statistics',
+      '/api/users/profile'
+    ];
+    
+    const isReadOnly = readOnlyEndpoints.some(endpoint => req.path.startsWith(endpoint));
+    
+    // Check maintenance mode from database
+    const settings = await Settings.findOne().lean();
+    
     if (settings && settings.isMaintenanceMode === true) {
-      console.log(`🚧 Maintenance mode active - Blocking: ${req.method} ${req.path}`);
+      // ✅ ALLOW read-only endpoints (GET requests only) during maintenance
+      if (isReadOnly && req.method === 'GET') {
+        console.log(`📖 READ-ONLY allowed during maintenance: ${req.method} ${req.path}`);
+        return next();
+      }
+      
+      // Block all other endpoints (POST, PUT, DELETE, etc.)
+      console.log(`🚧 MAINTENANCE ACTIVE - Blocking: ${req.method} ${req.path}`);
+      
       return res.status(503).json({
         success: false,
-        message: 'System is currently under maintenance. Please try again later.',
+        message: settings.maintenanceMessage || 'System is currently under maintenance. Please try again later.',
         code: 'MAINTENANCE_MODE',
-        maintenanceMessage: settings.maintenanceMessage || 'System under maintenance'
+        maintenanceMode: true,
+        maintenanceMessage: settings.maintenanceMessage || 'System under maintenance',
+        readOnly: isReadOnly && req.method === 'GET'
       });
     }
     
@@ -619,47 +655,83 @@ app.use(async (req, res, next) => {
 
 
 // ================================================
-// 📡 MAINTENANCE STATUS - PUBLIC
+// 📡 MAINTENANCE STATUS - WITH READ-ONLY INFO
 // ================================================
-
 app.get('/api/maintenance-status', async (req, res) => {
   try {
-    const settings = await Settings.findOne();
+    const settings = await Settings.findOne().lean();
     
-    // Check if user is admin (to show additional info)
+    // Check if the requester is an admin
     let isAdmin = false;
+    let adminDetails = {};
+    
     const token = req.headers.authorization?.split(' ')[1];
     if (token) {
       try {
         const decoded = jwt.decode(token);
         if (decoded && decoded.id) {
-          const user = await User.findById(decoded.id).select('isAdmin');
-          if (user && user.isAdmin) {
+          const user = await User.findById(decoded.id).select('isAdmin role fullName email').lean();
+          if (user && (user.isAdmin === true || user.role === 'admin' || user.role === 'super_admin')) {
             isAdmin = true;
+            adminDetails = {
+              name: user.fullName,
+              email: user.email,
+              role: user.role || 'admin'
+            };
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        // Token decode failed
+      }
     }
     
     const response = {
+      success: true,
       maintenanceMode: settings?.isMaintenanceMode || false,
       message: settings?.maintenanceMessage || '',
-      timestamp: new Date().toISOString()
+      isAdmin: isAdmin,
+      timestamp: new Date().toISOString(),
+      // ✅ NEW: Tell frontend what's allowed during maintenance
+      readOnlyAllowed: true,
+      allowedEndpoints: [
+        'View Balance',
+        'View Transactions',
+        'View Commission Balance',
+        'View Notifications',
+        'View Beneficiaries'
+      ],
+      blockedActions: [
+        'New Transactions',
+        'Airtime Purchase',
+        'Data Purchase',
+        'Electricity Bill Payment',
+        'Cable TV Subscription',
+        'International Airtime',
+        'Education Purchase',
+        'Insurance Purchase',
+        'Money Transfer',
+        'Wallet Funding'
+      ]
     };
     
-    // ✅ Add admin info if user is admin
+    // Add admin-specific info
     if (isAdmin) {
-      response.isAdmin = true;
+      response.adminDetails = adminDetails;
       response.maintenanceEnabled = settings?.isMaintenanceMode || false;
       response.maintenanceMessage = settings?.maintenanceMessage || '';
       response.adminNote = 'As an admin, you can still access all admin endpoints.';
     }
     
     res.json(response);
+    
   } catch (error) {
-    res.json({ 
+    console.error('Maintenance status error:', error);
+    res.json({
+      success: false,
       maintenanceMode: false,
-      message: 'Unable to fetch maintenance status'
+      message: 'Unable to fetch maintenance status',
+      timestamp: new Date().toISOString(),
+      readOnlyAllowed: false
     });
   }
 });
