@@ -1202,6 +1202,7 @@ const protect = async (req, res, next) => {
 // ==================== SERVICE AVAILABILITY MIDDLEWARE ====================
 
 // Reusable middleware to check if a service is enabled globally
+// ==================== SERVICE AVAILABILITY MIDDLEWARE - COMPLETE ====================
 const checkServiceEnabled = (serviceKey) => {
   return async (req, res, next) => {
     try {
@@ -1209,36 +1210,54 @@ const checkServiceEnabled = (serviceKey) => {
       
       if (!settings || settings[serviceKey] === false) {
         const serviceNames = {
+          // ===== CORE SERVICES =====
           'isAirtimeEnabled': 'Airtime service',
           'isDataEnabled': 'Data service',
           'isCableTvEnabled': 'Cable TV service',
           'isElectricityEnabled': 'Electricity service',
           'isTransferEnabled': 'Money transfer service',
+          
+          // ===== ADDITIONAL SERVICES =====
+          'isInternationalAirtimeEnabled': 'International Airtime service',
+          'isEducationEnabled': 'Education service',
+          'isInsuranceEnabled': 'Insurance service',
+          
+          // ===== SYSTEM =====
           'isMaintenanceMode': 'Maintenance mode'
         };
         
+        const serviceName = serviceNames[serviceKey] || 'This service';
+        
+        console.log(`🚫 [SERVICE DISABLED] ${serviceName} (${serviceKey}) is currently disabled`);
+        
         return res.status(403).json({
           success: false,
-          message: `${serviceNames[serviceKey] || 'This service'} is currently disabled. Please try again later.`,
-          code: 'SERVICE_DISABLED'
+          message: `${serviceName} is currently disabled. Please try again later.`,
+          code: 'SERVICE_DISABLED',
+          serviceKey: serviceKey,
+          timestamp: new Date().toISOString()
         });
       }
       
       next();
     } catch (error) {
-      console.error(`Error checking ${serviceKey}:`, error);
+      console.error(`❌ Error checking ${serviceKey}:`, error);
       res.status(500).json({ 
         success: false, 
-        message: 'Service availability check failed' 
+        message: 'Service availability check failed',
+        code: 'SERVICE_CHECK_FAILED'
       });
     }
   };
 };
 
 
-
 // ================================================
 // 📊 TRANSACTION LIMITS
+// ================================================
+
+// ================================================
+// 📊 TRANSACTION LIMITS - COMPLETE
 // ================================================
 
 const TRANSACTION_LIMITS = {
@@ -1246,9 +1265,9 @@ const TRANSACTION_LIMITS = {
     airtime: 5000,
     data: 10000,
     electricity: 100000,
-    cable: 500000,        // ← CHANGED from cableTv to cable, 500k per day
+    cable: 500000,
     transfer: 100000,
-    internationalAirtime: 50000,
+    international_airtime: 50000,
     education: 100000,
     insurance: 100000,
     proxy: 50000,
@@ -1259,9 +1278,9 @@ const TRANSACTION_LIMITS = {
     airtime: 1000,
     data: 10000,
     electricity: 50000,
-    cable: 100000,        // ← CHANGED from cableTv to cable, 100k per transaction
+    cable: 100000,
     transfer: 50000,
-    internationalAirtime: 10000,
+    international_airtime: 10000,
     education: 50000,
     insurance: 50000,
     proxy: 50000,
@@ -1269,7 +1288,8 @@ const TRANSACTION_LIMITS = {
   }
 };
 
-
+// ==================== CHECK TRANSACTION LIMIT - FIXED VERSION ====================
+// ==================== CHECK TRANSACTION LIMIT - COMPLETE FIX ====================
 const checkTransactionLimit = (serviceType) => {
   return async (req, res, next) => {
     try {
@@ -1279,11 +1299,12 @@ const checkTransactionLimit = (serviceType) => {
       const amount = parseFloat(req.body.amount || req.body.Amount || 0);
       if (amount <= 0) return next();
       
-      // ✅ FIX: Better service key mapping
+      // ================================================
+      // COMPLETE SERVICE KEY MAPPING
+      // ================================================
       let limitKey = serviceType;
       
       const serviceKeyMap = {
-        // Airtime
         'airtime': 'airtime',
         'airtime_purchase': 'airtime',
         'mtn': 'airtime',
@@ -1291,16 +1312,17 @@ const checkTransactionLimit = (serviceType) => {
         'glo': 'airtime',
         'etisalat': 'airtime',
         '9mobile': 'airtime',
-        
-        // Data
+        'mtn-airtime': 'airtime',
+        'airtel-airtime': 'airtime',
+        'glo-airtime': 'airtime',
         'data': 'data',
         'data_purchase': 'data',
         'mtn-data': 'data',
         'airtel-data': 'data',
         'glo-data': 'data',
         'etisalat-data': 'data',
-        
-        // Cable
+        '9mobile-data': 'data',
+        'glo-sme-data': 'data',
         'cable': 'cable',
         'cableTv': 'cable',
         'cabletv': 'cable',
@@ -1309,25 +1331,25 @@ const checkTransactionLimit = (serviceType) => {
         'dstv': 'cable',
         'gotv': 'cable',
         'startimes': 'cable',
-        
-        // Electricity
+        'showmax': 'cable',
         'electricity': 'electricity',
         'electric': 'electricity',
-        
-        // Transfer
+        'ikeja-electric': 'electricity',
+        'eko-electric': 'electricity',
+        'abuja-electric': 'electricity',
         'transfer': 'transfer',
-        
-        // International Airtime
+        'peer_transfer': 'transfer',
+        'wallet_transfer': 'transfer',
         'international_airtime': 'international_airtime',
         'int_airtime': 'international_airtime',
-        
-        // Education
+        'foreign-airtime': 'international_airtime',
         'education': 'education',
-        
-        // Insurance
+        'waec': 'education',
+        'jamb': 'education',
+        'neco': 'education',
+        'nabteb': 'education',
         'insurance': 'insurance',
-        
-        // Proxy
+        'ui-insure': 'insurance',
         'proxy': 'proxy',
       };
       
@@ -1337,12 +1359,24 @@ const checkTransactionLimit = (serviceType) => {
       
       console.log(`🔍 [LIMIT CHECK] Service: ${serviceType} → Key: ${limitKey}, Amount: ₦${amount}`);
       
-      // Get user with custom limits
-      const user = await User.findById(userId);
-      if (!user) return next();
+      // ================================================
+      // 🔥 GET USER - SIMPLIFIED AND RELIABLE
+      // ================================================
+      const user = await User.findById(userId).lean();
+      if (!user) {
+        console.log(`❌ User ${userId} not found`);
+        return next();
+      }
       
-      // ✅ DEBUG: Log custom limits
-      console.log(`👤 User ${userId} custom limits:`, JSON.stringify(user.customLimits || {}));
+      // ================================================
+      // 🔥 EXTRACT CUSTOM LIMITS - SAFELY
+      // ================================================
+      const customLimits = user.customLimits || {};
+      
+      console.log(`👤 User ${userId} customLimits found:`, Object.keys(customLimits).length > 0 ? 'YES' : 'NO');
+      if (Object.keys(customLimits).length > 0) {
+        console.log(`👤 User ${userId} customLimits:`, JSON.stringify(customLimits));
+      }
       
       // ================================================
       // CHECK PER-TRANSACTION LIMIT
@@ -1350,12 +1384,13 @@ const checkTransactionLimit = (serviceType) => {
       let perTxLimit = TRANSACTION_LIMITS.perTransaction[limitKey] || 
                        TRANSACTION_LIMITS.perTransaction.default;
       
-      // ✅ OVERRIDE with user's custom per-transaction limit if exists
-      if (user.customLimits && user.customLimits[limitKey] && user.customLimits[limitKey].perTransaction) {
-        const customPerTx = parseFloat(user.customLimits[limitKey].perTransaction);
-        if (customPerTx > 0) {
-          perTxLimit = customPerTx;
-          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit: ₦${perTxLimit}`);
+      // Check if user has custom limit for this service
+      const serviceLimit = customLimits[limitKey];
+      if (serviceLimit && typeof serviceLimit === 'object') {
+        // Check perTransaction
+        if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
+          perTxLimit = parseFloat(serviceLimit.perTransaction);
+          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit for ${limitKey}: ₦${perTxLimit}`);
         }
       }
       
@@ -1365,11 +1400,11 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
         return res.status(400).json({
           success: false,
-          message: `Maximum ${limitKey} per transaction is ₦${perTxLimit.toFixed(2)}. ${user.customLimits?.[limitKey]?.perTransaction ? 'Your custom limit: ₦${perTxLimit.toFixed(2)}' : 'Contact admin to increase your limit.'}`,
+          message: `Maximum ${limitKey} per transaction is ₦${perTxLimit.toFixed(2)}.`,
           code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
           limit: perTxLimit,
           requested: amount,
-          isCustomLimit: user.customLimits?.[limitKey]?.perTransaction ? true : false,
+          isCustomLimit: customLimits[limitKey]?.perTransaction ? true : false,
           service: limitKey
         });
       }
@@ -1380,12 +1415,10 @@ const checkTransactionLimit = (serviceType) => {
       let dailyLimit = TRANSACTION_LIMITS.daily[limitKey] || 
                        TRANSACTION_LIMITS.daily.default;
       
-      // ✅ OVERRIDE with user's custom daily limit if exists
-      if (user.customLimits && user.customLimits[limitKey] && user.customLimits[limitKey].dailyCap) {
-        const customDaily = parseFloat(user.customLimits[limitKey].dailyCap);
-        if (customDaily > 0) {
-          dailyLimit = customDaily;
-          console.log(`🔧 User ${userId} has CUSTOM daily limit: ₦${dailyLimit}`);
+      if (serviceLimit && typeof serviceLimit === 'object') {
+        if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
+          dailyLimit = parseFloat(serviceLimit.dailyCap);
+          console.log(`🔧 User ${userId} has CUSTOM daily limit for ${limitKey}: ₦${dailyLimit}`);
         }
       }
       
@@ -1394,11 +1427,13 @@ const checkTransactionLimit = (serviceType) => {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
+      const serviceRegex = new RegExp(limitKey, 'i');
+      
       const todayTotal = await Transaction.aggregate([
         {
           $match: {
             userId: new mongoose.Types.ObjectId(userId),
-            type: { $regex: new RegExp(limitKey, 'i') },
+            type: { $regex: serviceRegex },
             status: { $regex: /success|completed|Successful/i },
             createdAt: { $gte: today }
           }
@@ -1415,13 +1450,13 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
         return res.status(400).json({
           success: false,
-          message: `Daily ${limitKey} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}. ${user.customLimits?.[limitKey]?.dailyCap ? 'Your custom daily limit: ₦${dailyLimit.toFixed(2)}' : 'Contact admin to increase your limit.'}`,
+          message: `Daily ${limitKey} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
           code: 'DAILY_LIMIT_EXCEEDED',
           dailyLimit: dailyLimit,
           dailyTotal: dailyTotal,
           requested: amount,
           remaining: remaining,
-          isCustomLimit: user.customLimits?.[limitKey]?.dailyCap ? true : false,
+          isCustomLimit: customLimits[limitKey]?.dailyCap ? true : false,
           service: limitKey
         });
       }
@@ -1431,11 +1466,119 @@ const checkTransactionLimit = (serviceType) => {
       
     } catch (error) {
       console.error('❌ Limit check error:', error);
+      console.error('❌ Error stack:', error.stack);
       next();
     }
   };
 };
 
+
+
+// ==================== SMART LIMIT CHECK - COMPLETE SERVICE MAPPING ====================
+const smartLimitCheck = async (req, res, next) => {
+  try {
+    const { serviceID, variation_code, type, network } = req.body;
+    let limitService = 'proxy';
+    
+    // ================================================
+    // COMPLETE SERVICE MAPPING - ALL SERVICES
+    // ================================================
+    const serviceLimitMap = {
+      // ===== AIRTIME SERVICES =====
+      'mtn': 'airtime',
+      'airtel': 'airtime',
+      'glo': 'airtime',
+      'etisalat': 'airtime',
+      '9mobile': 'airtime',
+      'mtn-airtime': 'airtime',
+      'airtel-airtime': 'airtime',
+      'glo-airtime': 'airtime',
+      'etisalat-airtime': 'airtime',
+      '9mobile-airtime': 'airtime',
+      
+      // ===== DATA SERVICES =====
+      'mtn-data': 'data',
+      'airtel-data': 'data',
+      'glo-data': 'data',
+      'etisalat-data': 'data',
+      '9mobile-data': 'data',
+      'glo-sme-data': 'data',
+      
+      // ===== CABLE TV SERVICES =====
+      'dstv': 'cable',
+      'gotv': 'cable',
+      'startimes': 'cable',
+      'showmax': 'cable',
+      
+      // ===== ELECTRICITY SERVICES =====
+      'ikeja-electric': 'electricity',
+      'eko-electric': 'electricity',
+      'abuja-electric': 'electricity',
+      'ibadan-electric': 'electricity',
+      'enugu-electric': 'electricity',
+      'kano-electric': 'electricity',
+      'ph-electric': 'electricity',
+      'portharcourt-electric': 'electricity',
+      'jos-electric': 'electricity',
+      'kaduna-electric': 'electricity',
+      'benin-electric': 'electricity',
+      'aba-electric': 'electricity',
+      'yola-electric': 'electricity',
+      
+      // ===== EDUCATION SERVICES =====
+      'waec': 'education',
+      'waec-registration': 'education',
+      'jamb': 'education',
+      'jamb-registration': 'education',
+      'neco': 'education',
+      'nabteb': 'education',
+      
+      // ===== INTERNATIONAL AIRTIME =====
+      'foreign-airtime': 'international_airtime',
+      'international-airtime': 'international_airtime',
+      
+      // ===== INSURANCE =====
+      'ui-insure': 'insurance',
+      'insurance': 'insurance',
+      
+      // ===== TRANSFER =====
+      'transfer': 'transfer',
+      'wallet-transfer': 'transfer',
+    };
+    
+    // Check by serviceID first
+    if (serviceID && serviceLimitMap[serviceID]) {
+      limitService = serviceLimitMap[serviceID];
+      console.log(`🔍 [SMART LIMIT] ServiceID: ${serviceID} → Limit Key: ${limitService}`);
+    } 
+    // Check by network for airtime/data
+    else if (network && serviceLimitMap[network]) {
+      limitService = serviceLimitMap[network];
+      console.log(`🔍 [SMART LIMIT] Network: ${network} → Limit Key: ${limitService}`);
+    }
+    // Check by variation_code for cable TV
+    else if (variation_code && (variation_code.includes('dstv') || variation_code.includes('gotv') || variation_code.includes('startimes'))) {
+      limitService = 'cable';
+      console.log(`🔍 [SMART LIMIT] Variation: ${variation_code} → Limit Key: cable`);
+    }
+    // Check by type for electricity
+    else if (type && (type === 'prepaid' || type === 'postpaid')) {
+      limitService = 'electricity';
+      console.log(`🔍 [SMART LIMIT] Type: ${type} → Limit Key: electricity`);
+    }
+    // Default
+    else {
+      console.log(`🔍 [SMART LIMIT] No mapping found for serviceID: ${serviceID}, using default: proxy`);
+    }
+    
+    // Execute the limit check with the determined service
+    await checkTransactionLimit(limitService)(req, res, next);
+    
+  } catch (error) {
+    console.error('❌ Smart limit check error:', error);
+    next();
+  }
+};
 
 // ================================================
 // 🚫 PER-MINUTE TRANSACTION LIMIT
@@ -7195,6 +7338,7 @@ app.get('/api/admin/users/daily', adminProtect, async (req, res) => {
 // @desc    Update user data (Admin only)
 // @route   PUT /api/admin/users/:userId
 // @access  Private/Admin
+// ==================== ADMIN UPDATE USER - FIXED ====================
 app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -7213,31 +7357,34 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
     
     // Update allowed fields
     if (updateData.customLimits !== undefined) {
-      // ✅ FIX: Better validation and cleaning
       const validServices = ['airtime', 'data', 'electricity', 'cable', 'transfer', 'international_airtime', 'education', 'insurance'];
       const cleanedLimits = {};
       
       console.log('📦 Raw customLimits received:', JSON.stringify(updateData.customLimits, null, 2));
       
+      // 🔥 FIX: Process each service
       for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
         if (validServices.includes(service) && limits && typeof limits === 'object') {
-          // ✅ Ensure both values are valid numbers
           const perTransaction = parseFloat(limits.perTransaction) || 0;
           const dailyCap = parseFloat(limits.dailyCap) || 0;
           
-          // ✅ Only save if at least one limit is > 0
+          // 🔥 FIX: Save if EITHER limit is set (> 0)
           if (perTransaction > 0 || dailyCap > 0) {
             cleanedLimits[service] = {
               perTransaction: perTransaction,
               dailyCap: dailyCap
             };
+            console.log(`✅ Added custom limits for ${service}: perTransaction=${perTransaction}, dailyCap=${dailyCap}`);
           }
         }
       }
       
-      // ✅ Store the cleaned limits
+      // 🔥 FIX: Save directly to user document
       user.customLimits = cleanedLimits;
-      console.log('✅ Custom limits saved:', JSON.stringify(cleanedLimits, null, 2));
+      console.log('✅ Custom limits saved to user document:', JSON.stringify(cleanedLimits, null, 2));
+      
+      // 🔥 FIX: Mark as modified to ensure MongoDB saves
+      user.markModified('customLimits');
     }
     
     if (updateData.isActive !== undefined) user.isActive = updateData.isActive;
@@ -7249,6 +7396,10 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
     if (updateData.phone !== undefined) user.phone = updateData.phone;
     
     await user.save();
+    
+    // 🔥 FIX: Verify the save worked by fetching the user again
+    const savedUser = await User.findById(userId).lean();
+    console.log('✅ Verified custom limits after save:', JSON.stringify(savedUser.customLimits || {}));
     
     res.json({
       success: true,
@@ -7273,6 +7424,7 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
     });
   }
 });
+
 
 // ==================== GET DEFAULT LIMITS ====================
 // @desc    Get default transaction limits
@@ -9771,7 +9923,6 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    // ✅ Include customLimits field
     const users = await User.find({})
       .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits')
       .lean()
@@ -12736,7 +12887,8 @@ app.post('/api/vtpass/tv/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
   checkGlobalPerMinuteLimit,
-  checkTransactionLimit('cableTv'),
+  smartLimitCheck,
+  checkTransactionLimit('cable'),
   checkPerMinuteLimit('cabletv'),
   preventRaceCondition({ 
     windowMs: 30000,
@@ -13429,6 +13581,7 @@ app.post('/api/vtpass/airtime/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit (max 5 per minute)
+  smartLimitCheck,
   checkTransactionLimit('airtime'), // ✅ Per-transaction limit (₦1,000)
   checkPerMinuteLimit('airtime'), // ✅ Service-specific limit (max 3 per minute)
   preventRaceCondition({ 
@@ -13683,6 +13836,7 @@ app.post('/api/vtpass/data/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isDataEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
+  smartLimitCheck, 
   checkTransactionLimit('data'),
   checkPerMinuteLimit('data'), // ✅ Service-specific limit
   preventRaceCondition({ 
@@ -14246,6 +14400,7 @@ app.post('/api/vtpass/electricity/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isElectricityEnabled'),
   checkGlobalPerMinuteLimit,
+  smartLimitCheck,
   checkTransactionLimit('electricity'),// ✅ Global limit
   checkPerMinuteLimit('electricity'), // ✅ Service-specific limit
   preventRaceCondition({ 
@@ -15220,10 +15375,10 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
 // @access  Private
 app.post('/api/vtpass/proxy', 
   protect, 
-  checkGlobalPerMinuteLimit, // ✅ ADD THIS
-  checkTransactionLimit('proxy'),
-  checkPerMinuteLimit('proxy'), // ✅ ADD THIS
-  preventDuplicateVtpassCall(), // Prevents duplicate VTpass calls
+  checkGlobalPerMinuteLimit,
+  smartLimitCheck,
+  checkPerMinuteLimit('proxy'),
+  preventDuplicateVtpassCall(),
   async (req, res) => {
   console.log('PROXY ENDPOINT HIT - RACE PROTECTED + IMMEDIATE DEBIT 2026');
   console.log('Body:', JSON.stringify(req.body, null, 2));
@@ -16615,6 +16770,7 @@ app.post('/api/education/validate-profile', protect, [
 // @access  Private
 app.post('/api/education/purchase', protect, verifyTransactionAuth, 
   checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  smartLimitCheck,
   checkTransactionLimit('education'),
   checkPerMinuteLimit('education'), // ✅ ADD THIS
   [
@@ -16933,6 +17089,7 @@ app.get('/api/insurance/variations', protect, async (req, res) => {
 // @access  Private
 app.post('/api/insurance/purchase', protect, verifyTransactionAuth, 
   checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  smartLimitCheck, 
   checkTransactionLimit('insurance'), 
   checkPerMinuteLimit('insurance'), // ✅ ADD THIS
   checkTransactionLimit('insurance'), // ✅ ADD THIS
@@ -19259,6 +19416,7 @@ app.post('/api/international-airtime/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
+  smartLimitCheck,
   checkTransactionLimit('internationalAirtime'),
   checkPerMinuteLimit('international_airtime'), // ✅ Service-specific limit
   preventRaceCondition({ 
