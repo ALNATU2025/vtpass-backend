@@ -9771,7 +9771,7 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    // ✅ Get ALL needed fields for admin panel INCLUDING customLimits
+    // ✅ Include customLimits field
     const users = await User.find({})
       .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits')
       .lean()
