@@ -1244,30 +1244,31 @@ const checkServiceEnabled = (serviceKey) => {
 const TRANSACTION_LIMITS = {
   daily: {
     airtime: 5000,
-    data: 5000,
-    electricity: 50000,
-    cableTv: 20000,
+    data: 10000,
+    electricity: 100000,
+    cable: 500000,        // ← CHANGED from cableTv to cable, 500k per day
     transfer: 100000,
-    internationalAirtime: 20000,
-    education: 50000,      
-    insurance: 50000,      
-    proxy: 50000,        
+    internationalAirtime: 50000,
+    education: 100000,
+    insurance: 100000,
+    proxy: 50000,
     walletFunding: 1000000,
     default: 100000
   },
   perTransaction: {
     airtime: 1000,
-    data: 5000,
-    electricity: 20000,
-    cableTv: 50000,
+    data: 10000,
+    electricity: 50000,
+    cable: 100000,        // ← CHANGED from cableTv to cable, 100k per transaction
     transfer: 50000,
-    internationalAirtime: 5000,
-    education: 50000,      
-    insurance: 50000,      
-    proxy: 50000,          
+    internationalAirtime: 10000,
+    education: 50000,
+    insurance: 50000,
+    proxy: 50000,
     default: 50000
   }
 };
+
 
 const checkTransactionLimit = (serviceType) => {
   return async (req, res, next) => {
@@ -1278,46 +1279,100 @@ const checkTransactionLimit = (serviceType) => {
       const amount = parseFloat(req.body.amount || req.body.Amount || 0);
       if (amount <= 0) return next();
       
-      // ✅ Get user with custom limits
+      // ✅ FIX: Map serviceType to correct key for custom limits
+      let limitKey = serviceType;
+      
+      // Map common service types to correct keys
+      const serviceKeyMap = {
+        'airtime': 'airtime',
+        'airtime_purchase': 'airtime',
+        'mtn': 'airtime',
+        'airtel': 'airtime',
+        'glo': 'airtime',
+        'etisalat': 'airtime',
+        '9mobile': 'airtime',
+        'data': 'data',
+        'data_purchase': 'data',
+        'mtn-data': 'data',
+        'airtel-data': 'data',
+        'glo-data': 'data',
+        'etisalat-data': 'data',
+        'cable': 'cable',
+        'cableTv': 'cable',
+        'cabletv': 'cable',
+        'cable-tv': 'cable',
+        'tv': 'cable',
+        'dstv': 'cable',
+        'gotv': 'cable',
+        'startimes': 'cable',
+        'electricity': 'electricity',
+        'electric': 'electricity',
+        'transfer': 'transfer',
+        'international_airtime': 'international_airtime',
+        'int_airtime': 'international_airtime',
+        'education': 'education',
+        'insurance': 'insurance',
+      };
+      
+      if (serviceKeyMap[limitKey]) {
+        limitKey = serviceKeyMap[limitKey];
+      }
+      
+      console.log(`🔍 [LIMIT CHECK] Service: ${serviceType} → Key: ${limitKey}, Amount: ₦${amount}`);
+      
+      // Get user with custom limits
       const user = await User.findById(userId);
       if (!user) return next();
       
-      // ✅ Check per-transaction limit with CUSTOM OVERRIDE
-      let perTxLimit = TRANSACTION_LIMITS.perTransaction[serviceType] || 
+      // ✅ DEBUG: Log custom limits
+      console.log(`👤 User ${userId} custom limits:`, JSON.stringify(user.customLimits || {}));
+      
+      // ================================================
+      // CHECK PER-TRANSACTION LIMIT
+      // ================================================
+      let perTxLimit = TRANSACTION_LIMITS.perTransaction[limitKey] || 
                        TRANSACTION_LIMITS.perTransaction.default;
       
-      // ✅ Override with user's custom per-transaction limit if exists
-      if (user.customLimits?.[serviceType]?.perTransaction) {
-        const customPerTx = parseFloat(user.customLimits[serviceType].perTransaction);
+      // ✅ OVERRIDE with user's custom per-transaction limit if exists
+      if (user.customLimits?.[limitKey]?.perTransaction) {
+        const customPerTx = parseFloat(user.customLimits[limitKey].perTransaction);
         if (customPerTx > 0) {
           perTxLimit = customPerTx;
-          console.log(`🔧 User ${userId} has custom per-transaction limit: ₦${perTxLimit}`);
+          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit: ₦${perTxLimit} (was ₦${TRANSACTION_LIMITS.perTransaction[limitKey] || 'default'})`);
         }
       }
       
+      console.log(`📊 Per-transaction limit for ${limitKey}: ₦${perTxLimit}`);
+      
       if (amount > perTxLimit) {
+        console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
         return res.status(400).json({
           success: false,
-          message: `Maximum ${serviceType} per transaction is ₦${perTxLimit.toFixed(2)}. Your custom limit: ₦${perTxLimit.toFixed(2)}`,
+          message: `Maximum ${limitKey} per transaction is ₦${perTxLimit.toFixed(2)}. ${user.customLimits?.[limitKey]?.perTransaction ? 'Your custom limit: ₦${perTxLimit.toFixed(2)}' : 'Contact admin to increase your limit.'}`,
           code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
           limit: perTxLimit,
           requested: amount,
-          isCustomLimit: user.customLimits?.[serviceType]?.perTransaction ? true : false
+          isCustomLimit: user.customLimits?.[limitKey]?.perTransaction ? true : false,
+          service: limitKey
         });
       }
       
-      // ✅ Check daily limit with CUSTOM OVERRIDE
-      let dailyLimit = TRANSACTION_LIMITS.daily[serviceType] || 
+      // ================================================
+      // CHECK DAILY LIMIT
+      // ================================================
+      let dailyLimit = TRANSACTION_LIMITS.daily[limitKey] || 
                        TRANSACTION_LIMITS.daily.default;
       
-      // ✅ Override with user's custom daily limit if exists
-      if (user.customLimits?.[serviceType]?.dailyCap) {
-        const customDaily = parseFloat(user.customLimits[serviceType].dailyCap);
+      // ✅ OVERRIDE with user's custom daily limit if exists
+      if (user.customLimits?.[limitKey]?.dailyCap) {
+        const customDaily = parseFloat(user.customLimits[limitKey].dailyCap);
         if (customDaily > 0) {
           dailyLimit = customDaily;
-          console.log(`🔧 User ${userId} has custom daily limit: ₦${dailyLimit}`);
+          console.log(`🔧 User ${userId} has CUSTOM daily limit: ₦${dailyLimit} (was ₦${TRANSACTION_LIMITS.daily[limitKey] || 'default'})`);
         }
       }
+      
+      console.log(`📊 Daily limit for ${limitKey}: ₦${dailyLimit}`);
       
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -1326,7 +1381,7 @@ const checkTransactionLimit = (serviceType) => {
         {
           $match: {
             userId: new mongoose.Types.ObjectId(userId),
-            type: { $regex: serviceType, $options: 'i' },
+            type: { $regex: new RegExp(limitKey, 'i') },
             status: { $regex: /success|completed|Successful/i },
             createdAt: { $gte: today }
           }
@@ -1336,28 +1391,33 @@ const checkTransactionLimit = (serviceType) => {
       
       const dailyTotal = todayTotal[0]?.total || 0;
       
+      console.log(`📊 Today's total for ${limitKey}: ₦${dailyTotal}`);
+      
       if (dailyTotal + amount > dailyLimit) {
         const remaining = Math.max(0, dailyLimit - dailyTotal);
+        console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
         return res.status(400).json({
           success: false,
-          message: `Daily ${serviceType} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}. Contact admin for increase.`,
+          message: `Daily ${limitKey} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}. ${user.customLimits?.[limitKey]?.dailyCap ? 'Your custom daily limit: ₦${dailyLimit.toFixed(2)}' : 'Contact admin to increase your limit.'}`,
           code: 'DAILY_LIMIT_EXCEEDED',
           dailyLimit: dailyLimit,
           dailyTotal: dailyTotal,
           requested: amount,
           remaining: remaining,
-          isCustomLimit: user.customLimits?.[serviceType]?.dailyCap ? true : false
+          isCustomLimit: user.customLimits?.[limitKey]?.dailyCap ? true : false,
+          service: limitKey
         });
       }
       
+      console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-txn: ₦${perTxLimit}, Daily: ₦${dailyTotal} → ₦${dailyTotal + amount})`);
       next();
+      
     } catch (error) {
-      console.error('Limit check error:', error);
+      console.error('❌ Limit check error:', error);
       next();
     }
   };
 };
-
 
 
 // ================================================
