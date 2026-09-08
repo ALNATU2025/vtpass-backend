@@ -1249,9 +1249,9 @@ const TRANSACTION_LIMITS = {
     cableTv: 20000,
     transfer: 100000,
     internationalAirtime: 20000,
-    education: 50000,      // ✅ ADD THIS
-    insurance: 50000,      // ✅ ADD THIS
-    proxy: 50000,          // ✅ ADD THIS
+    education: 50000,      
+    insurance: 50000,      
+    proxy: 50000,        
     walletFunding: 1000000,
     default: 100000
   },
@@ -1259,12 +1259,12 @@ const TRANSACTION_LIMITS = {
     airtime: 1000,
     data: 5000,
     electricity: 20000,
-    cableTv: 10000,
+    cableTv: 50000,
     transfer: 50000,
     internationalAirtime: 5000,
-    education: 50000,      // ✅ ADD THIS
-    insurance: 50000,      // ✅ ADD THIS
-    proxy: 50000,          // ✅ ADD THIS
+    education: 50000,      
+    insurance: 50000,      
+    proxy: 50000,          
     default: 50000
   }
 };
