@@ -127,7 +127,14 @@ fcmToken: {
       type: Boolean,
       default: false,
     },
-    // =============================================
+    
+    // ========== TRANSACTION LIMITS ==========
+customLimits: {
+  type: mongoose.Schema.Types.Mixed,
+  default: {},
+},
+// =========================================
+
     
     isActive: {
       type: Boolean,
