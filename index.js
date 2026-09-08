@@ -16177,7 +16177,6 @@ app.post('/api/education/purchase', protect, verifyTransactionAuth,
   checkGlobalPerMinuteLimit, // ✅ ADD THIS
   checkTransactionLimit('education'),
   checkPerMinuteLimit('education'), // ✅ ADD THIS
-  checkTransactionLimit('education'), // ✅ ADD THIS
   [
   body('serviceID').notEmpty().withMessage('Service ID is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
