@@ -423,12 +423,17 @@ app.use(userActivityTracker);
 // ==================== HARD BLOCK UNAUTHORIZED FUNDING ====================
 // 🚫 COMPLETELY DISABLE UNAUTHORIZED WALLET FUNDING ENDPOINTS
 // MUST BE REGISTERED BEFORE ANY OTHER ROUTES THAT MIGHT MATCH
+
+// Block ALL funding endpoints that are not the dedicated virtual account
 app.all('/api/wallet/top-up', (req, res) => {
   console.warn(`🚨 [SECURITY] Unauthorized top-up attempt from IP ${req.ip}`);
+  console.warn(`🔍 Headers: ${JSON.stringify(req.headers)}`);
+  console.warn(`🔍 Body: ${JSON.stringify(req.body)}`);
   return res.status(403).json({
     success: false,
     message: 'This funding method has been deprecated. Please use your dedicated virtual account.',
-    code: 'FUNDING_METHOD_BLOCKED'
+    code: 'FUNDING_METHOD_BLOCKED',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -441,11 +446,23 @@ app.all('/api/wallet/force-topup', (req, res) => {
   });
 });
 
-app.all('/api/payments/verify-paystack', (req, res) => {
-  console.warn(`🚨 [SECURITY] Deprecated PayStack endpoint accessed from IP ${req.ip}`);
+app.all('/api/wallet/fund', (req, res) => {
+  console.warn(`🚨 [SECURITY] Unauthorized fund attempt from IP ${req.ip}`);
   return res.status(403).json({
     success: false,
-    message: 'PayStack payments are no longer supported.',
+    message: 'This funding method is not allowed.',
+    code: 'FUNDING_METHOD_DISABLED'
+  });
+});
+
+// Block ALL PayStack endpoints
+app.all('/api/payments/verify-paystack', (req, res) => {
+  console.warn(`🚨 [SECURITY] Deprecated PayStack endpoint accessed from IP ${req.ip}`);
+  console.warn(`🔍 Headers: ${JSON.stringify(req.headers)}`);
+  console.warn(`🔍 Body: ${JSON.stringify(req.body)}`);
+  return res.status(403).json({
+    success: false,
+    message: 'PayStack payments are no longer supported. Please use your dedicated virtual account.',
     code: 'PAYMENT_PROVIDER_DISABLED'
   });
 });
@@ -466,6 +483,68 @@ app.all('/api/paystack/*', (req, res) => {
     message: 'PayStack integration has been removed.',
     code: 'PAYMENT_PROVIDER_REMOVED'
   });
+});
+
+// 🚨 CRITICAL: Block ANY endpoint that could be used for unauthorized funding
+app.all('/api/transactions/record', (req, res) => {
+  console.warn(`🚨🚨🚨 [SECURITY] CRITICAL: Unauthorized transaction record attempt from IP ${req.ip}`);
+  console.warn(`🔍 Headers: ${JSON.stringify(req.headers)}`);
+  console.warn(`🔍 Body: ${JSON.stringify(req.body)}`);
+  console.warn(`🔍 Query: ${JSON.stringify(req.query)}`);
+  console.warn(`🔍 User-Agent: ${req.get('User-Agent')}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This endpoint has been disabled for security reasons.',
+    code: 'ENDPOINT_DISABLED',
+    incidentId: `INC_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.all('/api/transactions/record-verified', (req, res) => {
+  console.warn(`🚨🚨🚨 [SECURITY] CRITICAL: Unauthorized record-verified attempt from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This endpoint has been disabled for security reasons.',
+    code: 'ENDPOINT_DISABLED'
+  });
+});
+
+app.all('/api/wallet/credit', (req, res) => {
+  console.warn(`🚨 [SECURITY] Unauthorized wallet credit attempt from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This funding method is not allowed.',
+    code: 'FUNDING_METHOD_DISABLED'
+  });
+});
+
+app.all('/api/wallet/add-funds', (req, res) => {
+  console.warn(`🚨 [SECURITY] Unauthorized add-funds attempt from IP ${req.ip}`);
+  return res.status(403).json({
+    success: false,
+    message: 'This funding method is not allowed.',
+    code: 'FUNDING_METHOD_DISABLED'
+  });
+});
+
+// 🚨 Block ANY route containing these keywords
+app.use((req, res, next) => {
+  const blockedKeywords = ['paystack', 'paystack_funding', 'wallet/fund', 'wallet/credit', 'wallet/add'];
+  const url = req.url.toLowerCase();
+  
+  for (const keyword of blockedKeywords) {
+    if (url.includes(keyword)) {
+      console.warn(`🚨🚨🚨 [SECURITY] BLOCKED: ${req.method} ${req.url} from IP ${req.ip}`);
+      console.warn(`🔍 Keyword matched: ${keyword}`);
+      return res.status(403).json({
+        success: false,
+        message: 'This endpoint has been disabled for security reasons.',
+        code: 'ENDPOINT_DISABLED'
+      });
+    }
+  }
+  next();
 });
 // ==================== END OF HARD BLOCK ====================
 
@@ -1077,23 +1156,46 @@ const checkTransactionLimit = (serviceType) => {
       const amount = parseFloat(req.body.amount || req.body.Amount || 0);
       if (amount <= 0) return next();
       
-      // Check per-transaction limit
-      const perTxLimit = TRANSACTION_LIMITS.perTransaction[serviceType] || 
-                         TRANSACTION_LIMITS.perTransaction.default;
+      // ✅ Get user with custom limits
+      const user = await User.findById(userId);
+      if (!user) return next();
+      
+      // ✅ Check per-transaction limit with CUSTOM OVERRIDE
+      let perTxLimit = TRANSACTION_LIMITS.perTransaction[serviceType] || 
+                       TRANSACTION_LIMITS.perTransaction.default;
+      
+      // ✅ Override with user's custom per-transaction limit if exists
+      if (user.customLimits?.[serviceType]?.perTransaction) {
+        const customPerTx = parseFloat(user.customLimits[serviceType].perTransaction);
+        if (customPerTx > 0) {
+          perTxLimit = customPerTx;
+          console.log(`🔧 User ${userId} has custom per-transaction limit: ₦${perTxLimit}`);
+        }
+      }
       
       if (amount > perTxLimit) {
         return res.status(400).json({
           success: false,
-          message: `Maximum ${serviceType} per transaction is ₦${perTxLimit.toFixed(2)}`,
+          message: `Maximum ${serviceType} per transaction is ₦${perTxLimit.toFixed(2)}. Your custom limit: ₦${perTxLimit.toFixed(2)}`,
           code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
           limit: perTxLimit,
-          requested: amount
+          requested: amount,
+          isCustomLimit: user.customLimits?.[serviceType]?.perTransaction ? true : false
         });
       }
       
-      // Check daily limit
-      const dailyLimit = TRANSACTION_LIMITS.daily[serviceType] || 
-                         TRANSACTION_LIMITS.daily.default;
+      // ✅ Check daily limit with CUSTOM OVERRIDE
+      let dailyLimit = TRANSACTION_LIMITS.daily[serviceType] || 
+                       TRANSACTION_LIMITS.daily.default;
+      
+      // ✅ Override with user's custom daily limit if exists
+      if (user.customLimits?.[serviceType]?.dailyCap) {
+        const customDaily = parseFloat(user.customLimits[serviceType].dailyCap);
+        if (customDaily > 0) {
+          dailyLimit = customDaily;
+          console.log(`🔧 User ${userId} has custom daily limit: ₦${dailyLimit}`);
+        }
+      }
       
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -1103,7 +1205,7 @@ const checkTransactionLimit = (serviceType) => {
           $match: {
             userId: new mongoose.Types.ObjectId(userId),
             type: { $regex: serviceType, $options: 'i' },
-            status: 'Successful',
+            status: { $regex: /success|completed|Successful/i },
             createdAt: { $gte: today }
           }
         },
@@ -1113,14 +1215,16 @@ const checkTransactionLimit = (serviceType) => {
       const dailyTotal = todayTotal[0]?.total || 0;
       
       if (dailyTotal + amount > dailyLimit) {
+        const remaining = Math.max(0, dailyLimit - dailyTotal);
         return res.status(400).json({
           success: false,
-          message: `Daily ${serviceType} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Contact admin for increase.`,
+          message: `Daily ${serviceType} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}. Contact admin for increase.`,
           code: 'DAILY_LIMIT_EXCEEDED',
           dailyLimit: dailyLimit,
           dailyTotal: dailyTotal,
           requested: amount,
-          remaining: Math.max(0, dailyLimit - dailyTotal)
+          remaining: remaining,
+          isCustomLimit: user.customLimits?.[serviceType]?.dailyCap ? true : false
         });
       }
       
@@ -16073,7 +16177,8 @@ app.post('/api/education/purchase', protect, verifyTransactionAuth,
   checkGlobalPerMinuteLimit, // ✅ ADD THIS
   checkTransactionLimit('education'),
   checkPerMinuteLimit('education'), // ✅ ADD THIS
-  checkTransactionLimit('education'), // ✅ ADD THIS[
+  checkTransactionLimit('education'), // ✅ ADD THIS
+  [
   body('serviceID').notEmpty().withMessage('Service ID is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
@@ -16391,7 +16496,8 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth,
   checkGlobalPerMinuteLimit, // ✅ ADD THIS
   checkTransactionLimit('insurance'), 
   checkPerMinuteLimit('insurance'), // ✅ ADD THIS
-  checkTransactionLimit('insurance'), // ✅ ADD THIS[
+  checkTransactionLimit('insurance'), // ✅ ADD THIS
+  [
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
   body('insuredName').notEmpty().withMessage('Insured name is required'),
