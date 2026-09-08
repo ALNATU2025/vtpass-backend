@@ -7099,29 +7099,56 @@ app.get('/api/admin/users/daily', adminProtect, async (req, res) => {
 });
 
 
-// ==================== ADMIN UPDATE USER ====================
+// ==================== ADMIN UPDATE USER - FIXED ====================
 // @desc    Update user data (Admin only)
 // @route   PUT /api/admin/users/:userId
 // @access  Private/Admin
 app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { customLimits, isActive, isAdmin, walletBalance, commissionBalance } = req.body;
+    const updateData = req.body;
+    
+    console.log(`👑 Admin updating user: ${userId}`);
+    console.log('📦 Update data:', JSON.stringify(updateData, null, 2));
     
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
     }
     
-    // Update custom limits if provided
-    if (customLimits !== undefined) {
-      user.customLimits = customLimits;
+    // Update allowed fields
+    if (updateData.customLimits !== undefined) {
+      // Validate custom limits structure
+      const validServices = ['airtime', 'data', 'electricity', 'cable', 'transfer', 'international_airtime', 'education', 'insurance'];
+      const cleanedLimits = {};
+      
+      for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
+        if (validServices.includes(service) && limits && typeof limits === 'object') {
+          cleanedLimits[service] = {
+            perTransaction: parseFloat(limits.perTransaction) || 0,
+            dailyCap: parseFloat(limits.dailyCap) || 0
+          };
+          // Remove zero values
+          if (cleanedLimits[service].perTransaction === 0 && cleanedLimits[service].dailyCap === 0) {
+            delete cleanedLimits[service];
+          }
+        }
+      }
+      
+      user.customLimits = cleanedLimits;
+      console.log('✅ Custom limits updated:', cleanedLimits);
     }
     
-    if (isActive !== undefined) user.isActive = isActive;
-    if (isAdmin !== undefined) user.isAdmin = isAdmin;
-    if (walletBalance !== undefined) user.walletBalance = walletBalance;
-    if (commissionBalance !== undefined) user.commissionBalance = commissionBalance;
+    if (updateData.isActive !== undefined) user.isActive = updateData.isActive;
+    if (updateData.isAdmin !== undefined) user.isAdmin = updateData.isAdmin;
+    if (updateData.walletBalance !== undefined) user.walletBalance = updateData.walletBalance;
+    if (updateData.commissionBalance !== undefined) user.commissionBalance = updateData.commissionBalance;
+    if (updateData.fullName !== undefined) user.fullName = updateData.fullName;
+    if (updateData.email !== undefined) user.email = updateData.email;
+    if (updateData.phone !== undefined) user.phone = updateData.phone;
     
     await user.save();
     
@@ -7132,20 +7159,25 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
-        customLimits: user.customLimits,
+        isAdmin: user.isAdmin,
         isActive: user.isActive,
-        isAdmin: user.isAdmin
+        customLimits: user.customLimits,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance
       }
     });
   } catch (error) {
-    console.error('Admin update user error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update user' });
+    console.error('❌ Admin update user error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update user',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 
-
-// ==================== TOGGLE SERVICE ====================
+// ==================== TOGGLE SERVICE - FIXED ====================
 // @desc    Enable/disable a service
 // @route   POST /api/admin/service-toggle
 // @access  Private/Admin
@@ -7154,9 +7186,13 @@ app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
     const { service, enabled } = req.body;
     
     if (!service) {
-      return res.status(400).json({ success: false, message: 'Service name required' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Service name required' 
+      });
     }
     
+    // Map service names to setting keys
     const serviceMap = {
       'airtime': 'isAirtimeEnabled',
       'data': 'isDataEnabled',
@@ -7170,7 +7206,10 @@ app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
     
     const settingKey = serviceMap[service];
     if (!settingKey) {
-      return res.status(400).json({ success: false, message: 'Invalid service name' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid service name' 
+      });
     }
     
     let settings = await Settings.findOne();
@@ -7178,8 +7217,14 @@ app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
       settings = new Settings();
     }
     
+    // Update the setting
     settings[settingKey] = enabled !== false;
     await settings.save();
+    
+    // Clear cache
+    cache.del('app-settings');
+    
+    console.log(`🔧 Service ${service} ${enabled ? 'enabled' : 'disabled'} by admin`);
     
     res.json({
       success: true,
@@ -7188,75 +7233,89 @@ app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
       enabled: settings[settingKey]
     });
   } catch (error) {
-    console.error('Service toggle error:', error);
-    res.status(500).json({ success: false, message: 'Failed to toggle service' });
+    console.error('❌ Service toggle error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to toggle service' 
+    });
   }
 });
 
-
-// ==================== MAINTENANCE MODE ====================
-// @desc    Toggle maintenance mode
-// @route   POST /api/admin/maintenance
-// @access  Private/Admin
-app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
+// ==================== MAINTENANCE STATUS - FIXED ====================
+// @desc    Get maintenance status with admin check
+// @route   GET /api/maintenance-status
+// @access  Public (with admin detection)
+app.get('/api/maintenance-status', async (req, res) => {
   try {
-    const { isMaintenanceMode, message } = req.body;
+    console.log('🔧 Maintenance status check from:', req.ip);
     
-    let settings = await Settings.findOne();
-    if (!settings) {
-      settings = new Settings();
-    }
+    const settings = await Settings.findOne().lean();
     
-    // Update maintenance settings
-    const previousState = settings.isMaintenanceMode || false;
-    settings.isMaintenanceMode = isMaintenanceMode === true;
-    if (message !== undefined) {
-      settings.maintenanceMessage = message;
-    }
+    // Check if the requester is an admin (try to decode token)
+    let isAdmin = false;
+    let adminDetails = {};
     
-    await settings.save();
-    
-    // ✅ Log the change
-    console.log(`🔧 Maintenance mode: ${previousState ? 'OFF' : 'ON'} → ${settings.isMaintenanceMode ? 'ON' : 'OFF'}`);
-    console.log(`📝 Maintenance message: ${settings.maintenanceMessage || 'No message'}`);
-    
-    // ✅ Create notification for admin about the change
-    try {
-      await Notification.create({
-        recipient: req.user._id,
-        title: settings.isMaintenanceMode ? '🔧 Maintenance Mode Enabled' : '✅ Maintenance Mode Disabled',
-        message: settings.isMaintenanceMode 
-          ? `System is now in maintenance mode. Users will see: "${settings.maintenanceMessage || 'System under maintenance'}"`
-          : 'System is back online. Users can now access all services.',
-        type: 'announcement',
-        isRead: false,
-        metadata: {
-          action: 'maintenance_toggle',
-          enabled: settings.isMaintenanceMode,
-          previousState: previousState,
-          message: settings.maintenanceMessage,
-          adminId: req.user._id,
-          adminName: req.user.fullName
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded && decoded.id) {
+          const user = await User.findById(decoded.id).select('isAdmin role fullName email isSuperAdmin').lean();
+          if (user && (user.isAdmin === true || user.role === 'admin' || user.role === 'super_admin' || user.isSuperAdmin === true)) {
+            isAdmin = true;
+            adminDetails = {
+              name: user.fullName,
+              email: user.email,
+              role: user.role || 'admin'
+            };
+            console.log('👑 Admin user detected:', user.email);
+          }
         }
-      });
-    } catch (notifError) {
-      console.error('Maintenance notification error:', notifError);
+      } catch (tokenError) {
+        // Token invalid - not admin
+        console.log('⚠️ Token validation failed:', tokenError.message);
+      }
     }
     
-    res.json({
+    const response = {
       success: true,
-      message: `Maintenance mode ${settings.isMaintenanceMode ? 'enabled' : 'disabled'}`,
-      maintenanceMode: settings.isMaintenanceMode,
-      maintenanceMessage: settings.maintenanceMessage,
-      previousState: previousState,
-      isActive: settings.isMaintenanceMode,
-      adminNote: 'Admin access is always available regardless of maintenance mode.'
-    });
+      maintenanceMode: settings?.isMaintenanceMode || false,
+      message: settings?.maintenanceMessage || '',
+      isAdmin: isAdmin,
+      adminDetails: adminDetails,
+      timestamp: new Date().toISOString(),
+      readOnlyAllowed: true,
+      allowedEndpoints: [
+        'View Balance',
+        'View Transactions',
+        'View Commission Balance',
+        'View Notifications',
+        'View Beneficiaries'
+      ],
+      blockedActions: [
+        'New Transactions',
+        'Airtime Purchase',
+        'Data Purchase',
+        'Electricity Bill Payment',
+        'Cable TV Subscription',
+        'International Airtime',
+        'Education Purchase',
+        'Insurance Purchase',
+        'Money Transfer',
+        'Wallet Funding'
+      ]
+    };
+    
+    res.json(response);
+    
   } catch (error) {
-    console.error('Maintenance toggle error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to toggle maintenance mode'
+    console.error('❌ Maintenance status error:', error);
+    res.json({
+      success: false,
+      maintenanceMode: false,
+      message: 'Unable to fetch maintenance status',
+      timestamp: new Date().toISOString(),
+      readOnlyAllowed: false
     });
   }
 });
