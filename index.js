@@ -9771,9 +9771,9 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    // ✅ Get ALL needed fields for admin panel
+    // ✅ Get ALL needed fields for admin panel INCLUDING customLimits
     const users = await User.find({})
-      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt')
+      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits')
       .lean()
       .maxTimeMS(8000);
     
@@ -9789,7 +9789,6 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
-
 
 
 // @desc    Toggle user active status (Admin only)
