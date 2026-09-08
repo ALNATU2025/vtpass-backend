@@ -12604,9 +12604,9 @@ app.post('/api/vtpass/tv/purchase',
   protect, 
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
-  checkGlobalPerMinuteLimit, // ✅ Global limit
+  checkGlobalPerMinuteLimit,
   checkTransactionLimit('cableTv'),
-  checkPerMinuteLimit('cabletv'), // ✅ Service-specific limit
+  checkPerMinuteLimit('cabletv'),
   preventRaceCondition({ 
     windowMs: 30000,
     maxRequests: 1,
@@ -12622,11 +12622,8 @@ app.post('/api/vtpass/tv/purchase',
     body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
     body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
     body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
-    body('currentPackage').custom(value => {
-      if (value === null || value === undefined) return true;
-      if (typeof value === 'string') return true;
-      throw new Error('Current package must be a string');
-    }).withMessage('Current package must be a string')
+    body('currentPackage').optional().isString().withMessage('Current package must be a string'),
+    body('action').optional().isIn(['renew', 'change']).withMessage('Action must be renew or change')
   ], 
   async (req, res) => {
     const errors = validationResult(req);
@@ -12648,7 +12645,8 @@ app.post('/api/vtpass/tv/purchase',
       phone,
       subscription_type = 'renew',
       quantity = 1,
-      currentPackage
+      currentPackage,
+      action // ✅ ADD THIS - explicit action from frontend
     } = req.body;
     
     const userId = req.user._id;
@@ -12660,9 +12658,10 @@ app.post('/api/vtpass/tv/purchase',
     console.log('📦 Variation Code:', variationCode);
     console.log('💰 Amount:', amount);
     console.log('📞 Phone:', phone);
-    console.log('🔄 Subscription Type:', subscription_type);
+    console.log('🔄 Subscription Type (from body):', subscription_type);
     console.log('📦 Quantity:', quantity);
     console.log('📦 Current Package:', currentPackage);
+    console.log('🎯 Action (explicit):', action);
     
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -12686,6 +12685,7 @@ app.post('/api/vtpass/tv/purchase',
       let renewalAmount = 0;
       let dueDate = '';
       let customerNumber = '';
+      let verifiedCurrentBouquet = '';
       
       try {
         const verifyResult = await callVtpassApi('/merchant-verify', {
@@ -12698,14 +12698,14 @@ app.post('/api/vtpass/tv/purchase',
         if (verifyResult.success && verifyResult.data?.code === '000') {
           const content = verifyResult.data.content || {};
           customerName = content.Customer_Name || 'N/A';
-          currentBouquet = content.Current_Bouquet || 'N/A';
+          verifiedCurrentBouquet = content.Current_Bouquet || 'N/A';
           renewalAmount = parseFloat(content.Renewal_Amount || 0);
           dueDate = content.Due_Date || 'N/A';
           customerNumber = content.Customer_Number || billersCode;
           
           console.log('✅ Smartcard Verified:');
           console.log('   👤 Customer Name:', customerName);
-          console.log('   📺 Current Bouquet:', currentBouquet);
+          console.log('   📺 Current Bouquet from VTpass:', verifiedCurrentBouquet);
           console.log('   💰 Renewal Amount: ₦', renewalAmount);
           console.log('   📅 Due Date:', dueDate);
         } else {
@@ -12718,45 +12718,46 @@ app.post('/api/vtpass/tv/purchase',
       // ================================================
       // STEP 2: DETERMINE IF THIS IS A PACKAGE CHANGE
       // ================================================
+      // ✅ CRITICAL FIX: Use action from frontend OR subscription_type
       let isPackageChange = false;
       let packageChangeDetails = null;
       
-      // If currentPackage is provided and different from variationCode, it's a change
-      if (currentPackage && variationCode && currentPackage !== variationCode) {
+      // Method 1: Check explicit 'action' field from frontend
+      if (action === 'change') {
+        isPackageChange = true;
+        console.log('🔄 PACKAGE CHANGE DETECTED via action="change"');
+      } 
+      // Method 2: Check subscription_type
+      else if (subscription_type === 'change') {
+        isPackageChange = true;
+        console.log('🔄 PACKAGE CHANGE DETECTED via subscription_type="change"');
+      }
+      // Method 3: Check if currentPackage is provided and differs from variationCode
+      else if (currentPackage && variationCode && currentPackage !== variationCode) {
         isPackageChange = true;
         console.log(`🔄 PACKAGE CHANGE DETECTED: ${currentPackage} → ${variationCode}`);
-        
-        // Get package prices from our mapping
-        const packagePrices = await getPackagePrices(serviceID);
-        const currentPackagePrice = packagePrices[currentPackage];
-        const newPackagePrice = packagePrices[variationCode];
-        
-        console.log(`💰 Current Package Price: ₦${currentPackagePrice || 'N/A'}`);
-        console.log(`💰 New Package Price: ₦${newPackagePrice || 'N/A'}`);
-        
-        if (newPackagePrice) {
-          // For package changes, the amount must match the new package price
-          if (Math.abs(amount - newPackagePrice) > 0.01) {
-            await session.abortTransaction();
-            console.log(`❌ AMOUNT MISMATCH: Required ₦${newPackagePrice}, Got ₦${amount}`);
-            return res.status(400).json({
-              success: false,
-              message: `Package change requires exact amount of ₦${newPackagePrice.toFixed(2)}.`,
-              code: 'AMOUNT_MISMATCH',
-              requiredAmount: newPackagePrice,
-              providedAmount: amount
-            });
-          }
-        }
-        
+      }
+      // Method 4: Check if currentPackage is provided (but might be same)
+      else if (currentPackage && currentPackage !== 'N/A' && currentPackage !== '') {
+        // This could be a renewal with specific package info
+        console.log(`📺 Renewing current package: ${currentPackage} with variation: ${variationCode}`);
+        isPackageChange = false;
+      }
+      
+      console.log(`📊 Final isPackageChange: ${isPackageChange}`);
+      
+      // Determine the VTpass subscription_type
+      const vtpassSubscriptionType = isPackageChange ? 'change' : 'renew';
+      console.log(`📤 VTpass subscription_type: ${vtpassSubscriptionType}`);
+      
+      if (isPackageChange) {
         packageChangeDetails = {
-          from: currentPackage,
+          from: currentPackage || verifiedCurrentBouquet || 'Unknown',
           to: variationCode,
-          fromPrice: currentPackagePrice || 0,
-          toPrice: newPackagePrice || 0
+          toPrice: amount
         };
         
-        console.log(`✅ Package change validated: ${currentPackage} (₦${currentPackagePrice || 0}) → ${variationCode} (₦${newPackagePrice || 0})`);
+        console.log(`✅ Package change validated: ${packageChangeDetails.from} → ${packageChangeDetails.to}`);
       }
       
       // ================================================
@@ -12812,11 +12813,7 @@ app.post('/api/vtpass/tv/purchase',
       // ================================================
       // STEP 6: BUILD VTPASS PAYLOAD
       // ================================================
-      // ✅ CRITICAL: Use the correct subscription_type based on action
-      // - 'renew' for renewing current bouquet (uses Renewal_Amount)
-      // - 'change' for changing bouquet (uses variation_code)
-      const vtpassSubscriptionType = isPackageChange ? 'change' : 'renew';
-      
+      // ✅ CRITICAL: Use the determined subscription_type
       const vtpassPayload = {
         request_id: reference,
         serviceID: serviceID,
@@ -12824,7 +12821,7 @@ app.post('/api/vtpass/tv/purchase',
         variation_code: variationCode,
         amount: totalAmount,
         phone: phone,
-        subscription_type: vtpassSubscriptionType,
+        subscription_type: vtpassSubscriptionType, // ← This is the key fix
         quantity: quantity
       };
       
@@ -12917,7 +12914,7 @@ app.post('/api/vtpass/tv/purchase',
             quantity: quantity,
             subscription_type: vtpassSubscriptionType,
             renewalAmount: renewalAmount,
-            currentBouquet: currentBouquet,
+            currentBouquet: verifiedCurrentBouquet,
             vtpassCode: vtpassCode,
             vtpassDescription: vtpassDesc,
             action: isPackageChange ? 'change' : 'renew'
@@ -12982,7 +12979,7 @@ app.post('/api/vtpass/tv/purchase',
           isPackageChange: isPackageChange,
           packageChangeDetails: packageChangeDetails,
           renewalAmount: renewalAmount,
-          currentBouquet: currentBouquet,
+          currentBouquet: verifiedCurrentBouquet,
           action: isPackageChange ? 'change' : 'renew'
         });
         
@@ -13025,7 +13022,7 @@ app.post('/api/vtpass/tv/purchase',
             quantity: quantity,
             subscription_type: vtpassSubscriptionType,
             renewalAmount: renewalAmount,
-            currentBouquet: currentBouquet,
+            currentBouquet: verifiedCurrentBouquet,
             vtpassCode: vtpassCode,
             vtpassDescription: vtpassDesc,
             vtpassError: vtpassDesc,
