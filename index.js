@@ -1279,11 +1279,11 @@ const checkTransactionLimit = (serviceType) => {
       const amount = parseFloat(req.body.amount || req.body.Amount || 0);
       if (amount <= 0) return next();
       
-      // ✅ FIX: Map serviceType to correct key for custom limits
+      // ✅ FIX: Better service key mapping
       let limitKey = serviceType;
       
-      // Map common service types to correct keys
       const serviceKeyMap = {
+        // Airtime
         'airtime': 'airtime',
         'airtime_purchase': 'airtime',
         'mtn': 'airtime',
@@ -1291,12 +1291,16 @@ const checkTransactionLimit = (serviceType) => {
         'glo': 'airtime',
         'etisalat': 'airtime',
         '9mobile': 'airtime',
+        
+        // Data
         'data': 'data',
         'data_purchase': 'data',
         'mtn-data': 'data',
         'airtel-data': 'data',
         'glo-data': 'data',
         'etisalat-data': 'data',
+        
+        // Cable
         'cable': 'cable',
         'cableTv': 'cable',
         'cabletv': 'cable',
@@ -1305,13 +1309,26 @@ const checkTransactionLimit = (serviceType) => {
         'dstv': 'cable',
         'gotv': 'cable',
         'startimes': 'cable',
+        
+        // Electricity
         'electricity': 'electricity',
         'electric': 'electricity',
+        
+        // Transfer
         'transfer': 'transfer',
+        
+        // International Airtime
         'international_airtime': 'international_airtime',
         'int_airtime': 'international_airtime',
+        
+        // Education
         'education': 'education',
+        
+        // Insurance
         'insurance': 'insurance',
+        
+        // Proxy
+        'proxy': 'proxy',
       };
       
       if (serviceKeyMap[limitKey]) {
@@ -1334,11 +1351,11 @@ const checkTransactionLimit = (serviceType) => {
                        TRANSACTION_LIMITS.perTransaction.default;
       
       // ✅ OVERRIDE with user's custom per-transaction limit if exists
-      if (user.customLimits?.[limitKey]?.perTransaction) {
+      if (user.customLimits && user.customLimits[limitKey] && user.customLimits[limitKey].perTransaction) {
         const customPerTx = parseFloat(user.customLimits[limitKey].perTransaction);
         if (customPerTx > 0) {
           perTxLimit = customPerTx;
-          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit: ₦${perTxLimit} (was ₦${TRANSACTION_LIMITS.perTransaction[limitKey] || 'default'})`);
+          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit: ₦${perTxLimit}`);
         }
       }
       
@@ -1364,11 +1381,11 @@ const checkTransactionLimit = (serviceType) => {
                        TRANSACTION_LIMITS.daily.default;
       
       // ✅ OVERRIDE with user's custom daily limit if exists
-      if (user.customLimits?.[limitKey]?.dailyCap) {
+      if (user.customLimits && user.customLimits[limitKey] && user.customLimits[limitKey].dailyCap) {
         const customDaily = parseFloat(user.customLimits[limitKey].dailyCap);
         if (customDaily > 0) {
           dailyLimit = customDaily;
-          console.log(`🔧 User ${userId} has CUSTOM daily limit: ₦${dailyLimit} (was ₦${TRANSACTION_LIMITS.daily[limitKey] || 'default'})`);
+          console.log(`🔧 User ${userId} has CUSTOM daily limit: ₦${dailyLimit}`);
         }
       }
       
@@ -7196,25 +7213,31 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
     
     // Update allowed fields
     if (updateData.customLimits !== undefined) {
-      // Validate custom limits structure
+      // ✅ FIX: Better validation and cleaning
       const validServices = ['airtime', 'data', 'electricity', 'cable', 'transfer', 'international_airtime', 'education', 'insurance'];
       const cleanedLimits = {};
       
+      console.log('📦 Raw customLimits received:', JSON.stringify(updateData.customLimits, null, 2));
+      
       for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
         if (validServices.includes(service) && limits && typeof limits === 'object') {
-          cleanedLimits[service] = {
-            perTransaction: parseFloat(limits.perTransaction) || 0,
-            dailyCap: parseFloat(limits.dailyCap) || 0
-          };
-          // Remove zero values
-          if (cleanedLimits[service].perTransaction === 0 && cleanedLimits[service].dailyCap === 0) {
-            delete cleanedLimits[service];
+          // ✅ Ensure both values are valid numbers
+          const perTransaction = parseFloat(limits.perTransaction) || 0;
+          const dailyCap = parseFloat(limits.dailyCap) || 0;
+          
+          // ✅ Only save if at least one limit is > 0
+          if (perTransaction > 0 || dailyCap > 0) {
+            cleanedLimits[service] = {
+              perTransaction: perTransaction,
+              dailyCap: dailyCap
+            };
           }
         }
       }
       
+      // ✅ Store the cleaned limits
       user.customLimits = cleanedLimits;
-      console.log('✅ Custom limits updated:', cleanedLimits);
+      console.log('✅ Custom limits saved:', JSON.stringify(cleanedLimits, null, 2));
     }
     
     if (updateData.isActive !== undefined) user.isActive = updateData.isActive;
@@ -7247,6 +7270,38 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
       success: false, 
       message: 'Failed to update user',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ==================== GET DEFAULT LIMITS ====================
+// @desc    Get default transaction limits
+// @route   GET /api/admin/default-limits
+// @access  Private/Admin
+app.get('/api/admin/default-limits', adminProtect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+    
+    // Return the default limits from TRANSACTION_LIMITS
+    res.json({
+      success: true,
+      data: {
+        perTransaction: TRANSACTION_LIMITS.perTransaction,
+        daily: TRANSACTION_LIMITS.daily
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching default limits:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch default limits'
     });
   }
 });
