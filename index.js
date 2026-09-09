@@ -17143,12 +17143,11 @@ app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
     console.log(`📦 VTpass LGA response status: ${response.status}`);
     
     const vtpassData = response.data;
-    console.log(`📦 VTpass LGA raw response:`, JSON.stringify(vtpassData, null, 2));
+    console.log(`📦 VTpass LGA full response:`, JSON.stringify(vtpassData, null, 2));
     
     // Check if response is successful
     if (vtpassData.response_description !== '000') {
       console.log(`⚠️ VTpass returned error: ${vtpassData.response_description}`);
-      // Return fallback LGAs for this state
       const fallbackLgas = getFallbackLGAs(stateCode);
       return res.json({
         success: true,
@@ -17160,31 +17159,39 @@ app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
       });
     }
     
-    // Extract LGAs from response - VTpass returns content as array with LGACode and LGAName
+    // ✅ CRITICAL FIX: Extract LGAs correctly from VTpass response
     let lgas = [];
     
+    // Check if content exists and is an array
     if (vtpassData.content && Array.isArray(vtpassData.content)) {
-      // ✅ CORRECT: Map VTpass fields to frontend expected fields
-      lgas = vtpassData.content.map(item => ({
-        code: item.LGACode?.toString() || '',
-        name: item.LGAName?.toString() || '',
-        stateCode: item.StateCode?.toString() || stateCode,
-        // Keep original fields for reference
-        _raw: item
-      }));
-    } else if (vtpassData.content && typeof vtpassData.content === 'object') {
-      // If content is an object, convert to array
-      lgas = Object.entries(vtpassData.content).map(([key, value]) => ({
-        code: key,
-        name: value?.toString() || key,
-        stateCode: stateCode
-      }));
+      console.log(`📦 VTpass content is an array with ${vtpassData.content.length} items`);
+      
+      // ✅ CORRECT: Map each item properly
+      lgas = vtpassData.content.map((item) => {
+        // Extract the LGA code and name from the VTpass response
+        const lgaCode = item.LGACode?.toString() || '';
+        const lgaName = item.LGAName?.toString() || '';
+        const stateCodeFromResponse = item.StateCode?.toString() || stateCode;
+        
+        console.log(`   📍 LGA: ${lgaCode} - ${lgaName}`);
+        
+        return {
+          code: lgaCode,
+          name: lgaName,
+          stateCode: stateCodeFromResponse
+        };
+      });
+      
+      // Filter out empty entries
+      lgas = lgas.filter(lga => lga.code && lga.code !== '' && lga.code !== 'null' && lga.code !== 'undefined');
+      
+      console.log(`✅ Successfully extracted ${lgas.length} LGAs from VTpass response`);
+      
+    } else {
+      console.log(`⚠️ VTpass content is not an array or is missing`);
+      console.log(`   content type: ${typeof vtpassData.content}`);
+      console.log(`   content value:`, vtpassData.content);
     }
-    
-    // Filter out empty entries
-    lgas = lgas.filter(lga => lga.code && lga.code !== 'null' && lga.code !== 'undefined' && lga.code !== '');
-    
-    console.log(`✅ Found ${lgas.length} LGAs for state code: ${stateCode}`);
     
     // If no LGAs found, use fallback
     if (lgas.length === 0) {
@@ -17196,12 +17203,14 @@ app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
       success: true,
       lgas: lgas,
       stateCode: stateCode,
+      totalLGAs: lgas.length,
       source: 'vtpass_live_api',
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error(`❌ Error fetching LGAs for state ${req.params.stateCode}:`, error.message);
+    console.error('Error details:', error.response?.data || error.message);
     
     // Return fallback LGAs
     const fallbackLgas = getFallbackLGAs(req.params.stateCode);
@@ -17222,7 +17231,7 @@ function getFallbackLGAs(stateCode) {
   // Complete Nigeria States and LGAs mapping
   const statesLGAs = {
     '1': { name: 'Abia', lgas: ['Aba North', 'Aba South', 'Arochukwu', 'Bende', 'Ikwuano', 'Isiala Ngwa North', 'Isiala Ngwa South', 'Isuikwuato', 'Obi Ngwa', 'Ohafia', 'Osisioma', 'Ugwunagbo', 'Ukwa East', 'Ukwa West', 'Umuahia North', 'Umuahia South', 'Umu Nneochi'] },
-    '2': { name: 'Adamawa', lgas: ['Demsa', 'Fufore', 'Ganaye', 'Gireri', 'Gombi', 'Guyuk', 'Hong', 'Jada', 'Lamurde', 'Madagali', 'Maiha', 'Mayo Belwa', 'Michika', 'Mubi North', 'Mubi South', 'Numan', 'Shelleng', 'Song', 'Toungo', 'Yola North', 'Yola South'] },
+    '2': { name: 'Adamawa', lgas: ['Demsa', 'Fufore', 'Ganaye', 'Girei', 'Gombi', 'Guyuk', 'Hong', 'Jada', 'Lamurde', 'Madagali', 'Maiha', 'Mayo Belwa', 'Michika', 'Mubi North', 'Mubi South', 'Numan', 'Shelleng', 'Song', 'Toungo', 'Yola North', 'Yola South'] },
     '3': { name: 'Akwa Ibom', lgas: ['Abak', 'Eastern Obolo', 'Eket', 'Esit Eket', 'Essien Udim', 'Etim Ekpo', 'Etinan', 'Ibeno', 'Ibesikpo Asutan', 'Ibiono Ibom', 'Ika', 'Ikono', 'Ikot Abasi', 'Ikot Ekpene', 'Ini', 'Itu', 'Mbo', 'Mkpat Enin', 'Nsit Atai', 'Nsit Ibom', 'Nsit Ubium', 'Obot Akara', 'Okobo', 'Onna', 'Oron', 'Oruk Anam', 'Udung Uko', 'Ukanafun', 'Uruan', 'Urue-Offong/Oruko', 'Uyo'] },
     '4': { name: 'Anambra', lgas: ['Aguata', 'Anambra East', 'Anambra West', 'Anaocha', 'Awka North', 'Awka South', 'Ayamelum', 'Dunukofia', 'Ekwusigo', 'Idemili North', 'Idemili South', 'Ihiala', 'Njikoka', 'Nnewi North', 'Nnewi South', 'Ogbaru', 'Onitsha North', 'Onitsha South', 'Orumba North', 'Orumba South', 'Oyi'] },
     '5': { name: 'Bauchi', lgas: ['Alkaleri', 'Bauchi', 'Bogoro', 'Damban', 'Darazo', 'Dass', 'Gamawa', 'Ganjuwa', 'Giade', 'Itas/Gadau', 'Jama\'are', 'Katagum', 'Kirfi', 'Misau', 'Ningi', 'Shira', 'Tafawa Balewa', 'Toro', 'Warji', 'Zaki'] },
@@ -17238,7 +17247,7 @@ function getFallbackLGAs(stateCode) {
     '15': { name: 'FCT', lgas: ['Abaji', 'Abuja Municipal', 'Bwari', 'Gwagwalada', 'Kuje', 'Kwali'] },
     '16': { name: 'Gombe', lgas: ['Akko', 'Balanga', 'Billiri', 'Dukku', 'Funakaye', 'Gombe', 'Kaltungo', 'Kwami', 'Nafada', 'Shongom', 'Yamaltu/Deba'] },
     '17': { name: 'Imo', lgas: ['Aboh Mbaise', 'Ahiazu Mbaise', 'Ehime Mbano', 'Ezinihitte', 'Ideato North', 'Ideato South', 'Ihitte/Uboma', 'Ikeduru', 'Isiala Mbano', 'Isu', 'Mbaitoli', 'Ngor Okpala', 'Njaba', 'Nkwerre', 'Nwangele', 'Obowo', 'Oguta', 'Ohaji/Egbema', 'Okigwe', 'Orlu', 'Orsu', 'Oru East', 'Oru West', 'Owerri Municipal', 'Owerri North', 'Owerri West', 'Unuimo'] },
-    '18': { name: 'Jigawa', lgas: ['Auyo', 'Babura', 'Biriniwa', 'Birnin Kudu', 'Buji', 'Dutse', 'Gagarawa', 'Garki', 'Gumel', 'Guri', 'Gwaram', 'Gwiwa', 'Hadejia', 'Jahun', 'Kafin Hausa', 'Kaugama', 'Kazaure', 'Kiri Kasama', 'Kiyawa', 'Kaugama', 'Malam Madori', 'Miga', 'Ringim', 'Roni', 'Sule Tankarkar', 'Taura', 'Yankwashi'] },
+    '18': { name: 'Jigawa', lgas: ['Auyo', 'Babura', 'Biriniwa', 'Birnin Kudu', 'Buji', 'Dutse', 'Gagarawa', 'Garki', 'Gumel', 'Guri', 'Gwaram', 'Gwiwa', 'Hadejia', 'Jahun', 'Kafin Hausa', 'Kaugama', 'Kazaure', 'Kiri Kasama', 'Kiyawa', 'Malam Madori', 'Miga', 'Ringim', 'Roni', 'Sule Tankarkar', 'Taura', 'Yankwashi'] },
     '19': { name: 'Kaduna', lgas: ['Birnin Gwari', 'Chikun', 'Giwa', 'Igabi', 'Ikara', 'Jaba', 'Jema\'a', 'Kachia', 'Kaduna North', 'Kaduna South', 'Kagarko', 'Kajuru', 'Kaura', 'Kauru', 'Kubau', 'Kudan', 'Lere', 'Makarfi', 'Sabon Gari', 'Sanga', 'Soba', 'Zangon Kataf', 'Zaria'] },
     '20': { name: 'Kano', lgas: ['Ajingi', 'Albasu', 'Bagwai', 'Bebeji', 'Bichi', 'Bunkure', 'Dala', 'Dambatta', 'Dawakin Kudu', 'Dawakin Tofa', 'Doguwa', 'Fagge', 'Gabasawa', 'Garko', 'Garun Mallam', 'Gaya', 'Gezawa', 'Gwale', 'Gwarzo', 'Kabo', 'Kano Municipal', 'Karaye', 'Kibiya', 'Kiru', 'Kumbotso', 'Kunchi', 'Kura', 'Madobi', 'Makoda', 'Minjibir', 'Nasarawa', 'Rano', 'Rimin Gado', 'Rogo', 'Shanono', 'Sumaila', 'Takai', 'Tarauni', 'Tofa', 'Tsanyawa', 'Tudun Wada', 'Ungogo', 'Warawa', 'Wudil'] },
     '21': { name: 'Katsina', lgas: ['Bakori', 'Batagarawa', 'Batsari', 'Baure', 'Bindawa', 'Charanchi', 'Dandume', 'Danja', 'Dan Musa', 'Daura', 'Dutsi', 'Dutsin Ma', 'Faskari', 'Funtua', 'Ingawa', 'Jibia', 'Kafur', 'Kaita', 'Kankara', 'Kankia', 'Katsina', 'Kurfi', 'Kusada', 'Mai\'Adua', 'Malumfashi', 'Mani', 'Mashi', 'Matazu', 'Musawa', 'Rimi', 'Sabuwa', 'Safana', 'Sandamu', 'Zango'] },
@@ -17264,7 +17273,7 @@ function getFallbackLGAs(stateCode) {
   const stateData = statesLGAs[stateCode];
   
   if (stateData) {
-    // Convert LGAs to expected format
+    console.log(`📋 Using fallback LGAs for ${stateData.name} (${stateCode})`);
     return stateData.lgas.map((lga, index) => ({
       code: (index + 1).toString(),
       name: lga,
@@ -17272,7 +17281,6 @@ function getFallbackLGAs(stateCode) {
     }));
   }
   
-  // If state code not found, return generic fallback
   console.log(`⚠️ No fallback data for state code: ${stateCode}`);
   return [
     { code: '1', name: 'LGA 1', stateCode: stateCode },
@@ -17282,7 +17290,6 @@ function getFallbackLGAs(stateCode) {
     { code: '5', name: 'LGA 5', stateCode: stateCode }
   ];
 }
-
 
 
 // @desc    Get states from VTpass
