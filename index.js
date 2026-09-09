@@ -17143,6 +17143,7 @@ app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
     console.log(`📦 VTpass LGA response status: ${response.status}`);
     
     const vtpassData = response.data;
+    console.log(`📦 VTpass LGA raw response:`, JSON.stringify(vtpassData, null, 2));
     
     // Check if response is successful
     if (vtpassData.response_description !== '000') {
@@ -17159,38 +17160,37 @@ app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
       });
     }
     
-    // Extract LGAs from response
+    // Extract LGAs from response - VTpass returns content as array with LGACode and LGAName
     let lgas = [];
     
-    if (vtpassData.content) {
-      // If content is an array
-      if (Array.isArray(vtpassData.content)) {
-        lgas = vtpassData.content.map(item => ({
-          code: item.LGACode?.toString() || item.code?.toString() || '',
-          name: item.LGAName?.toString() || item.name?.toString() || '',
-          stateCode: item.StateCode?.toString() || stateCode
-        }));
-      } 
+    if (vtpassData.content && Array.isArray(vtpassData.content)) {
+      // ✅ CORRECT: Map VTpass fields to frontend expected fields
+      lgas = vtpassData.content.map(item => ({
+        code: item.LGACode?.toString() || '',
+        name: item.LGAName?.toString() || '',
+        stateCode: item.StateCode?.toString() || stateCode,
+        // Keep original fields for reference
+        _raw: item
+      }));
+    } else if (vtpassData.content && typeof vtpassData.content === 'object') {
       // If content is an object, convert to array
-      else if (typeof vtpassData.content === 'object') {
-        lgas = Object.entries(vtpassData.content).map(([key, value]) => ({
-          code: key,
-          name: value?.toString() || key,
-          stateCode: stateCode
-        }));
-      }
+      lgas = Object.entries(vtpassData.content).map(([key, value]) => ({
+        code: key,
+        name: value?.toString() || key,
+        stateCode: stateCode
+      }));
     }
     
     // Filter out empty entries
-    lgas = lgas.filter(lga => lga.code && lga.code !== 'null' && lga.code !== 'undefined');
+    lgas = lgas.filter(lga => lga.code && lga.code !== 'null' && lga.code !== 'undefined' && lga.code !== '');
+    
+    console.log(`✅ Found ${lgas.length} LGAs for state code: ${stateCode}`);
     
     // If no LGAs found, use fallback
     if (lgas.length === 0) {
       console.log(`⚠️ No LGAs found from VTpass, using fallback for state code: ${stateCode}`);
       lgas = getFallbackLGAs(stateCode);
     }
-    
-    console.log(`✅ Found ${lgas.length} LGAs for state code: ${stateCode}`);
     
     res.json({
       success: true,
