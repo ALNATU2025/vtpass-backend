@@ -1304,55 +1304,88 @@ const checkTransactionLimit = (serviceType) => {
       // ================================================
       let limitKey = serviceType;
       
-      const serviceKeyMap = {
-        'airtime': 'airtime',
-        'airtime_purchase': 'airtime',
-        'mtn': 'airtime',
-        'airtel': 'airtime',
-        'glo': 'airtime',
-        'etisalat': 'airtime',
-        '9mobile': 'airtime',
-        'mtn-airtime': 'airtime',
-        'airtel-airtime': 'airtime',
-        'glo-airtime': 'airtime',
-        'data': 'data',
-        'data_purchase': 'data',
-        'mtn-data': 'data',
-        'airtel-data': 'data',
-        'glo-data': 'data',
-        'etisalat-data': 'data',
-        '9mobile-data': 'data',
-        'glo-sme-data': 'data',
-        'cable': 'cable',
-        'cableTv': 'cable',
-        'cabletv': 'cable',
-        'cable-tv': 'cable',
-        'tv': 'cable',
-        'dstv': 'cable',
-        'gotv': 'cable',
-        'startimes': 'cable',
-        'showmax': 'cable',
-        'electricity': 'electricity',
-        'electric': 'electricity',
-        'ikeja-electric': 'electricity',
-        'eko-electric': 'electricity',
-        'abuja-electric': 'electricity',
-        'transfer': 'transfer',
-        'peer_transfer': 'transfer',
-        'wallet_transfer': 'transfer',
-        'international_airtime': 'international_airtime',
-        'int_airtime': 'international_airtime',
-        'foreign-airtime': 'international_airtime',
-        'education': 'education',
-        'waec': 'education',
-        'jamb': 'education',
-        'neco': 'education',
-        'nabteb': 'education',
-        'insurance': 'insurance',
-        'ui-insure': 'insurance',
-        'proxy': 'proxy',
-      };
-      
+     const serviceKeyMap = {
+  // ===== AIRTIME =====
+  'airtime': 'airtime',
+  'airtime_purchase': 'airtime',
+  'mtn': 'airtime',
+  'airtel': 'airtime',
+  'glo': 'airtime',
+  'etisalat': 'airtime',
+  '9mobile': 'airtime',
+  'mtn-airtime': 'airtime',
+  'airtel-airtime': 'airtime',
+  'glo-airtime': 'airtime',
+  'etisalat-airtime': 'airtime',
+  '9mobile-airtime': 'airtime',
+  
+  // ===== DATA =====
+  'data': 'data',
+  'data_purchase': 'data',
+  'mtn-data': 'data',
+  'airtel-data': 'data',
+  'glo-data': 'data',
+  'etisalat-data': 'data',
+  '9mobile-data': 'data',
+  'glo-sme-data': 'data',
+  
+  // ===== CABLE TV =====
+  'cable': 'cable',
+  'cableTv': 'cable',
+  'cabletv': 'cable',
+  'cable-tv': 'cable',
+  'tv': 'cable',
+  'dstv': 'cable',
+  'gotv': 'cable',
+  'startimes': 'cable',
+  'showmax': 'cable',
+  
+  // ===== ELECTRICITY =====
+  'electricity': 'electricity',
+  'electric': 'electricity',
+  'ikeja-electric': 'electricity',
+  'eko-electric': 'electricity',
+  'abuja-electric': 'electricity',
+  'ibadan-electric': 'electricity',
+  'enugu-electric': 'electricity',
+  'kano-electric': 'electricity',
+  'ph-electric': 'electricity',
+  'portharcourt-electric': 'electricity',
+  'jos-electric': 'electricity',
+  'kaduna-electric': 'electricity',
+  'benin-electric': 'electricity',
+  'aba-electric': 'electricity',
+  'yola-electric': 'electricity',
+  
+  // ===== TRANSFER =====
+  'transfer': 'transfer',
+  'peer_transfer': 'transfer',
+  'wallet_transfer': 'transfer',
+  'send_money': 'transfer',
+  
+  // ===== INTERNATIONAL AIRTIME ✅ FIXED =====
+  'international_airtime': 'international_airtime',
+  'int_airtime': 'international_airtime',
+  'foreign-airtime': 'international_airtime',
+  'internationalAirtime': 'international_airtime', // ✅ ADD THIS
+  'international-airtime': 'international_airtime', // ✅ ADD THIS
+  
+  // ===== EDUCATION =====
+  'education': 'education',
+  'waec': 'education',
+  'waec-registration': 'education',
+  'jamb': 'education',
+  'jamb-registration': 'education',
+  'neco': 'education',
+  'nabteb': 'education',
+  
+  // ===== INSURANCE =====
+  'insurance': 'insurance',
+  'ui-insure': 'insurance',
+  
+  // ===== PROXY / DEFAULT =====
+  'proxy': 'proxy',
+};      
       if (serviceKeyMap[limitKey]) {
         limitKey = serviceKeyMap[limitKey];
       }
@@ -1483,68 +1516,70 @@ const smartLimitCheck = async (req, res, next) => {
     // ================================================
     // COMPLETE SERVICE MAPPING - ALL SERVICES
     // ================================================
-    const serviceLimitMap = {
-      // ===== AIRTIME SERVICES =====
-      'mtn': 'airtime',
-      'airtel': 'airtime',
-      'glo': 'airtime',
-      'etisalat': 'airtime',
-      '9mobile': 'airtime',
-      'mtn-airtime': 'airtime',
-      'airtel-airtime': 'airtime',
-      'glo-airtime': 'airtime',
-      'etisalat-airtime': 'airtime',
-      '9mobile-airtime': 'airtime',
-      
-      // ===== DATA SERVICES =====
-      'mtn-data': 'data',
-      'airtel-data': 'data',
-      'glo-data': 'data',
-      'etisalat-data': 'data',
-      '9mobile-data': 'data',
-      'glo-sme-data': 'data',
-      
-      // ===== CABLE TV SERVICES =====
-      'dstv': 'cable',
-      'gotv': 'cable',
-      'startimes': 'cable',
-      'showmax': 'cable',
-      
-      // ===== ELECTRICITY SERVICES =====
-      'ikeja-electric': 'electricity',
-      'eko-electric': 'electricity',
-      'abuja-electric': 'electricity',
-      'ibadan-electric': 'electricity',
-      'enugu-electric': 'electricity',
-      'kano-electric': 'electricity',
-      'ph-electric': 'electricity',
-      'portharcourt-electric': 'electricity',
-      'jos-electric': 'electricity',
-      'kaduna-electric': 'electricity',
-      'benin-electric': 'electricity',
-      'aba-electric': 'electricity',
-      'yola-electric': 'electricity',
-      
-      // ===== EDUCATION SERVICES =====
-      'waec': 'education',
-      'waec-registration': 'education',
-      'jamb': 'education',
-      'jamb-registration': 'education',
-      'neco': 'education',
-      'nabteb': 'education',
-      
-      // ===== INTERNATIONAL AIRTIME =====
-      'foreign-airtime': 'international_airtime',
-      'international-airtime': 'international_airtime',
-      
-      // ===== INSURANCE =====
-      'ui-insure': 'insurance',
-      'insurance': 'insurance',
-      
-      // ===== TRANSFER =====
-      'transfer': 'transfer',
-      'wallet-transfer': 'transfer',
-    };
+  const serviceLimitMap = {
+  // ===== AIRTIME SERVICES =====
+  'mtn': 'airtime',
+  'airtel': 'airtime',
+  'glo': 'airtime',
+  'etisalat': 'airtime',
+  '9mobile': 'airtime',
+  'mtn-airtime': 'airtime',
+  'airtel-airtime': 'airtime',
+  'glo-airtime': 'airtime',
+  'etisalat-airtime': 'airtime',
+  '9mobile-airtime': 'airtime',
+  
+  // ===== DATA SERVICES =====
+  'mtn-data': 'data',
+  'airtel-data': 'data',
+  'glo-data': 'data',
+  'etisalat-data': 'data',
+  '9mobile-data': 'data',
+  'glo-sme-data': 'data',
+  
+  // ===== CABLE TV SERVICES =====
+  'dstv': 'cable',
+  'gotv': 'cable',
+  'startimes': 'cable',
+  'showmax': 'cable',
+  
+  // ===== ELECTRICITY SERVICES =====
+  'ikeja-electric': 'electricity',
+  'eko-electric': 'electricity',
+  'abuja-electric': 'electricity',
+  'ibadan-electric': 'electricity',
+  'enugu-electric': 'electricity',
+  'kano-electric': 'electricity',
+  'ph-electric': 'electricity',
+  'portharcourt-electric': 'electricity',
+  'jos-electric': 'electricity',
+  'kaduna-electric': 'electricity',
+  'benin-electric': 'electricity',
+  'aba-electric': 'electricity',
+  'yola-electric': 'electricity',
+  
+  // ===== EDUCATION SERVICES =====
+  'waec': 'education',
+  'waec-registration': 'education',
+  'jamb': 'education',
+  'jamb-registration': 'education',
+  'neco': 'education',
+  'nabteb': 'education',
+  
+  // ===== INTERNATIONAL AIRTIME ✅ FIXED =====
+  'foreign-airtime': 'international_airtime',
+  'international-airtime': 'international_airtime',
+  'international_airtime': 'international_airtime', // ✅ ADD THIS
+  'int_airtime': 'international_airtime', // ✅ ADD THIS
+  
+  // ===== INSURANCE =====
+  'ui-insure': 'insurance',
+  'insurance': 'insurance',
+  
+  // ===== TRANSFER =====
+  'transfer': 'transfer',
+  'wallet-transfer': 'transfer',
+};
     
     // Check by serviceID first
     if (serviceID && serviceLimitMap[serviceID]) {
@@ -19417,7 +19452,7 @@ app.post('/api/international-airtime/purchase',
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
   smartLimitCheck,
-  checkTransactionLimit('internationalAirtime'),
+  checkTransactionLimit('international_airtime'), // ✅ Use the correct key
   checkPerMinuteLimit('international_airtime'), // ✅ Service-specific limit
   preventRaceCondition({ 
     windowMs: 30000,
