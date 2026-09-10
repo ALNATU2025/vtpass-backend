@@ -738,64 +738,7 @@ app.get('/api/maintenance-status', async (req, res) => {
 
 
 
-// ================================================
-// 🔧 ADMIN MAINTENANCE TOGGLE ENDPOINT
-// This is the endpoint the frontend calls to toggle maintenance
-// ================================================
-app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
-  try {
-    const { isMaintenanceMode, message } = req.body;
 
-    console.log('🔧 [MAINTENANCE] Toggle request from admin:', req.user?.email);
-    console.log('🔧 [MAINTENANCE] isMaintenanceMode:', isMaintenanceMode);
-    console.log('🔧 [MAINTENANCE] message:', message);
-
-    if (typeof isMaintenanceMode !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        message: 'isMaintenanceMode must be a boolean'
-      });
-    }
-
-    let settings = await Settings.findOne();
-    if (!settings) {
-      settings = new Settings();
-      console.log('🔧 [MAINTENANCE] Created new settings document');
-    }
-
-    settings.isMaintenanceMode = isMaintenanceMode;
-    if (message !== undefined && message !== null) {
-      settings.maintenanceMessage = message.trim() ||
-        (isMaintenanceMode
-          ? 'System is currently under maintenance. Please check back shortly.'
-          : '');
-    }
-
-    await settings.save();
-
-    // Clear the settings cache so all routes pick up the change immediately
-    cache.del('app-settings');
-
-    console.log(`✅ [MAINTENANCE] Mode ${isMaintenanceMode ? 'ENABLED' : 'DISABLED'} by ${req.user.email}`);
-    console.log(`✅ [MAINTENANCE] Message: ${settings.maintenanceMessage}`);
-
-    res.json({
-      success: true,
-      message: `Maintenance mode ${isMaintenanceMode ? 'enabled' : 'disabled'} successfully`,
-      maintenanceMode: settings.isMaintenanceMode,
-      maintenanceMessage: settings.maintenanceMessage,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ [MAINTENANCE] Toggle error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to toggle maintenance mode',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
 
 
 
@@ -2402,6 +2345,70 @@ const adminProtect = async (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Admin access only' });
   });
 };
+
+
+// ================================================
+// 🔧 ADMIN MAINTENANCE TOGGLE ENDPOINT
+// This is the endpoint the frontend calls to toggle maintenance
+// ================================================
+app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
+  try {
+    const { isMaintenanceMode, message } = req.body;
+
+    console.log('🔧 [MAINTENANCE] Toggle request from admin:', req.user?.email);
+    console.log('🔧 [MAINTENANCE] isMaintenanceMode:', isMaintenanceMode);
+    console.log('🔧 [MAINTENANCE] message:', message);
+
+    if (typeof isMaintenanceMode !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'isMaintenanceMode must be a boolean'
+      });
+    }
+
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+      console.log('🔧 [MAINTENANCE] Created new settings document');
+    }
+
+    settings.isMaintenanceMode = isMaintenanceMode;
+    if (message !== undefined && message !== null) {
+      settings.maintenanceMessage = message.trim() ||
+        (isMaintenanceMode
+          ? 'System is currently under maintenance. Please check back shortly.'
+          : '');
+    }
+
+    await settings.save();
+
+    // Clear the settings cache so all routes pick up the change immediately
+    cache.del('app-settings');
+
+    console.log(`✅ [MAINTENANCE] Mode ${isMaintenanceMode ? 'ENABLED' : 'DISABLED'} by ${req.user.email}`);
+    console.log(`✅ [MAINTENANCE] Message: ${settings.maintenanceMessage}`);
+
+    res.json({
+      success: true,
+      message: `Maintenance mode ${isMaintenanceMode ? 'enabled' : 'disabled'} successfully`,
+      maintenanceMode: settings.isMaintenanceMode,
+      maintenanceMessage: settings.maintenanceMessage,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ [MAINTENANCE] Toggle error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to toggle maintenance mode',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
+
+
 // Middleware to verify transaction PIN with rate limiting
 const verifyTransactionPin = async (req, res, next) => {
   try {
