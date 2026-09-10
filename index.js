@@ -852,8 +852,29 @@ const upload = multer({
 });
 
 
-// Serve static files from uploads directory
-app.use('/uploads', express.static(uploadsDir));
+// ==================== STATIC FILE SERVING WITH CORS & CORP HEADERS ====================
+// ✅ CRITICAL: Serve uploads WITH proper CORS + CORP headers
+// This is REQUIRED for Flutter Web (browser) to load images
+// MUST be registered BEFORE helmet() middleware so helmet doesn't override CORP
+app.use('/uploads', (req, res, next) => {
+  // Allow cross-origin image loading (Flutter Web)
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // ✅ CRITICAL: This header allows Flutter Web to load images cross-origin
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  // Allow caching
+  res.header('Cache-Control', 'public, max-age=86400');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+}, express.static(uploadsDir, {
+  maxAge: '1d',
+  etag: true,
+  lastModified: true,
+}));
+
 const PORT = process.env.PORT || 5000;
 
 // ✅ Use the existing server instance (NO 'const' declaration)
@@ -8822,8 +8843,6 @@ app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('scre
   }
 });
 
-// Serve static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 
