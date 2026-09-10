@@ -963,9 +963,10 @@ const connectDB = async () => {
 connectDB();
 
 // ==================== JWT CONFIGURATION - LONG LASTING SESSION ====================
-// UPDATE THESE VALUES IN index.js
+// JWT Token Generation - 30 days access + 180 days refresh
+// This SAME function is used by BOTH email/password login AND biometric/PIN login
+// ================================================================================
 
-// JWT Token Generation - INCREASED EXPIRATION
 const generateToken = (id) => {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) {
@@ -986,9 +987,7 @@ const generateRefreshToken = (id) => {
   return jwt.sign({ id }, refreshSecret, { expiresIn: '180d' });
 };
 
-
-
-// ✅ Add this check after dotenv.config()
+// ✅ Verify secrets are set
 if (!process.env.JWT_SECRET) {
   console.error('❌ JWT_SECRET is not set in environment variables');
   process.exit(1);
@@ -1000,11 +999,12 @@ if (!process.env.REFRESH_TOKEN_SECRET) {
 }
 
 // ✅ IMPROVED Auto-refresh token middleware
+// This runs BEFORE protected routes and refreshes tokens that are about to expire
 const autoRefreshToken = async (req, res, next) => {
   // Skip token refresh for public routes
   const publicRoutes = [
     '/api/users/register',
-    '/api/users/login', 
+    '/api/users/login',
     '/api/users/refresh-token',
     '/api/users/forgot-password',
     '/api/users/reset-password',
@@ -1051,17 +1051,20 @@ const autoRefreshToken = async (req, res, next) => {
           
           // Update refresh token in database
           user.refreshToken = newRefreshToken;
+          user.lastTokenRefresh = new Date();
           await user.save();
           
-          // Set new tokens in response headers
+          // Set new tokens in response headers so frontend can pick them up
           res.set('x-new-token', newToken);
           res.set('x-new-refresh-token', newRefreshToken);
           
-          // Add user to request for protect middleware
+          // Attach user to request for the protect middleware
           req.user = user;
           req.tokenRefreshed = true;
           
           console.log('✅ Token refreshed proactively');
+          console.log(`   New access token: 30 days`);
+          console.log(`   New refresh token: 180 days`);
           return next();
         }
       } catch (refreshError) {
@@ -1075,7 +1078,6 @@ const autoRefreshToken = async (req, res, next) => {
     return next();
   }
 };
-
 
 // FINAL PROTECT MIDDLEWARE — FIXED VERSION
 // ==================== FIXED PROTECT MIDDLEWARE ====================
@@ -5741,6 +5743,10 @@ app.post('/api/users/verify-transaction-pin', protect, [
 
 // ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
 // ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ✅ FIXED: Uses SAME token generators as email/password login
+// This gives biometric/PIN sessions IDENTICAL lifetime to email sessions
+// ========================================================================
 app.post('/api/auth/verify-pin-for-login', async (req, res) => {
   try {
     const { userId, transactionPin } = req.body;
@@ -5804,45 +5810,28 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
     // ✅ PIN SUCCESSFUL - Reset failed attempts
     user.failedPinAttempts = 0;
     user.pinLockedUntil = null;
-    await user.save();
 
-    // ✅ CRITICAL FIX: Use JWT_SECRET for access token, REFRESH_TOKEN_SECRET for refresh token
-    const jwtSecret = process.env.JWT_SECRET;
-    const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
-    
-    if (!jwtSecret || !refreshSecret) {
-      console.error('❌ JWT secrets not configured');
-      return res.status(500).json({
-        success: false,
-        message: 'Server configuration error'
-      });
-    }
+    // ✅ FIXED: Use SAME token generators as email/password login
+    // generateToken() → 30 days, signed with JWT_SECRET
+    // generateRefreshToken() → 180 days, signed with REFRESH_TOKEN_SECRET
+    const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
 
-    // Create access token with JWT_SECRET (shorter expiry)
-    const token = jwt.sign(
-      { id: user._id, email: user.email },
-      jwtSecret,
-      { expiresIn: '24h' }
-    );
-
-    // Create refresh token with REFRESH_TOKEN_SECRET (longer expiry)
-    const refreshToken = jwt.sign(
-      { id: user._id },
-      refreshSecret,
-      { expiresIn: '30d' }
-    );
-
-    // Store refresh token in database
+    // Store refresh token in database + update timestamps
     user.refreshToken = refreshToken;
+    user.lastLoginAt = getLagosTime();
+    user.lastTokenRefresh = new Date();
     await user.save();
 
-    console.log(`✅ PIN login successful for user: ${user.email}`);
+    console.log(`✅ PIN/Biometric login successful for user: ${user.email}`);
+    console.log(`   Access token: 30 days | Refresh token: 180 days`);
+    console.log(`   Same lifetime as email/password login ✅`);
 
     return res.json({
       success: true,
       message: 'PIN verified successfully',
-      token: token,
-      refreshToken: refreshToken,
+      token: token,                    // 30-day access token
+      refreshToken: refreshToken,      // 180-day refresh token
       user: {
         _id: user._id,
         fullName: user.fullName,
@@ -5858,14 +5847,13 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error verifying PIN for login:', error);
+    console.error('❌ Error verifying PIN for login:', error);
     res.status(500).json({
       success: false,
       message: 'Internal Server Error. Please try again later.'
     });
   }
 });
-
 
 
 // ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
