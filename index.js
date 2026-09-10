@@ -17519,44 +17519,166 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth,
     }
 
     // Get variation details to determine amount
-    let amount = 0;
+      // ================================================
+    // ✅ FIX: Get variation details to determine amount
+    // Frontend sends "private", "commercial", etc.
+    // VTpass expects numeric variation codes "1", "2", etc.
+    // ================================================
+    
+    // Step 1: Map frontend variation names → VTpass numeric codes
+    const variationNameToCode = {
+      'private': '1',
+      'commercial': '2',
+      'tricycle': '3',
+      'tricycles': '3',
+      'motorcycle': '4',
+      '1': '1',
+      '2': '2',
+      '3': '3',
+      '4': '4',
+    };
+    
+    const vtpassVariationCode = variationNameToCode[variationCode.toLowerCase?.() || variationCode] || variationCode;
+    console.log(`🔄 Variation code mapped: "${variationCode}" → VTpass code: "${vtpassVariationCode}"`);
+    
+    // Step 2: Fallback amount map by VTpass numeric code
+    const fallbackAmountMap = {
+      '1': 3000, // Private
+      '2': 5000, // Commercial
+      '3': 1500, // Tricycles
+      '4': 3000, // Motorcycle
+    };
+    
+    // Step 3: Try to fetch live amount from VTpass, else use fallback
+    let amount = fallbackAmountMap[vtpassVariationCode] || 3000;
+    
     try {
       const variationsResponse = await axios.get('https://vtpass.com/api/service-variations?serviceID=ui-insure', {
         headers: {
           'Content-Type': 'application/json',
           'api-key': process.env.VTPASS_API_KEY,
           'secret-key': process.env.VTPASS_SECRET_KEY,
-        }
+        },
+        timeout: 15000,
       });
 
       if (variationsResponse.data.response_description === '000') {
         const variations = variationsResponse.data.content?.variations || [];
-        const selectedVariation = variations.find(v => v.variation_code === variationCode);
+        const selectedVariation = variations.find(
+          v => v.variation_code?.toString() === vtpassVariationCode.toString()
+        );
         
         if (selectedVariation) {
-          amount = parseFloat(selectedVariation.variation_amount) || 0;
-          console.log(`💰 Insurance amount determined: ₦${amount}`);
+          const liveAmount = parseFloat(selectedVariation.variation_amount) || 0;
+          if (liveAmount > 0) {
+            amount = liveAmount;
+            console.log(`💰 Insurance amount from VTpass: ₦${amount}`);
+          } else {
+            console.log(`⚠️ VTpass returned ₦0, using fallback amount: ₦${amount}`);
+          }
         } else {
-          throw new Error('Invalid variation code');
+          console.log(`⚠️ Variation "${vtpassVariationCode}" not found in VTpass list, using fallback: ₦${amount}`);
         }
+      } else {
+        console.log(`⚠️ VTpass variations error: ${variationsResponse.data.response_description}, using fallback: ₦${amount}`);
       }
     } catch (error) {
-      console.log('⚠️ Could not fetch variation details, using default amounts');
-      // Fallback amounts based on variation code
-      const amountMap = {
-        '1': 3000, // Private
-        '2': 5000, // Commercial  
-        '3': 1500, // Tricycles
-        '4': 3000  // Motorcycle
-      };
-      amount = amountMap[variationCode] || 3000;
+      console.log(`⚠️ Could not fetch variations from VTpass: ${error.message}, using fallback: ₦${amount}`);
     }
+    
+    // Step 4: HARD SAFETY — amount must NEVER be 0
+    if (!amount || amount <= 0) {
+      amount = fallbackAmountMap[vtpassVariationCode] || 3000;
+      console.log(`🛡️ Safety net: amount was 0, forced to ₦${amount}`);
+    }
+    
+    console.log(`✅ FINAL insurance amount: ₦${amount}`);
+    console.log(`✅ FINAL VTpass variation_code: "${vtpassVariationCode}"`);
 
+        // ================================================
+    // ✅ FIX: EXPLICIT LIMIT CHECK BEFORE VTpass CALL
+    // We now know the real amount, so we can check limits here.
+    // If exceeded, return error WITHOUT calling VTpass.
+    // ================================================
+    const customLimits = user.customLimits || {};
+    const serviceLimit = customLimits['insurance'] || {};
+    
+    let perTxLimit = TRANSACTION_LIMITS.perTransaction.insurance || 50000;
+    let dailyLimit = TRANSACTION_LIMITS.daily.insurance || 100000;
+    
+    if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
+      perTxLimit = parseFloat(serviceLimit.perTransaction);
+      console.log(`🔧 Custom per-tx limit for insurance: ₦${perTxLimit}`);
+    }
+    if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
+      dailyLimit = parseFloat(serviceLimit.dailyCap);
+      console.log(`🔧 Custom daily limit for insurance: ₦${dailyLimit}`);
+    }
+    
+    // --- Check per-transaction limit ---
+    if (amount > perTxLimit) {
+      await session.abortTransaction();
+      session.endSession();
+      console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
+      return res.status(400).json({
+        success: false,
+        message: `Maximum insurance per transaction is ₦${perTxLimit.toFixed(2)}.`,
+        code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
+        limit: perTxLimit,
+        requested: amount,
+        isCustomLimit: !!(serviceLimit.perTransaction > 0),
+        service: 'insurance',
+      });
+    }
+    
+    // --- Check daily limit ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayTotalAgg = await Transaction.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          type: { $regex: /insurance/i },
+          status: { $regex: /success|completed/i },
+          createdAt: { $gte: today },
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    
+    const dailyTotal = todayTotalAgg[0]?.total || 0;
+    
+    if (dailyTotal + amount > dailyLimit) {
+      await session.abortTransaction();
+      session.endSession();
+      const remaining = Math.max(0, dailyLimit - dailyTotal);
+      console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
+      return res.status(400).json({
+        success: false,
+        message: `Daily insurance limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
+        code: 'DAILY_LIMIT_EXCEEDED',
+        dailyLimit: dailyLimit,
+        dailyTotal: dailyTotal,
+        requested: amount,
+        remaining: remaining,
+        isCustomLimit: !!(serviceLimit.dailyCap > 0),
+        service: 'insurance',
+      });
+    }
+    
+    console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-tx: ₦${perTxLimit}, Daily: ₦${dailyTotal} → ₦${dailyTotal + amount})`);
+
+    // ================================================
+    // Balance check
+    // ================================================
     if (user.walletBalance < amount) {
       await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ 
         success: false, 
-        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}`,
+        code: 'INSUFFICIENT_BALANCE',
       });
     }
 
@@ -17567,6 +17689,7 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth,
       request_id: reference,
       serviceID: 'ui-insure',
       billersCode: plateNumber,
+      variation_code: vtpassVariationCode,
       variation_code: variationCode,
       amount: amount.toString(),
       phone: phone,
