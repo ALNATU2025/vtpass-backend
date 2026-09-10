@@ -1510,79 +1510,110 @@ const checkTransactionLimit = (serviceType) => {
 // ==================== SMART LIMIT CHECK - COMPLETE SERVICE MAPPING ====================
 const smartLimitCheck = async (req, res, next) => {
   try {
-    const { serviceID, variation_code, type, network } = req.body;
+    const { serviceID, variation_code, type, network, serviceType } = req.body;
     let limitService = 'proxy';
+    
+    // ================================================
+    // ✅ FIX #1: Check explicit serviceType FIRST
+    // This handles insurance, education, and any future
+    // services that send an explicit serviceType field.
+    // ================================================
+    if (serviceType) {
+      const normalizedServiceType = serviceType.toString().toLowerCase().trim();
+      const validServiceTypes = [
+        'airtime', 'data', 'cable', 'electricity', 
+        'transfer', 'international_airtime', 'education', 
+        'insurance', 'wallet'
+      ];
+      
+      if (validServiceTypes.includes(normalizedServiceType)) {
+        limitService = normalizedServiceType;
+        console.log(`🔍 [SMART LIMIT] Explicit serviceType: "${serviceType}" → Limit Key: ${limitService}`);
+        
+        // Execute the limit check and return immediately
+        await checkTransactionLimit(limitService)(req, res, next);
+        return;
+      }
+    }
     
     // ================================================
     // COMPLETE SERVICE MAPPING - ALL SERVICES
     // ================================================
-  const serviceLimitMap = {
-  // ===== AIRTIME SERVICES =====
-  'mtn': 'airtime',
-  'airtel': 'airtime',
-  'glo': 'airtime',
-  'etisalat': 'airtime',
-  '9mobile': 'airtime',
-  'mtn-airtime': 'airtime',
-  'airtel-airtime': 'airtime',
-  'glo-airtime': 'airtime',
-  'etisalat-airtime': 'airtime',
-  '9mobile-airtime': 'airtime',
-  
-  // ===== DATA SERVICES =====
-  'mtn-data': 'data',
-  'airtel-data': 'data',
-  'glo-data': 'data',
-  'etisalat-data': 'data',
-  '9mobile-data': 'data',
-  'glo-sme-data': 'data',
-  
-  // ===== CABLE TV SERVICES =====
-  'dstv': 'cable',
-  'gotv': 'cable',
-  'startimes': 'cable',
-  'showmax': 'cable',
-  
-  // ===== ELECTRICITY SERVICES =====
-  'ikeja-electric': 'electricity',
-  'eko-electric': 'electricity',
-  'abuja-electric': 'electricity',
-  'ibadan-electric': 'electricity',
-  'enugu-electric': 'electricity',
-  'kano-electric': 'electricity',
-  'ph-electric': 'electricity',
-  'portharcourt-electric': 'electricity',
-  'jos-electric': 'electricity',
-  'kaduna-electric': 'electricity',
-  'benin-electric': 'electricity',
-  'aba-electric': 'electricity',
-  'yola-electric': 'electricity',
-  
-  // ===== EDUCATION SERVICES =====
-  'waec': 'education',
-  'waec-registration': 'education',
-  'jamb': 'education',
-  'jamb-registration': 'education',
-  'neco': 'education',
-  'nabteb': 'education',
-  
-  // ===== INTERNATIONAL AIRTIME ✅ FIXED =====
-  'foreign-airtime': 'international_airtime',
-  'international-airtime': 'international_airtime',
-  'international_airtime': 'international_airtime', // ✅ ADD THIS
-  'int_airtime': 'international_airtime', // ✅ ADD THIS
-  
-  // ===== INSURANCE =====
-  'ui-insure': 'insurance',
-  'insurance': 'insurance',
-  
-  // ===== TRANSFER =====
-  'transfer': 'transfer',
-  'wallet-transfer': 'transfer',
-};
+    const serviceLimitMap = {
+      // ===== AIRTIME SERVICES =====
+      'mtn': 'airtime',
+      'airtel': 'airtime',
+      'glo': 'airtime',
+      'etisalat': 'airtime',
+      '9mobile': 'airtime',
+      'mtn-airtime': 'airtime',
+      'airtel-airtime': 'airtime',
+      'glo-airtime': 'airtime',
+      'etisalat-airtime': 'airtime',
+      '9mobile-airtime': 'airtime',
+      
+      // ===== DATA SERVICES =====
+      'mtn-data': 'data',
+      'airtel-data': 'data',
+      'glo-data': 'data',
+      'etisalat-data': 'data',
+      '9mobile-data': 'data',
+      'glo-sme-data': 'data',
+      
+      // ===== CABLE TV SERVICES =====
+      'dstv': 'cable',
+      'gotv': 'cable',
+      'startimes': 'cable',
+      'showmax': 'cable',
+      
+      // ===== ELECTRICITY SERVICES =====
+      'ikeja-electric': 'electricity',
+      'eko-electric': 'electricity',
+      'abuja-electric': 'electricity',
+      'ibadan-electric': 'electricity',
+      'enugu-electric': 'electricity',
+      'kano-electric': 'electricity',
+      'ph-electric': 'electricity',
+      'portharcourt-electric': 'electricity',
+      'jos-electric': 'electricity',
+      'kaduna-electric': 'electricity',
+      'benin-electric': 'electricity',
+      'aba-electric': 'electricity',
+      'yola-electric': 'electricity',
+      
+      // ===== EDUCATION SERVICES =====
+      'waec': 'education',
+      'waec-registration': 'education',
+      'jamb': 'education',
+      'jamb-registration': 'education',
+      'neco': 'education',
+      'nabteb': 'education',
+      
+      // ===== INTERNATIONAL AIRTIME =====
+      'foreign-airtime': 'international_airtime',
+      'international-airtime': 'international_airtime',
+      'international_airtime': 'international_airtime',
+      'int_airtime': 'international_airtime',
+      
+      // ===== INSURANCE =====
+      'ui-insure': 'insurance',
+      'insurance': 'insurance',
+      
+      // ===== TRANSFER =====
+      'transfer': 'transfer',
+      'wallet-transfer': 'transfer',
+    };
     
+    // ================================================
+    // ✅ FIX #2: Detect insurance by its UNIQUE fields
+    // Insurance requests contain: plateNumber, vehicleMake, insuredName
+    // ================================================
+    if (req.body.plateNumber && req.body.vehicleMake && req.body.insuredName) {
+      limitService = 'insurance';
+      console.log(`🔍 [SMART LIMIT] Insurance detected by fields (plateNumber, vehicleMake, insuredName) → Limit Key: insurance`);
+    }
     // Check by serviceID first
-    if (serviceID && serviceLimitMap[serviceID]) {
+    else if (serviceID && serviceLimitMap[serviceID]) {
       limitService = serviceLimitMap[serviceID];
       console.log(`🔍 [SMART LIMIT] ServiceID: ${serviceID} → Limit Key: ${limitService}`);
     } 
@@ -1601,10 +1632,17 @@ const smartLimitCheck = async (req, res, next) => {
       limitService = 'electricity';
       console.log(`🔍 [SMART LIMIT] Type: ${type} → Limit Key: electricity`);
     }
+    // Check by operatorId for international airtime
+    else if (req.body.operatorId && req.body.productTypeId) {
+      limitService = 'international_airtime';
+      console.log(`🔍 [SMART LIMIT] International Airtime detected → Limit Key: international_airtime`);
+    }
     // Default
     else {
       console.log(`🔍 [SMART LIMIT] No mapping found for serviceID: ${serviceID}, using default: proxy`);
     }
+    
+    console.log(`🔍 [SMART LIMIT] Final limit key: ${limitService}`);
     
     // Execute the limit check with the determined service
     await checkTransactionLimit(limitService)(req, res, next);
@@ -17429,7 +17467,6 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth,
   smartLimitCheck, 
   checkTransactionLimit('insurance'), 
   checkPerMinuteLimit('insurance'), // ✅ ADD THIS
-  checkTransactionLimit('insurance'), // ✅ ADD THIS
   [
   body('variationCode').notEmpty().withMessage('Variation code is required'),
   body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
