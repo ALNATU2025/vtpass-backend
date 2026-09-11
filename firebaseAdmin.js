@@ -3,7 +3,7 @@ const admin = require('firebase-admin');
 const User = require('./models/User');
 
 // Path to your downloaded service account JSON
-const serviceAccount = require('./dalabapay-937de-firebase-adminsdk-fbsvc-4deeb3f82b.json');
+const serviceAccount = require('./dalabapay-937de-firebase-adminsdk-fbsvc-5de83e07fc.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
