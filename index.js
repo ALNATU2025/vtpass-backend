@@ -199,6 +199,109 @@ dotenv.config();
 
 // ==================== INITIALIZE EXPRESS APP FIRST ====================
 const app = express();
+
+// ==================== TEMPORARY FIREBASE KEY DIAGNOSTIC ====================
+app.get('/api/debug/firebase-key', (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+
+    // Try to read the same way firebaseAdmin.js does
+    let raw = null;
+    let source = 'none';
+
+    const envVarNames = [
+      'firebase-service-account.json',
+      'FIREBASE_SERVICE_ACCOUNT',
+      'FIREBASE_SERVICE_ACCOUNT_JSON',
+      'FIREBASE_ADMIN_CREDENTIALS',
+      'FIREBASE_CREDENTIALS',
+      'GOOGLE_APPLICATION_CREDENTIALS_JSON',
+      'SERVICE_ACCOUNT_JSON',
+    ];
+
+    for (const varName of envVarNames) {
+      if (process.env[varName]) {
+        raw = process.env[varName];
+        source = `env:${varName}`;
+        break;
+      }
+    }
+
+    if (!raw) {
+      const fileCandidates = [
+        '/etc/secrets/firebase-service-account.json',
+        '/opt/render/project/src/firebase-service-account.json',
+        path.join(__dirname, 'firebase-service-account.json'),
+      ];
+      for (const f of fileCandidates) {
+        if (fs.existsSync(f)) {
+          raw = fs.readFileSync(f, 'utf8');
+          source = `file:${f}`;
+          break;
+        }
+      }
+    }
+
+    if (!raw) {
+      return res.status(500).json({ success: false, error: 'No service account found' });
+    }
+
+    let cleaned = raw.trim();
+    if (cleaned.startsWith('"') && cleaned.endsWith('"')) cleaned = cleaned.slice(1, -1);
+    if (cleaned.startsWith("'") && cleaned.endsWith("'")) cleaned = cleaned.slice(1, -1);
+
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      return res.status(500).json({
+        success: false,
+        source,
+        rawLength: raw.length,
+        parseError: e.message,
+        rawFirst100: raw.substring(0, 100),
+        rawLast100: raw.substring(raw.length - 100),
+      });
+    }
+
+    const pk = parsed.private_key || '';
+    const pemMatch = pk.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/);
+
+    res.json({
+      success: true,
+      source,
+      rawEnvLength: raw.length,
+      parsed: {
+        project_id: parsed.project_id,
+        client_email: parsed.client_email,
+        private_key_id: parsed.private_key_id,
+        type: parsed.type,
+      },
+      privateKey: {
+        exists: !!pk,
+        length: pk.length,
+        hasPemHeader: !!pemMatch,
+        firstLine: pk.split('\n')[0]?.substring(0, 50),
+        lastLine: pk.split('\n').slice(-1)[0]?.substring(0, 50),
+        newlineCount: (pk.match(/\n/g) || []).length,
+        literalBackslashNCount: (pk.match(/\\n/g) || []).length,
+        containsCR: pk.includes('\r'),
+        containsSpacesInsideBody: pemMatch
+          ? /\s/.test(pemMatch[1].replace(/\n/g, '').replace(/\r/g, ''))
+          : null,
+        bodyLength: pemMatch ? pemMatch[1].replace(/\s+/g, '').length : 0,
+        first10OfBody: pemMatch ? pemMatch[1].replace(/\s+/g, '').substring(0, 10) : null,
+        last10OfBody: pemMatch
+          ? pemMatch[1].replace(/\s+/g, '').slice(-10)
+          : null,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});api/debug/firebase-key
+
 app.set('trust proxy', 1);
 
 // ==================== SUPER FAST FIXES (NOW AFTER app IS CREATED) ====================
