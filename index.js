@@ -12476,124 +12476,179 @@ app.delete('/api/notifications/:id', protect, async (req, res) => {
 // @access  Private (Admin)
 app.post('/api/notifications/send', protect, async (req, res) => {
   try {
-    const { title, message, recipientId, sendToAll = false, type = 'announcement', screen = 'notifications' } = req.body;
-    
+    const {
+      title,
+      message,
+      recipientId,
+      sendToAll = false,
+      type = 'announcement',
+      screen = 'notifications',
+    } = req.body;
+
     console.log(`📨 [ADMIN] Sending notification:`, { title, recipientId, sendToAll });
-    
+
     // Check if user is admin
     if (!req.user.isAdmin) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Admin access required' 
-      });
+      return res.status(403).json({ success: false, message: 'Admin access required' });
     }
-    
-    // Validate input
+
     if (!title || !message) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Title and message are required' 
-      });
+      return res.status(400).json({ success: false, message: 'Title and message are required' });
     }
-    
+
+    const { sendPushNotification } = require('./firebase-admin');
+
     let results = [];
     let pushResults = [];
-    
+
     if (sendToAll) {
-      // BULK: Send to ALL active users
+      // ============ BULK: Send to ALL active users ============
       console.log('👥 [ADMIN] Sending bulk notification to all active users');
-      
-      const users = await User.find({ isActive: true });
-      
+
+      const users = await User.find({ isActive: true }).select('_id fcmToken email fullName');
+
       for (const user of users) {
-        // Use the helper to create notification AND send push
-        const result = await createNotificationAndSendPush({
-          recipientId: user._id,
+        // 1. Save notification to DB
+        try {
+          await Notification.create({
+            recipient: user._id,
+            title: title.trim(),
+            message: message.trim(),
+            type: type,
+            isRead: false,
+            metadata: {
+              sentByAdmin: req.user._id,
+              bulk: true,
+              sentAt: new Date(),
+              screen: screen,
+            },
+          });
+        } catch (dbErr) {
+          console.error(`DB save failed for user ${user._id}:`, dbErr.message);
+          continue;
+        }
+
+        // 2. Send FCM push notification (works even when app is closed!)
+        if (user.fcmToken) {
+          try {
+            const pushResult = await sendPushNotification({
+              userId: user._id,
+              title: title.trim(),
+              message: message.trim(),
+              type: type,
+              screen: screen,
+              badgeCount: 0,
+            });
+            pushResults.push({ userId: user._id, ...pushResult });
+          } catch (pushErr) {
+            console.error(`Push failed for user ${user._id}:`, pushErr.message);
+          }
+        }
+
+        // 3. Also emit via Socket.IO for users with app open
+        if (global.io) {
+          global.io.to(`user:${user._id}`).emit('notification', {
+            title,
+            message,
+            type,
+            screen,
+            createdAt: new Date(),
+          });
+        }
+
+        results.push({
+          userId: user._id,
+          email: user.email,
+          pushSent: !!user.fcmToken,
+        });
+      }
+
+      console.log(`✅ [ADMIN] Sent bulk notification to ${results.length} users`);
+
+      res.json({
+        success: true,
+        message: `Notification sent to ${results.length} users`,
+        sentCount: results.length,
+        pushCount: pushResults.filter(p => p.success).length,
+        results: results,
+      });
+
+    } else if (recipientId) {
+      // ============ SINGLE: Send to specific user ============
+      console.log(`👤 [ADMIN] Sending notification to user: ${recipientId}`);
+
+      const user = await User.findById(recipientId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'Recipient user not found' });
+      }
+
+      // 1. Save to DB
+      const notification = await Notification.create({
+        recipient: user._id,
+        title: title.trim(),
+        message: message.trim(),
+        type: type,
+        isRead: false,
+        metadata: {
+          sentByAdmin: req.user._id,
+          sentAt: new Date(),
+          screen: screen,
+        },
+      });
+
+      // 2. Send FCM push notification
+      let pushSent = false;
+      if (user.fcmToken) {
+        const pushResult = await sendPushNotification({
+          userId: user._id,
           title: title.trim(),
           message: message.trim(),
           type: type,
           screen: screen,
-          metadata: {
-            sentByAdmin: req.user._id,
-            bulk: true,
-            sentAt: new Date()
-          }
+          badgeCount: 0,
         });
-        
-        if (result.success) {
-          results.push({
-            userId: user._id,
-            email: user.email,
-            notificationId: result.notification._id,
-            pushSent: result.pushSent
-          });
-        }
-      }
-      
-      console.log(`✅ [ADMIN] Sent bulk notification to ${results.length} users`);
-      
-      res.json({ 
-        success: true, 
-        message: `Notification sent to ${results.length} users`,
-        sentCount: results.length,
-        results: results
-      });
-      
-    } else if (recipientId) {
-      // SINGLE: Send to specific user
-      console.log(`👤 [ADMIN] Sending notification to user: ${recipientId}`);
-      
-      const user = await User.findById(recipientId);
-      if (!user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'Recipient user not found' 
-        });
-      }
-      
-      const result = await createNotificationAndSendPush({
-        recipientId: user._id,
-        title: title.trim(),
-        message: message.trim(),
-        type: type,
-        screen: screen,
-        metadata: {
-          sentByAdmin: req.user._id,
-          sentAt: new Date()
-        }
-      });
-      
-      if (result.success) {
-        res.json({ 
-          success: true, 
-          message: 'Notification sent successfully',
-          notificationId: result.notification._id,
-          pushSent: result.pushSent
-        });
+        pushSent = pushResult.success;
+        console.log(`📱 FCM push ${pushSent ? 'sent' : 'failed'} to ${user.email}`);
       } else {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to send notification',
-          error: result.error
+        console.log(`⚠️ User ${user.email} has no FCM token`);
+      }
+
+      // 3. Also emit via Socket.IO
+      if (global.io) {
+        global.io.to(`user:${user._id}`).emit('notification', {
+          title,
+          message,
+          type,
+          screen,
+          createdAt: new Date(),
         });
       }
-      
+
+      res.json({
+        success: true,
+        message: 'Notification sent successfully',
+        notificationId: notification._id,
+        pushSent: pushSent,
+      });
+
     } else {
-      // ERROR: Neither recipientId nor sendToAll specified
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Either recipientId or sendToAll is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Either recipientId or sendToAll is required',
       });
     }
-    
+
   } catch (error) {
     console.error('❌ [ADMIN] Error sending notification:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to send notification' 
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });
+
+
 
 // @desc    Clean up old notifications
 // @route   POST /api/notifications/cleanup
