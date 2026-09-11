@@ -12498,13 +12498,19 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title and message are required' });
     }
 
-  
+    // ✅ Guard: verify helper exists
+    if (typeof sendPushNotification !== 'function') {
+      console.error('❌ sendPushNotification is not a function. Check firebaseAdmin.js exports.');
+      return res.status(500).json({
+        success: false,
+        message: 'Push notification service is not available',
+      });
+    }
 
     let results = [];
     let pushResults = [];
 
     if (sendToAll) {
-      // ============ BULK: Send to ALL active users ============
       console.log('👥 [ADMIN] Sending bulk notification to all active users');
 
       const users = await User.find({ isActive: true }).select('_id fcmToken email fullName');
@@ -12530,7 +12536,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
           continue;
         }
 
-        // 2. Send FCM push notification (works even when app is closed!)
+        // 2. Send FCM push
         if (user.fcmToken) {
           try {
             const pushResult = await sendPushNotification({
@@ -12547,7 +12553,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
           }
         }
 
-        // 3. Also emit via Socket.IO for users with app open
+        // 3. Socket emit
         if (global.io) {
           global.io.to(`user:${user._id}`).emit('notification', {
             title,
@@ -12567,16 +12573,14 @@ app.post('/api/notifications/send', protect, async (req, res) => {
 
       console.log(`✅ [ADMIN] Sent bulk notification to ${results.length} users`);
 
-      res.json({
+      return res.json({
         success: true,
         message: `Notification sent to ${results.length} users`,
         sentCount: results.length,
-        pushCount: pushResults.filter(p => p.success).length,
+        pushCount: pushResults.filter((p) => p.success).length,
         results: results,
       });
-
     } else if (recipientId) {
-      // ============ SINGLE: Send to specific user ============
       console.log(`👤 [ADMIN] Sending notification to user: ${recipientId}`);
 
       const user = await User.findById(recipientId);
@@ -12598,7 +12602,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
         },
       });
 
-      // 2. Send FCM push notification
+      // 2. Send FCM push
       let pushSent = false;
       if (user.fcmToken) {
         const pushResult = await sendPushNotification({
@@ -12615,7 +12619,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
         console.log(`⚠️ User ${user.email} has no FCM token`);
       }
 
-      // 3. Also emit via Socket.IO
+      // 3. Socket emit
       if (global.io) {
         global.io.to(`user:${user._id}`).emit('notification', {
           title,
@@ -12626,20 +12630,18 @@ app.post('/api/notifications/send', protect, async (req, res) => {
         });
       }
 
-      res.json({
+      return res.json({
         success: true,
         message: 'Notification sent successfully',
         notificationId: notification._id,
         pushSent: pushSent,
       });
-
     } else {
       return res.status(400).json({
         success: false,
         message: 'Either recipientId or sendToAll is required',
       });
     }
-
   } catch (error) {
     console.error('❌ [ADMIN] Error sending notification:', error);
     res.status(500).json({
