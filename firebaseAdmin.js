@@ -1,14 +1,8 @@
-// vtpass-backend/firebaseAdmin.js
-const admin = require('firebase-admin');
-const path = require('path');
-const fs = require('fs');
-const User = require('./models/User');
-
 // ==================== SAFE SERVICE ACCOUNT LOADER ====================
 function loadServiceAccount() {
   // Priority order:
-  // 1. Environment variable (YOUR CURRENT SETUP) — matches how VTPASS_API_KEY is stored
-  // 2. Secret File at /etc/secrets/ (alternative)
+  // 1. Environment variable (YOUR CURRENT SETUP)
+  // 2. Secret File at /etc/secrets/
   // 3. Local file in project root (development)
 
   // ============================================================
@@ -31,7 +25,7 @@ function loadServiceAccount() {
     try {
       console.log(`🔍 Trying env var: ${varName} (length: ${rawValue.length})`);
 
-      // Sometimes the value is wrapped in outer quotes — strip them
+      // Strip any outer quotes
       let cleaned = rawValue.trim();
       if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
         cleaned = cleaned.slice(1, -1);
@@ -42,37 +36,53 @@ function loadServiceAccount() {
 
       const parsed = JSON.parse(cleaned);
 
-      // ==================== KEY NORMALIZATION ====================
+      // ============================================================
+      // 🔥 NUCLEAR KEY REPAIR — rebuilds the private_key from scratch
+      // Handles ALL possible corruption from env var storage
+      // ============================================================
       if (parsed.private_key) {
-        let pk = parsed.private_key;
+        const originalKey = parsed.private_key;
 
-        // Fix double-escaped \\n (from shell/JSON-in-JSON wrapping)
-        if (pk.includes('\\n')) {
-          console.log('🔧 Fixing double-escaped \\\\n in private_key');
-          pk = pk.replace(/\\n/g, '\n');
+        // Step 1: Extract ONLY the base64 body between the PEM headers
+        // This regex works whether the key has real newlines, \n, \\n, or CRLF
+        const pemMatch = originalKey.match(
+          /-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/
+        );
+
+        if (!pemMatch) {
+          throw new Error('private_key is missing PEM headers (BEGIN/END)');
         }
 
-        // Normalize CRLF to LF (Windows Git can inject \r)
-        pk = pk.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        // Step 2: Get the base64 body, remove EVERYTHING that isn't base64
+        let base64Body = pemMatch[1]
+          .replace(/\\n/g, '')   // remove literal \n (2 chars)
+          .replace(/\\r/g, '')   // remove literal \r (2 chars)
+          .replace(/\s+/g, '')   // remove ALL whitespace (spaces, tabs, real newlines)
+          .trim();
 
-        // Collapse any accidental triple newlines
-        pk = pk.replace(/\n{3,}/g, '\n\n');
-
-        // Sanity check
-        if (!pk.startsWith('-----BEGIN PRIVATE KEY-----')) {
-          throw new Error('private_key does not start with BEGIN PRIVATE KEY');
-        }
-        if (!pk.trim().endsWith('-----END PRIVATE KEY-----')) {
-          throw new Error('private_key does not end with END PRIVATE KEY');
+        if (base64Body.length < 100) {
+          throw new Error(`base64 body too short (${base64Body.length} chars)`);
         }
 
-        const lineCount = pk.split('\n').length;
-        if (lineCount < 20) {
-          throw new Error(`private_key too short (only ${lineCount} lines)`);
+        // Step 3: Re-chunk into 64-character lines (standard PEM format)
+        const chunks = [];
+        for (let i = 0; i < base64Body.length; i += 64) {
+          chunks.push(base64Body.substring(i, i + 64));
         }
 
-        parsed.private_key = pk;
-        console.log(`🔧 private_key normalized: ${lineCount} lines`);
+        // Step 4: Rebuild the PEM with real newlines
+        const rebuiltKey =
+          '-----BEGIN PRIVATE KEY-----\n' +
+          chunks.join('\n') +
+          '\n-----END PRIVATE KEY-----\n';
+
+        parsed.private_key = rebuiltKey;
+
+        console.log(`🔧 private_key REBUILT from scratch:`);
+        console.log(`   Original length: ${originalKey.length} chars`);
+        console.log(`   Base64 body length: ${base64Body.length} chars`);
+        console.log(`   Final PEM length: ${rebuiltKey.length} chars`);
+        console.log(`   Final line count: ${rebuiltKey.split('\n').length} lines`);
       }
       // ============================================================
 
@@ -81,7 +91,6 @@ function loadServiceAccount() {
       console.log(`   Client Email: ${parsed.client_email}`);
       console.log(`   Private Key ID: ${parsed.private_key_id?.substring(0, 12)}...`);
 
-      // Warn if project_id doesn't match expected
       if (parsed.project_id !== 'dalabapay-937de') {
         console.warn(`⚠️ WARNING: project_id is "${parsed.project_id}" but expected "dalabapay-937de"`);
       }
@@ -89,12 +98,11 @@ function loadServiceAccount() {
       return parsed;
     } catch (err) {
       console.error(`❌ Failed to parse env var ${varName}:`, err.message);
-      // Continue to next candidate
     }
   }
 
   // ============================================================
-  // METHOD 2: SECRET FILE (alternative if you migrate later)
+  // METHOD 2: SECRET FILE
   // ============================================================
   const fileCandidates = [
     '/etc/secrets/firebase-service-account.json',
@@ -110,13 +118,28 @@ function loadServiceAccount() {
       const parsed = JSON.parse(raw);
 
       if (parsed.private_key) {
-        let pk = parsed.private_key;
-        if (pk.includes('\\n')) pk = pk.replace(/\\n/g, '\n');
-        pk = pk.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        if (!pk.startsWith('-----BEGIN PRIVATE KEY-----')) {
-          throw new Error('private_key malformed');
+        const pemMatch = parsed.private_key.match(
+          /-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/
+        );
+        if (!pemMatch) throw new Error('private_key is missing PEM headers');
+
+        const base64Body = pemMatch[1]
+          .replace(/\\n/g, '')
+          .replace(/\\r/g, '')
+          .replace(/\s+/g, '')
+          .trim();
+
+        const chunks = [];
+        for (let i = 0; i < base64Body.length; i += 64) {
+          chunks.push(base64Body.substring(i, i + 64));
         }
-        parsed.private_key = pk;
+
+        parsed.private_key =
+          '-----BEGIN PRIVATE KEY-----\n' +
+          chunks.join('\n') +
+          '\n-----END PRIVATE KEY-----\n';
+
+        console.log(`🔧 private_key REBUILT from file (${chunks.length} lines)`);
       }
 
       console.log(`✅ Loaded Firebase service account from file: ${filePath}`);
@@ -126,110 +149,8 @@ function loadServiceAccount() {
     }
   }
 
-  // Nothing worked
   throw new Error(
     '❌ No valid Firebase service account found. ' +
-    'Set the "firebase-service-account.json" environment variable on Render ' +
-    '(paste the raw JSON as the value).'
+    'Set the "firebase-service-account.json" environment variable on Render.'
   );
 }
-
-// ==================== INITIALIZE FIREBASE (ONCE ONLY) ====================
-console.log('🔥 ========== FIREBASE ADMIN STARTUP ==========');
-console.log(`   admin.apps.length BEFORE init: ${admin.apps.length}`);
-console.log(`   NODE_ENV: ${process.env.NODE_ENV || 'undefined'}`);
-
-if (admin.apps.length === 0) {
-  try {
-    const serviceAccount = loadServiceAccount();
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    console.log('✅ Firebase Admin initialized successfully');
-    console.log(`   admin.apps.length AFTER init: ${admin.apps.length}`);
-  } catch (err) {
-    console.error('❌❌❌ FIREBASE ADMIN INITIALIZATION FAILED ❌❌❌');
-    console.error('   Error:', err.message);
-    console.error('   Stack:', err.stack);
-    // Do NOT throw — let the server keep running
-  }
-} else {
-  console.log('ℹ️ Firebase Admin already initialized — skipping re-init');
-}
-console.log('🔥 ============================================');
-
-// ==================== SEND PUSH NOTIFICATION ====================
-async function sendPushNotification({
-  userId,
-  title,
-  message,
-  type = 'general',
-  screen = 'notifications',
-  badgeCount = 0,
-  data = {},
-}) {
-  try {
-    if (admin.apps.length === 0) {
-      console.log('⚠️ Firebase not initialized — skipping push');
-      return { success: false, error: 'Firebase not initialized' };
-    }
-
-    const user = await User.findById(userId).select('fcmToken email fullName');
-    if (!user || !user.fcmToken) {
-      console.log('⚠️ No FCM token for user:', userId);
-      return { success: false, error: 'No FCM token' };
-    }
-
-    const payload = {
-      notification: { title, body: message },
-      data: {
-        type: String(type),
-        screen: String(screen),
-        badgeCount: String(badgeCount),
-        notificationId: String(data.notificationId || ''),
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          notificationCount: badgeCount,
-          sound: 'default',
-          channelId: 'dalabapay_channel',
-        },
-      },
-      apns: {
-        payload: { aps: { badge: badgeCount, sound: 'default' } },
-      },
-      token: user.fcmToken,
-    };
-
-    console.log('📤 Attempting FCM send:');
-    console.log('   Token prefix:', user.fcmToken.substring(0, 30) + '...');
-    console.log('   Token length:', user.fcmToken.length);
-    console.log('   Title:', title);
-    console.log('   Type:', type);
-
-    const response = await admin.messaging().send(payload);
-    console.log('✅ Notification sent to:', user.email, '| Response:', response);
-    return { success: true, response };
-  } catch (error) {
-    console.error('❌❌❌ FCM SEND FAILED ❌❌❌');
-    console.error('   Error message:', error.message);
-    console.error('   Error code:', error.code);
-    console.error('   Error stack:', error.stack?.substring(0, 500));
-    console.error('   Full error object:', JSON.stringify(error, null, 2));
-
-    // Cleanup invalid tokens
-    if (
-      error.code === 'messaging/invalid-registration-token' ||
-      error.code === 'messaging/registration-token-not-registered'
-    ) {
-      await User.findByIdAndUpdate(userId, { $unset: { fcmToken: 1 } });
-      console.log('🗑️ Invalid FCM token removed for user:', userId);
-    }
-
-    return { success: false, error: error.message, code: error.code };
-  }
-}
-
-module.exports = { sendPushNotification };
