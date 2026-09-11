@@ -300,7 +300,7 @@ app.get('/api/debug/firebase-key', (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});api/debug/firebase-key
+});
 
 app.set('trust proxy', 1);
 
