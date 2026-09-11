@@ -37,6 +37,8 @@ const Referral = require('./models/Referral');
 const formatCurrency = (amount) => `₦${(amount || 0).toFixed(2)}`;
 const adminExportRoutes = require('./routes/adminExportRoutes');
 const { createNotificationAndSendPush, getUserUnreadCount } = require('./helpers/notificationHelper');
+const { sendPushNotification } = require('./firebaseAdmin');
+console.log('🔍 firebaseAdmin loaded. sendPushNotification type:', typeof sendPushNotification);
 
 // ==================== COMMISSION STATS CACHE ====================
 const commissionStatsCache = new Map();
@@ -12496,7 +12498,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title and message are required' });
     }
 
-  const { sendPushNotification } = require('./firebaseAdmin');
+  
 
     let results = [];
     let pushResults = [];
