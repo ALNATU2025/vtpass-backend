@@ -12496,7 +12496,7 @@ app.post('/api/notifications/send', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title and message are required' });
     }
 
-    const { sendPushNotification } = require('./firebase-admin');
+  const { sendPushNotification } = require('./firebaseAdmin');
 
     let results = [];
     let pushResults = [];
