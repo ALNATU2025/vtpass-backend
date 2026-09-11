@@ -1,7 +1,7 @@
 // firebaseAdmin.js — COMPLETE REPLACEMENT
 // FIX APPLIED: Replaced brittle "key repair" regex hacks with robust Base64 decoding, 
 // exactly as proposed in the architectural solution.
-
+console.log('🚨🚨🚨 FIREBASE ADMIN FILE LOADED - VERSION 2.0 (BASE64 FIX) 🚨🚨🚨');
 const admin = require('firebase-admin');
 const path = require('path');
 const fs = require('fs');
