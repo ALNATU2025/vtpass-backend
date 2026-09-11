@@ -14,9 +14,8 @@ function loadServiceAccount() {
   // ============================================================
   // METHOD 1: READ FROM ENVIRONMENT VARIABLE (your setup)
   // ============================================================
-  // Try several common env var names — whatever you named it on Render
   const envVarNames = [
-    'firebase-service-account.json',     // ← Render UI often names it this (with .json)
+    'firebase-service-account.json',
     'FIREBASE_SERVICE_ACCOUNT',
     'FIREBASE_SERVICE_ACCOUNT_JSON',
     'FIREBASE_ADMIN_CREDENTIALS',
@@ -204,12 +203,23 @@ async function sendPushNotification({
       token: user.fcmToken,
     };
 
+    console.log('📤 Attempting FCM send:');
+    console.log('   Token prefix:', user.fcmToken.substring(0, 30) + '...');
+    console.log('   Token length:', user.fcmToken.length);
+    console.log('   Title:', title);
+    console.log('   Type:', type);
+
     const response = await admin.messaging().send(payload);
     console.log('✅ Notification sent to:', user.email, '| Response:', response);
     return { success: true, response };
   } catch (error) {
-    console.error('❌ FCM send error:', error.message, '| Code:', error.code);
+    console.error('❌❌❌ FCM SEND FAILED ❌❌❌');
+    console.error('   Error message:', error.message);
+    console.error('   Error code:', error.code);
+    console.error('   Error stack:', error.stack?.substring(0, 500));
+    console.error('   Full error object:', JSON.stringify(error, null, 2));
 
+    // Cleanup invalid tokens
     if (
       error.code === 'messaging/invalid-registration-token' ||
       error.code === 'messaging/registration-token-not-registered'
