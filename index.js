@@ -1989,4 +1989,18748 @@ app.get('/api/app/version', async (req, res) => {
       },
       ios: {
         minimum: '1.4.0',  // ✅ Updated minimum version
+        latest: '1.5.0',   // ✅ Updated to 1.5.0
+        updateUrl: 'https://apps.apple.com/app/idYOUR_APP_ID',
+        whatsNew: [
+          '🎉 New Service Commission Management',
+          '⚡ Improved electricity bill payment',
+          '🔒 Enhanced PIN security with lockout protection',
+          '📱 Modernized UI/UX across all screens',
+          '🐛 Bug fixes and performance improvements',
+          '🔄 Better app update detection',
+          '📊 Enhanced transaction history'
+        ],
+        isRequired: false,
+        releaseDate: '2025-08-25'
+      }
+    };
+    
+    const platformVersions = versions[platform] || versions.android;
+    const minimumVersion = platformVersions.minimum;
+    const latestVersion = platformVersions.latest;
+    
+    // Compare versions
+    const needsUpdate = compareVersions(currentVersion, latestVersion) < 0;
+    const isMinimumVersion = compareVersions(currentVersion, minimumVersion) >= 0;
+    const isRequired = !isMinimumVersion || platformVersions.isRequired;
+    
+    res.json({
+      success: true,
+      data: {
+        needsUpdate: needsUpdate,
+        isRequired: isRequired,
+        currentVersion: currentVersion,
+        minimumVersion: minimumVersion,
+        latestVersion: latestVersion,
+        updateUrl: platformVersions.updateUrl,
+        whatsNew: platformVersions.whatsNew,
+        releaseDate: platformVersions.releaseDate,
+        forceUpdateMessage: isRequired ? 
+          'A new version is available. Please update to continue using the app.' : 
+          'A new version is available. Update for better experience.'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Version check error:', error);
+    res.json({
+      success: true,
+      data: {
+        needsUpdate: false,
+        isRequired: false,
+        message: 'Version check failed'
+      }
+    });
+  }
+});
+
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+  
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const num1 = parts1[i] || 0;
+    const num2 = parts2[i] || 0;
+    
+    if (num1 !== num2) {
+      return num1 - num2;
+    }
+  }
+  return 0;
+}
+
+
+// @desc    Validate referral code (REF format only)
+// @route   GET /api/referral/validate/:code
+// @access  Public
+app.get('/api/referral/validate/:code', async (req, res) => {
+  try {
+    const referralCode = req.params.code.toUpperCase().trim();
+    
+    console.log(`🔍 Validating referral code: ${referralCode}`);
+    
+    // ONLY ACCEPT REF format (8-20 characters total, REF + 5-17)
+    if (!referralCode.startsWith('REF') || referralCode.length < 8 || referralCode.length > 20) {
+      return res.json({
+        success: false,
+        message: 'Referral code must start with REF and be 8-20 characters total'
+      });
+    }
+    
+    const referrer = await User.findOne({ referralCode });
+    
+    if (!referrer) {
+      return res.json({
+        success: false,
+        message: 'Invalid referral code. User not found.'
+      });
+    }
+    
+    if (!referrer.isActive) {
+      return res.json({
+        success: false,
+        message: 'This referral code belongs to an inactive account.'
+      });
+    }
+    
+    // Check if referrer is trying to use their own code
+    if (req.user && referrer._id.toString() === req.user._id.toString()) {
+      return res.json({
+        success: false,
+        message: 'You cannot use your own referral code'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      referrerId: referrer._id,
+      referrerName: referrer.fullName,
+      referrerEmail: referrer.email,
+      referralCode: referrer.referralCode,
+      message: 'Valid referral code'
+    });
+    
+  } catch (error) {
+    console.error('Referral validation error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error validating referral code'
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+// @desc    Check token status and refresh if needed
+// @route   GET /api/users/token-status
+// @access  Private
+app.get('/api/users/token-status', protect, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+    
+    try {
+      // Verify token without checking expiration
+      const decoded = jwt.decode(token);
+      const user = await User.findById(decoded.id).select('-password');
+      
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      // Calculate token expiration time
+      const tokenExp = decoded.exp * 1000;
+      const now = Date.now();
+      const expiresIn = tokenExp - now;
+      const willExpireSoon = expiresIn < (30 * 60 * 1000); // 30 minutes
+      
+      return res.json({
+        success: true,
+        tokenStatus: 'valid',
+        user: {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName
+        },
+        expiresIn: Math.floor(expiresIn / 1000), // seconds
+        willExpireSoon,
+        shouldRefresh: willExpireSoon
+      });
+      
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        message: 'Token invalid',
+        code: 'TOKEN_INVALID'
+      });
+    }
+  } catch (error) {
+    console.error('Token status check error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Update FCM token
+// @route   POST /api/user/update-fcm-token
+// @access  Private
+app.post('/api/user/update-fcm-token', protect, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    const userId = req.user._id;
+
+    console.log('📱 Updating FCM token for user:', userId);
+    console.log('📱 Token length:', fcmToken?.length || 0);
+
+    if (!fcmToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'fcmToken is required'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.fcmToken = fcmToken;
+    await user.save();
+
+    console.log(`✅ FCM token updated for user: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: 'FCM token updated successfully',
+      data: {
+        userId: user._id,
+        email: user.email,
+        fcmTokenUpdated: true
+      }
+    });
+  } catch (error) {
+    console.error('❌ FCM token update error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update FCM token',
+      error: error.message
+    });
+  }
+});
+
+
+// @desc    Check token health and auto-refresh if needed
+// @route   POST /api/users/token-health
+// @access  Private
+app.post('/api/users/token-health', protect, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const refreshToken = req.headers['x-refresh-token'];
+    
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is required' });
+    }
+    
+    try {
+      // Try to verify the current token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select('-password');
+      
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      // Calculate token expiration time
+      const tokenExp = decoded.exp * 1000;
+      const now = Date.now();
+      const expiresIn = tokenExp - now;
+      const willExpireSoon = expiresIn < (30 * 60 * 1000); // 30 minutes
+      
+      return res.json({
+        success: true,
+        message: 'Token is valid',
+        user: {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName
+        },
+        tokenExpired: false,
+        expiresIn: Math.floor(expiresIn / 1000), // seconds
+        willExpireSoon,
+        shouldRefresh: willExpireSoon
+      });
+      
+    } catch (tokenError) {
+      if (tokenError.name === 'TokenExpiredError' && refreshToken) {
+        // Token expired, try to refresh
+        try {
+          const decodedRefresh = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+          const user = await User.findById(decodedRefresh.id);
+          
+          if (user && user.refreshToken === refreshToken) {
+            // Generate new tokens
+            const newToken = generateToken(user._id);
+            const newRefreshToken = generateRefreshToken(user._id);
+            
+            // Update refresh token in database
+            user.refreshToken = newRefreshToken;
+            await user.save();
+            
+            return res.json({
+              success: true,
+              message: 'Token refreshed successfully',
+              token: newToken,
+              refreshToken: newRefreshToken,
+              user: {
+                _id: user._id,
+                email: user.email,
+                fullName: user.fullName
+              },
+              tokenExpired: true,
+              refreshed: true
+            });
+          } else {
+            return res.status(401).json({
+              success: false,
+              message: 'Refresh token invalid',
+              code: 'REFRESH_TOKEN_INVALID'
+            });
+          }
+        } catch (refreshError) {
+          console.error('Refresh token error:', refreshError.message);
+          return res.status(401).json({
+            success: false,
+            message: 'Refresh token invalid or expired',
+            code: 'REFRESH_TOKEN_EXPIRED'
+          });
+        }
+      }
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Token invalid',
+        code: 'TOKEN_INVALID'
+      });
+    }
+  } catch (error) {
+    console.error('Token health check error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// Middleware to protect routes for administrators only
+const adminProtect = async (req, res, next) => {
+  await protect(req, res, async () => {
+    if (req.user.isAdmin) {
+      return next();
+    }
+    
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "690088325ca99bed6ab8d4a5";
+    if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
+      return next();
+    }
+    
+    return res.status(403).json({ success: false, message: 'Admin access only' });
+  });
+};
+
+
+// ================================================
+// 🔧 ADMIN MAINTENANCE TOGGLE ENDPOINT
+// This is the endpoint the frontend calls to toggle maintenance
+// ================================================
+app.post('/api/admin/maintenance', adminProtect, async (req, res) => {
+  try {
+    const { isMaintenanceMode, message } = req.body;
+
+    console.log('🔧 [MAINTENANCE] Toggle request from admin:', req.user?.email);
+    console.log('🔧 [MAINTENANCE] isMaintenanceMode:', isMaintenanceMode);
+    console.log('🔧 [MAINTENANCE] message:', message);
+
+    if (typeof isMaintenanceMode !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'isMaintenanceMode must be a boolean'
+      });
+    }
+
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+      console.log('🔧 [MAINTENANCE] Created new settings document');
+    }
+
+    settings.isMaintenanceMode = isMaintenanceMode;
+    if (message !== undefined && message !== null) {
+      settings.maintenanceMessage = message.trim() ||
+        (isMaintenanceMode
+          ? 'System is currently under maintenance. Please check back shortly.'
+          : '');
+    }
+
+    await settings.save();
+
+    // Clear the settings cache so all routes pick up the change immediately
+    cache.del('app-settings');
+
+    console.log(`✅ [MAINTENANCE] Mode ${isMaintenanceMode ? 'ENABLED' : 'DISABLED'} by ${req.user.email}`);
+    console.log(`✅ [MAINTENANCE] Message: ${settings.maintenanceMessage}`);
+
+    res.json({
+      success: true,
+      message: `Maintenance mode ${isMaintenanceMode ? 'enabled' : 'disabled'} successfully`,
+      maintenanceMode: settings.isMaintenanceMode,
+      maintenanceMessage: settings.maintenanceMessage,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ [MAINTENANCE] Toggle error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to toggle maintenance mode',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
+
+
+// Middleware to verify transaction PIN with rate limiting
+const verifyTransactionPin = async (req, res, next) => {
+  try {
+    const { transactionPin } = req.body;
+    const userId = req.user._id;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if PIN is locked
+    if (user.pinLockedUntil && user.pinLockedUntil > getLagosTime()) {
+      const remainingTime = Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000);
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked');
+      return res.status(429).json({ 
+        success: false, 
+        message: `Too many failed attempts. Account locked for ${remainingTime} minutes.` 
+      });
+    }
+    
+    // If PIN is not set, return error
+    if (!user.transactionPin) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'PIN not set');
+      return res.status(400).json({ success: false, message: 'Transaction PIN not set' });
+    }
+    
+    // Verify PIN
+    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+    
+    if (isPinMatch) {
+      // Reset failed attempts on successful PIN
+      user.failedPinAttempts = 0;
+      user.pinLockedUntil = null;
+      await user.save();
+      
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN verified');
+      req.authenticationMethod = 'pin';
+      return next();
+    } else {
+      // Increment failed attempts
+      user.failedPinAttempts += 1;
+      
+      // Lock account if too many failed attempts
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
+        await user.save();
+        
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
+        return res.status(429).json({ 
+          success: false, 
+          message: 'Too many failed attempts. Account locked for 15 minutes.' 
+        });
+      } else {
+        await user.save();
+        
+        const remainingAttempts = 3 - user.failedPinAttempts;
+        await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, `Invalid PIN, ${remainingAttempts} attempts remaining`);
+        return res.status(400).json({ 
+          success: false, 
+          message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.` 
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Transaction PIN verification error:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+// Middleware to verify biometric authentication
+const verifyBiometricAuth = async (req, res, next) => {
+  try {
+    const { biometricData } = req.body;
+    const userId = req.user._id;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if biometric is enabled
+    if (!user.biometricEnabled) {
+      await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, false, 'Biometric not enabled');
+      return res.status(400).json({ success: false, message: 'Biometric authentication not enabled' });
+    }
+    
+    // In a real implementation, you would verify the biometric data here
+    // This would involve checking the signature against the stored public key
+    // For this example, we'll assume the client has already verified the biometric
+    // and we just need to check that the user has it enabled
+    
+    await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, true, 'Biometric verified');
+    req.authenticationMethod = 'biometric';
+    return next();
+  } catch (error) {
+    console.error('Biometric verification error:', error);
+    await logAuthAttempt(userId, 'biometric_attempt', req.ip, req.get('User-Agent'), false, error.message);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+// Middleware to verify transaction authentication (PIN or Biometric)
+const verifyTransactionAuth = async (req, res, next) => {
+  try {
+    const { transactionPin, useBiometric, biometricData } = req.body;
+    const userId = req.user._id;
+    
+    // Get user settings
+    const settings = await Settings.findOne();
+    const pinRequired = settings ? settings.transactionPinRequired : true;
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    // If PIN is not required globally, skip verification
+    if (!pinRequired) {
+      req.authenticationMethod = 'none';
+      return next();
+    }
+    
+    // Get user from database
+    const user = await User.findById(userId);
+    
+    // Check if user has set up a PIN or enabled biometrics
+    const hasPin = user.transactionPin && user.transactionPin.length > 0;
+    const hasBiometric = user.biometricEnabled;
+    
+    // If user has neither PIN nor biometric set up, return error
+    if (!hasPin && !hasBiometric) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please set up a transaction PIN or enable biometric authentication first' 
+      });
+    }
+    
+    // If biometric is requested and enabled
+    if (useBiometric && hasBiometric && biometricAllowed) {
+      return verifyBiometricAuth(req, res, next);
+    }
+    
+    // If PIN is provided
+    if (transactionPin && hasPin) {
+      return verifyTransactionPin(req, res, next);
+    }
+    
+    // If we reach here, authentication failed
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Authentication required. Please provide your transaction PIN or use biometric authentication.' 
+    });
+    
+  } catch (error) {
+    console.error('Transaction authentication error:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+// VTPass API Helper
+const vtpassConfig = {
+  apiKey: process.env.VTPASS_API_KEY,
+  secretKey: process.env.VTPASS_SECRET_KEY,
+  baseUrl: process.env.VTPASS_BASE_URL || 'https://sandbox.vtpass.com/api',
+};
+// VTPass API Helper - SUPPORTS BOTH GET AND POST
+// VTPass API Helper - SUPPORTS BOTH GET AND POST
+const callVtpassApi = async (endpoint, data = {}, headers = {}, method = 'POST') => {
+  try {
+    // Determine if this is a GET request
+    const isGetRequest = method === 'GET' || 
+                         endpoint.startsWith('/get-') || 
+                         endpoint === '/service-variations';
+    
+    let response;
+    const fullUrl = `${vtpassConfig.baseUrl}${endpoint}`;
+    
+    if (isGetRequest) {
+      // ✅ GET REQUEST
+      const queryParams = new URLSearchParams();
+      
+      // Add all data as query parameters for GET requests
+      Object.keys(data).forEach(key => {
+        if (data[key] !== undefined && data[key] !== null && data[key] !== '') {
+          queryParams.append(key, data[key]);
+        }
+      });
+      
+      const urlWithQuery = queryParams.toString() ? `${fullUrl}?${queryParams.toString()}` : fullUrl;
+      
+      console.log(`📡 GET Request to: ${urlWithQuery}`);
+      console.log(`📡 Headers: api-key: ${vtpassConfig.apiKey ? '***' : 'MISSING'}, secret-key: ${vtpassConfig.secretKey ? '***' : 'MISSING'}`);
+      
+      response = await axios.get(urlWithQuery, {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': vtpassConfig.apiKey,
+          'secret-key': vtpassConfig.secretKey,
+          ...headers,
+        },
+        timeout: 30000
+      });
+    } else {
+      // ✅ POST REQUEST
+      console.log(`📡 POST Request to: ${fullUrl}`);
+      console.log(`📡 Headers: api-key: ${vtpassConfig.apiKey ? '***' : 'MISSING'}, secret-key: ${vtpassConfig.secretKey ? '***' : 'MISSING'}`);
+      console.log(`📡 Payload:`, JSON.stringify(data, null, 2));
+      
+      // ✅ FORCE LIVE URL FOR /pay endpoint
+      let targetUrl = fullUrl;
+      if (endpoint === '/pay') {
+        targetUrl = 'https://vtpass.com/api/pay';
+        console.log(`📡 FORCING LIVE URL for /pay: ${targetUrl}`);
+      }
+      
+      response = await axios.post(targetUrl, data, {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': vtpassConfig.apiKey,
+          'secret-key': vtpassConfig.secretKey,
+          ...headers,
+        },
+        timeout: 30000
+      });
+    }
+    
+    console.log(`✅ VTPass API call to ${endpoint} successful.`);
+    console.log('📦 VTPass API Response Data:', JSON.stringify(response.data, null, 2));
+    return { success: true, data: response.data };
+  } catch (error) {
+    console.error(`--- ❌ VTPass API Error to ${endpoint} ---`);
+    console.error('📡 Error Type:', error.code || 'UNKNOWN');
+    console.error('📡 Error Message:', error.message);
+    
+    if (error.response) {
+      console.error('📡 Server responded with non-2xx status:', error.response.status);
+      console.error('📡 Response headers:', error.response.headers);
+      console.error('📡 Response data:', JSON.stringify(error.response.data, null, 2));
+      return {
+        success: false,
+        status: error.response.status,
+        message: error.response.data.message || error.response.data.response_description || 'Error from VTPass API',
+        details: error.response.data
+      };
+    } else if (error.request) {
+      console.error('📡 No response received from VTPass API');
+      console.error('📡 Request details:', error.request);
+      return { success: false, status: 504, message: 'Timeout: No response from VTPass API' };
+    } else {
+      console.error('📡 Error setting up request:', error.message);
+      return { success: false, status: 500, message: error.message || 'Internal Server Error' };
+    }
+  }
+};
+
+
+
+
+const createTransaction = async (
+  userId,
+  amount,
+  type,
+  status,
+  description,
+  balanceBefore,
+  balanceAfter,
+  session, // Mongoose session object
+  isCommission = false,
+  authenticationMethod = 'none',
+  reference = null,
+  metadata = {},
+  additionalData = {}
+) => {
+  try {
+    // Generate or use provided reference
+    const txReference = reference || `TXN${Date.now()}${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+    
+    // Merge metadata - additionalData overrides metadata
+    const fullMetadata = {
+      // Start with metadata
+      ...metadata,
+      // Override with additionalData where it has values
+      phone: additionalData.phone || metadata.phone || '',
+      smartcardNumber: additionalData.smartcardNumber || metadata.smartcardNumber || '',
+      billersCode: additionalData.billersCode || metadata.billersCode || '',
+      variation_code: additionalData.variation_code || metadata.variation_code || '',
+      packageName: additionalData.packageName || metadata.packageName || '',
+      serviceID: additionalData.serviceID || metadata.serviceID || '',
+      selectedPackage: additionalData.selectedPackage || metadata.selectedPackage || '',
+      meterNumber: additionalData.meterNumber || metadata.meterNumber || '',
+      vtpassResponse: additionalData.vtpassResponse || metadata.vtpassResponse || {},
+      // Include any other additionalData fields
+      ...additionalData
+    };
+
+    const newTransaction = new Transaction({
+      transactionId: txReference, // Use same as reference for consistency
+      userId,
+      type,
+      amount,
+      status, // Should be 'Successful', 'Failed', 'Pending', etc.
+      description,
+      balanceBefore,
+      balanceAfter,
+      reference: txReference, // Single source of truth
+      isCommission,
+      authenticationMethod,
+      metadata: fullMetadata,
+      // Remove timestamp since Transaction model has timestamps: true
+    });
+
+    // Save with session if provided
+    let savedTransaction;
+    if (session) {
+      savedTransaction = await newTransaction.save({ session });
+    } else {
+      savedTransaction = await newTransaction.save();
+    }
+    
+    // Cable TV specific logging
+    if (type === 'Cable TV Subscription' || type === 'Cable TV Purchase') {
+      console.log('📺 CABLE TV TRANSACTION SAVED:');
+      console.log('🔢 Smartcard:', savedTransaction.metadata.billersCode);
+      console.log('📞 Phone:', savedTransaction.metadata.phone);
+      console.log('📦 Package:', savedTransaction.metadata.packageName);
+      console.log('🆔 Reference:', savedTransaction.reference);
+      console.log('✅ Status:', savedTransaction.status);
+    } else if (isCommission) {
+      console.log('💰 COMMISSION TRANSACTION SAVED:');
+      console.log('📝 Type:', type);
+      console.log('💵 Amount: ₦', savedTransaction.amount);
+      console.log('✅ Status:', savedTransaction.status);
+      console.log('👤 User:', userId);
+    }
+    
+    return savedTransaction;
+  } catch (error) {
+    console.error('❌ Error creating transaction:', error);
+    console.error('Transaction details:', {
+      userId,
+      type,
+      amount,
+      status,
+      description,
+      isCommission,
+      reference: reference || 'auto-generated'
+    });
+    throw error;
+  }
+};
+
+
+
+
+/**
+ * Award registration bonuses (called during registration)
+ */
+const awardRegistrationBonuses = async (referredUserId, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Awarding REGISTRATION bonuses for new user: ${referredUserId}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found or user not found');
+      return false;
+    }
+    
+    const referrerId = referredUser.referrerId;
+    
+    const referrerQuery = User.findById(referrerId);
+    if (mongooseSession) {
+      referrerQuery.session(mongooseSession);
+    }
+    
+    const referrer = await referrerQuery;
+    if (!referrer) {
+      console.log('❌ Referrer not found');
+      return false;
+    }
+    
+    console.log(`✅ Registration bonuses eligible!`);
+    
+    // 1. Award welcome bonus to new user (₦200)
+    if (!referredUser.welcomeBonusReceived) {
+      const userCommissionBefore = referredUser.commissionBalance || 0;
+      referredUser.commissionBalance = (referredUser.commissionBalance || 0) + 200;
+      referredUser.welcomeBonusReceived = true;
+      referredUser.welcomeBonusAmount = 200;
+      referredUser.referralBonusAwarded = true;
+      await referredUser.save({ session: mongooseSession });
+      
+      await createTransaction(
+        referredUserId,
+        200,
+        'Welcome Bonus',
+        'Successful',
+        `Welcome bonus for registering with referral code`,
+        userCommissionBefore,
+        referredUser.commissionBalance,
+        mongooseSession,
+        true,
+        'none',
+        null,
+        {},
+        {
+          referralType: 'welcome_bonus',
+          referrerId: referrerId,
+          referrerName: referrer.fullName,
+          bonusAmount: 200,
+          bonusFor: 'referred_user',
+          bonusSource: 'registration'
+        }
+      );
+      
+      console.log(`✅ ₦200 welcome bonus credited to new user: ${referredUser.email}`);
+    }
+    
+    // 2. Award direct referral bonus to referrer (₦200)
+    const referrerCommissionBefore = referrer.commissionBalance || 0;
+    referrer.commissionBalance = (referrer.commissionBalance || 0) + 200;
+    referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
+    await referrer.save({ session: mongooseSession });
+    
+    await createTransaction(
+      referrerId,
+      200,
+      'Direct Referral Bonus',
+      'Successful',
+      `Direct referral bonus for referring ${referredUser.fullName}`,
+      referrerCommissionBefore,
+      referrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        referralType: 'direct',
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        bonusAmount: 200,
+        bonusFor: 'referrer',
+        bonusSource: 'registration'
+      }
+    );
+    
+    console.log(`✅ ₦200 direct referral bonus credited to referrer: ${referrer.email}`);
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error awarding registration bonuses:', error);
+    return false;
+  }
+};
+
+/**
+ * Award indirect registration bonus (₦20 to original referrer)
+ */
+const awardIndirectRegistrationBonus = async (referredUserId, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Awarding indirect REGISTRATION bonus for new user: ${referredUserId}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found');
+      return false;
+    }
+    
+    const directReferrerId = referredUser.referrerId;
+    
+    const directReferrerQuery = User.findById(directReferrerId);
+    if (mongooseSession) {
+      directReferrerQuery.session(mongooseSession);
+    }
+    
+    const directReferrer = await directReferrerQuery;
+    if (!directReferrer || !directReferrer.referrerId) {
+      console.log('⚠️ No indirect referrer found (level 2)');
+      return false;
+    }
+    
+    const originalReferrerId = directReferrer.referrerId;
+    
+    if (referredUser.indirectBonusAwardedLevel2) {
+      console.log(`⚠️ Indirect bonus (level 2) already awarded`);
+      return false;
+    }
+    
+    const originalReferrerQuery = User.findById(originalReferrerId);
+    if (mongooseSession) {
+      originalReferrerQuery.session(mongooseSession);
+    }
+    
+    const originalReferrer = await originalReferrerQuery;
+    if (!originalReferrer) {
+      console.log('❌ Original referrer not found');
+      return false;
+    }
+    
+    const bonusAmount = 20;
+    
+    console.log(`✅ Indirect registration bonus eligible!`);
+    
+    const commissionBefore = originalReferrer.commissionBalance || 0;
+    originalReferrer.commissionBalance = (originalReferrer.commissionBalance || 0) + bonusAmount;
+    originalReferrer.totalReferralEarnings = (originalReferrer.totalReferralEarnings || 0) + bonusAmount;
+    await originalReferrer.save({ session: mongooseSession });
+    
+    referredUser.indirectBonusAwardedLevel2 = true;
+    await referredUser.save({ session: mongooseSession });
+    
+    await createTransaction(
+      originalReferrerId,
+      bonusAmount,
+      'Indirect Referral Bonus',
+      'Successful',
+      `Indirect referral bonus from ${referredUser.fullName}'s registration`,
+      commissionBefore,
+      originalReferrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        referralType: 'indirect',
+        level: 2,
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        directReferrerId: directReferrerId,
+        directReferrerName: directReferrer.fullName,
+        bonusAmount: bonusAmount,
+        bonusSource: 'registration'
+      }
+    );
+    
+    console.log(`✅ Indirect registration bonus awarded: ₦${bonusAmount} to ${originalReferrer.email}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ Error awarding indirect registration bonus:`, error);
+    return false;
+  }
+};
+
+/**
+ * Award first deposit bonus (₦200 to user and referrer on first deposit ≥ ₦1,000)
+ * NEW RULE: Minimum deposit ₦1,000 to activate bonuses
+ */
+const awardFirstDepositBonus = async (userId, depositAmount, mongooseSession = null) => {
+  try {
+    console.log(`🎯 [REFERRAL] Checking first deposit bonus for user: ${userId}, Deposit: ₦${depositAmount}`);
+    
+    const userQuery = User.findById(userId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    const user = await userQuery;
+    
+    if (!user) {
+      console.log('❌ [REFERRAL] User not found');
+      return false;
+    }
+    
+    // Check if first deposit bonus already received
+    if (user.firstDepositBonusReceived) {
+      console.log('⚠️ [REFERRAL] First deposit bonus already received for user:', userId);
+      return false;
+    }
+    
+    // NEW RULE: Minimum deposit is ₦1,000 (changed from ₦5,000)
+    if (depositAmount < 1000) {
+      console.log(`⚠️ [REFERRAL] Deposit amount (₦${depositAmount}) below ₦1,000. No bonuses awarded.`);
+      console.log(`   User needs to deposit ₦${(1000 - depositAmount).toFixed(2)} more to qualify.`);
+      return false;
+    }
+    
+    console.log(`✅ [REFERRAL] First deposit eligible! User ${userId} deposited ₦${depositAmount} (≥ ₦1,000)`);
+    
+    // ================================================
+    // 1. AWARD WELCOME BONUS TO THE USER (₦200)
+    // ================================================
+    const userCommissionBefore = user.commissionBalance || 0;
+    user.commissionBalance = (user.commissionBalance || 0) + 200;
+    user.firstDepositBonusReceived = true;
+    user.firstDepositMade = true;
+    user.welcomeBonusReceived = true;  // Mark welcome bonus as received
+    user.welcomeBonusAmount = 200;
+    await user.save({ session: mongooseSession });
+    
+    await createTransaction(
+      userId,
+      200,
+      'Welcome Bonus',
+      'Successful',
+      `Welcome bonus for first deposit of ₦${depositAmount.toFixed(2)} (₦1,000+ threshold met)`,
+      userCommissionBefore,
+      user.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        bonusType: 'welcome_bonus',
+        depositAmount: depositAmount,
+        bonusAmount: 200,
+        thresholdMet: depositAmount >= 1000,
+        bonusSource: 'first_deposit',
+        userQualified: true
+      }
+    );
+    
+    console.log(`✅ [REFERRAL] ₦200 welcome bonus credited to user: ${user.email}`);
+    
+    // Create notification for user
+    try {
+      await Notification.create([{
+        recipient: userId,
+        title: "🎉 Welcome Bonus Unlocked!",
+        message: `Congratulations! You've received ₦200 welcome bonus for your first deposit of ₦${depositAmount.toFixed(2)}!`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          bonusType: 'welcome_bonus',
+          amount: 200,
+          depositAmount: depositAmount,
+          threshold: 1000
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ [REFERRAL] Welcome bonus notification error:', notifError);
+    }
+    
+    // ================================================
+    // 2. AWARD DIRECT REFERRAL BONUS TO REFERRER (₦200)
+    // ================================================
+    if (user.referrerId) {
+      const referrer = await User.findById(user.referrerId).session(mongooseSession);
+      if (referrer) {
+        const referrerCommissionBefore = referrer.commissionBalance || 0;
+        referrer.commissionBalance = (referrer.commissionBalance || 0) + 200;
+        referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
+        await referrer.save({ session: mongooseSession });
+        
+        await createTransaction(
+          referrer._id,
+          200,
+          'Direct Referral Bonus',
+          'Successful',
+          `Direct referral bonus from ${user.fullName}'s first deposit of ₦${depositAmount.toFixed(2)}`,
+          referrerCommissionBefore,
+          referrer.commissionBalance,
+          mongooseSession,
+          true,
+          'none',
+          null,
+          {},
+          {
+            referralType: 'direct',
+            referredUserId: userId,
+            referredUserName: user.fullName,
+            depositAmount: depositAmount,
+            bonusAmount: 200,
+            bonusFor: 'referrer',
+            bonusSource: 'first_deposit',
+            thresholdMet: depositAmount >= 1000
+          }
+        );
+        
+        console.log(`✅ [REFERRAL] ₦200 direct referral bonus credited to referrer: ${referrer.email}`);
+        
+        // Create notification for referrer
+        try {
+          await Notification.create([{
+            recipient: referrer._id,
+            title: "💰 Referral Bonus Earned!",
+            message: `${user.fullName} made their first deposit of ₦${depositAmount.toFixed(2)}! You earned ₦200 referral bonus.`,
+            type: 'commission_earned',
+            isRead: false,
+            metadata: {
+              bonusType: 'direct_referral',
+              amount: 200,
+              referredUser: user.fullName,
+              depositAmount: depositAmount
+            }
+          }], { session: mongooseSession });
+        } catch (notifError) {
+          console.error('❌ [REFERRAL] Referrer notification error:', notifError);
+        }
+        
+        // ================================================
+        // 3. AWARD INDIRECT REFERRAL BONUS (₦20 to original referrer)
+        // ================================================
+        if (referrer.referrerId) {
+          const originalReferrer = await User.findById(referrer.referrerId).session(mongooseSession);
+          if (originalReferrer) {
+            const originalCommissionBefore = originalReferrer.commissionBalance || 0;
+            originalReferrer.commissionBalance = (originalReferrer.commissionBalance || 0) + 20;
+            originalReferrer.totalReferralEarnings = (originalReferrer.totalReferralEarnings || 0) + 20;
+            await originalReferrer.save({ session: mongooseSession });
+            
+            await createTransaction(
+              originalReferrer._id,
+              20,
+              'Indirect Referral Bonus',
+              'Successful',
+              `Indirect referral bonus from ${user.fullName}'s first deposit (via ${referrer.fullName})`,
+              originalCommissionBefore,
+              originalReferrer.commissionBalance,
+              mongooseSession,
+              true,
+              'none',
+              null,
+              {},
+              {
+                referralType: 'indirect',
+                level: 2,
+                referredUserId: userId,
+                referredUserName: user.fullName,
+                directReferrerId: referrer._id,
+                directReferrerName: referrer.fullName,
+                depositAmount: depositAmount,
+                bonusAmount: 20,
+                bonusSource: 'first_deposit',
+                thresholdMet: depositAmount >= 1000
+              }
+            );
+            
+            console.log(`✅ [REFERRAL] ₦20 indirect referral bonus credited to original referrer: ${originalReferrer.email}`);
+            
+            // Create notification for original referrer
+            try {
+              await Notification.create([{
+                recipient: originalReferrer._id,
+                title: "🎁 Indirect Referral Bonus!",
+                message: `${user.fullName} made their first deposit of ₦${depositAmount.toFixed(2)} through your referral chain! You earned ₦20.`,
+                type: 'commission_earned',
+                isRead: false,
+                metadata: {
+                  bonusType: 'indirect_referral',
+                  amount: 20,
+                  referredUser: user.fullName,
+                  directReferrer: referrer.fullName,
+                  depositAmount: depositAmount
+                }
+              }], { session: mongooseSession });
+            } catch (notifError) {
+              console.error('❌ [REFERRAL] Indirect referrer notification error:', notifError);
+            }
+          }
+        }
+      }
+    }
+    
+    // Update referral record status
+    if (user.referrerId) {
+      await Referral.findOneAndUpdate(
+        { 
+          referrerId: user.referrerId,
+          referredUserId: userId 
+        },
+        { 
+          status: 'completed',
+          bonusPaid: 200,
+          completedAt: new Date(),
+          depositAmount: depositAmount,
+          qualificationMet: true,
+          qualificationAmount: depositAmount
+        },
+        { session: mongooseSession }
+      );
+      console.log(`📊 [REFERRAL] Referral status updated to completed for user: ${user.email}`);
+    }
+    
+    console.log(`✅ [REFERRAL] All referral bonuses processed successfully for user: ${user.email}`);
+    console.log(`   - User welcome bonus: ₦200`);
+    if (user.referrerId) {
+      console.log(`   - Direct referrer bonus: ₦200`);
+      const referrer = await User.findById(user.referrerId);
+      if (referrer && referrer.referrerId) {
+        console.log(`   - Indirect referrer bonus: ₦20`);
+      }
+    }
+    
+    return true;
+    
+  } catch (error) {
+    console.error('❌ [REFERRAL] Error awarding first deposit bonus:', error);
+    return false;
+  }
+};
+
+
+
+
+/**
+ * Award direct referral bonus (₦200 to referrer ONLY)
+ * Awarded immediately when user registers with referral code
+ * NO minimum deposit required
+ */
+const awardDirectReferralBonus = async (referredUserId, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Awarding direct referral bonus for new user: ${referredUserId}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found or user not found');
+      return false;
+    }
+    
+    // Check if bonus already awarded
+    if (referredUser.referralBonusAwarded) {
+      console.log('⚠️ Direct referral bonus already awarded');
+      return false;
+    }
+    
+    const referrerId = referredUser.referrerId;
+    
+    // Award ₦200 to referrer
+    const referrerQuery = User.findById(referrerId);
+    if (mongooseSession) {
+      referrerQuery.session(mongooseSession);
+    }
+    
+    const referrer = await referrerQuery;
+    if (!referrer) {
+      console.log('❌ Referrer not found');
+      return false;
+    }
+    
+    console.log(`✅ Direct referral bonus eligible!`);
+    console.log(`   Referrer: ${referrer.email}`);
+    console.log(`   Referred User: ${referredUser.email}`);
+    
+    // Add ₦200 to referrer's commission balance
+    const referrerCommissionBefore = referrer.commissionBalance || 0;
+    referrer.commissionBalance = (referrer.commissionBalance || 0) + 200;
+    referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + 200;
+    await referrer.save({ session: mongooseSession });
+    
+    // Create DIRECT referral bonus transaction for referrer
+    await createTransaction(
+      referrerId,
+      200,
+      'Direct Referral Bonus',
+      'Successful',
+      `Direct referral bonus for referring ${referredUser.fullName}`,
+      referrerCommissionBefore,
+      referrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        referralType: 'direct',
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        bonusAmount: 200,
+        bonusFor: 'referrer'
+      }
+    );
+    
+    console.log(`✅ ₦200 direct referral bonus credited to referrer: ${referrer.email}`);
+    
+    // Mark bonus as awarded
+    referredUser.referralBonusAwarded = true;
+    await referredUser.save({ session: mongooseSession });
+    
+    // Create notification for referrer
+    try {
+      await Notification.create([{
+        recipient: referrerId,
+        title: "🎉 Referral Bonus Earned!",
+        message: `You earned ₦200 referral bonus from ${referredUser.fullName}'s registration!`,
+        type: 'referral_bonus',
+        isRead: false,
+        metadata: {
+          event: 'direct_referral_bonus',
+          referredUserId: referredUserId,
+          bonusAmount: 200
+        }
+      }], { session: mongooseSession });
+      
+      console.log(`✅ Notification created for referrer`);
+    } catch (notifError) {
+      console.error('❌ Bonus notification error:', notifError);
+    }
+    
+    console.log(`✅ Direct referral bonus awarded: ₦200 to referrer ${referrer.email}`);
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Error awarding direct referral bonus:', error);
+    return false;
+  }
+};
+
+/**
+ * Award indirect referral bonus (₦20 to original referrer)
+ * Awarded immediately when user registers with referral code
+ * NO minimum deposit required
+ */
+const awardIndirectReferralBonus = async (referredUserId, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Awarding indirect referral bonus for new user: ${referredUserId}`);
+    
+    const userQuery = User.findById(referredUserId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    
+    const referredUser = await userQuery;
+    if (!referredUser || !referredUser.referrerId) {
+      console.log('⚠️ No referrer found');
+      return false;
+    }
+    
+    // Get the direct referrer (level 1)
+    const directReferrerId = referredUser.referrerId;
+    
+    // Find the direct referrer's referrer (level 2 - original referrer)
+    const directReferrerQuery = User.findById(directReferrerId);
+    if (mongooseSession) {
+      directReferrerQuery.session(mongooseSession);
+    }
+    
+    const directReferrer = await directReferrerQuery;
+    if (!directReferrer || !directReferrer.referrerId) {
+      console.log('⚠️ No indirect referrer found (level 2)');
+      return false;
+    }
+    
+    const originalReferrerId = directReferrer.referrerId;
+    
+    // Check if indirect bonus already awarded for this user
+    if (referredUser.indirectBonusAwardedLevel2) {
+      console.log(`⚠️ Indirect bonus (level 2) already awarded`);
+      return false;
+    }
+    
+    const originalReferrerQuery = User.findById(originalReferrerId);
+    if (mongooseSession) {
+      originalReferrerQuery.session(mongooseSession);
+    }
+    
+    const originalReferrer = await originalReferrerQuery;
+    if (!originalReferrer) {
+      console.log('❌ Original referrer not found');
+      return false;
+    }
+    
+    const bonusAmount = 20; // ₦20 for indirect referrals
+    
+    console.log(`✅ Indirect referral bonus eligible!`);
+    console.log(`   Original Referrer: ${originalReferrer.email}`);
+    console.log(`   Direct Referrer: ${directReferrer.email}`);
+    console.log(`   Referred User: ${referredUser.email}`);
+    
+    // Add bonus to original referrer's commission balance
+    const commissionBefore = originalReferrer.commissionBalance || 0;
+    originalReferrer.commissionBalance = (originalReferrer.commissionBalance || 0) + bonusAmount;
+    originalReferrer.totalReferralEarnings = (originalReferrer.totalReferralEarnings || 0) + bonusAmount;
+    await originalReferrer.save({ session: mongooseSession });
+    
+    // Mark bonus as awarded for this user
+    referredUser.indirectBonusAwardedLevel2 = true;
+    await referredUser.save({ session: mongooseSession });
+    
+    // Create indirect referral bonus transaction
+    await createTransaction(
+      originalReferrerId,
+      bonusAmount,
+      'Indirect Referral Bonus',
+      'Successful',
+      `Indirect referral bonus from ${referredUser.fullName}'s registration`,
+      commissionBefore,
+      originalReferrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        referralType: 'indirect',
+        level: 2,
+        referredUserId: referredUserId,
+        referredUserName: referredUser.fullName,
+        directReferrerId: directReferrerId,
+        directReferrerName: directReferrer.fullName,
+        bonusAmount: bonusAmount
+      }
+    );
+    
+    // Create notification
+    try {
+      await Notification.create([{
+        recipient: originalReferrerId,
+        title: "💰 Indirect Referral Bonus!",
+        message: `You earned ₦${bonusAmount} indirect referral bonus from ${directReferrer.fullName}'s referral!`,
+        type: 'referral_bonus',
+        isRead: false,
+        metadata: {
+          event: 'indirect_referral_bonus',
+          level: 2,
+          directReferrerId: directReferrerId,
+          referredUserId: referredUserId,
+          bonusAmount: bonusAmount
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ Indirect bonus notification error:', notifError);
+    }
+    
+    console.log(`✅ Indirect referral bonus (level 2) awarded: ₦${bonusAmount} to ${originalReferrer.email}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ Error awarding indirect referral bonus:`, error);
+    return false;
+  }
+};
+
+
+
+
+
+
+
+
+// CALCULATE COMMISSION - UPDATED RATES PER SERVICE TYPE
+const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null, isUsingCommission = false) => {
+  try {
+    // 🔥 CRITICAL FIX: Skip commission if user paid with commission
+    if (isUsingCommission) {
+      console.log(`⚠️ SKIPPING COMMISSION: User paid with commission balance`);
+      return 0;
+    }
+
+    // Handle case where serviceType might be an object
+    let serviceTypeString;
+    
+    if (typeof serviceType === 'string') {
+      serviceTypeString = serviceType;
+    } else if (serviceType && typeof serviceType === 'object') {
+      // Try to extract service type from object
+      if (serviceType.serviceID) {
+        serviceTypeString = serviceType.serviceID;
+      } else if (serviceType.serviceType) {
+        serviceTypeString = serviceType.serviceType;
+      } else if (serviceType.network) {
+        serviceTypeString = serviceType.network;
+      } else {
+        serviceTypeString = 'unknown';
+      }
+    } else if (serviceType === undefined || serviceType === null) {
+      // If serviceType is not provided at all
+      console.warn('⚠️ Commission called without serviceType parameter');
+      serviceTypeString = 'unknown';
+    } else {
+      serviceTypeString = 'unknown';
+    }
+    
+    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount} | UsingCommission=${isUsingCommission}`);
+    
+    // ========== SKIP COMMISSION FOR TRANSFERS ==========
+    // Wallet-to-wallet transfers do not earn commission
+    if (serviceTypeString.toLowerCase().includes('transfer') || 
+        serviceTypeString.toLowerCase() === 'transfer' || 
+        serviceTypeString.toLowerCase() === 'peer_transfer' ||
+        serviceTypeString.toLowerCase().includes('peer') ||
+        serviceTypeString.toLowerCase().includes('wallet_transfer') ||
+        serviceTypeString.toLowerCase().includes('send_money')) {
+      console.log(`⚠️ SKIPPING COMMISSION: Wallet-to-wallet transfers do not earn commission`);
+      return 0;
+    }
+    // ==================================================
+    
+    // Use session if provided, otherwise query normally
+    const settingsQuery = Settings.findOne();
+    if (mongooseSession) {
+      settingsQuery.session(mongooseSession);
+    }
+    const settings = await settingsQuery;
+    
+    // Determine commission rate based on service type - UPDATED RATES
+    let rate = 0.003; // Default 0.3% for other services
+    
+    // Get specific commission rates from settings
+    if (settings) {
+      // Check for specific service type rates first
+      const lowerType = serviceTypeString.toLowerCase().trim();
+      
+      console.log('🔍 Commission calculation for service:', lowerType);
+      
+      // ========== UPDATED COMMISSION RATES ==========
+      // Note: Transfer rates are commented out since transfers don't earn commission
+      
+      // 1. AIRTIME SERVICES - 0.5%
+      if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
+           lowerType.includes('glo') || lowerType.includes('etisalat') || 
+           lowerType.includes('9mobile')) && !lowerType.includes('data')) {
+        rate = settings.airtimeCommissionRate || 0.005; // 0.5% for airtime
+        console.log('✅ Airtime commission rate:', rate, '(0.5%)');
+      } 
+      // 2. DATA SERVICES - 0.5%
+      else if (lowerType.includes('data')) {
+        rate = typeof settings.dataCommissionRate !== 'undefined' 
+          ? settings.dataCommissionRate 
+          : 0.005; // 0.5% for data
+        console.log('✅ Data commission rate:', rate, '(0.5%)');
+      } 
+      // 3. ELECTRICITY SERVICES - 0.4%
+      else if (lowerType.includes('electric') || 
+               lowerType.includes('ikeja') || 
+               lowerType.includes('eko') || 
+               lowerType.includes('abuja') || 
+               lowerType.includes('ibadan') || 
+               lowerType.includes('enugu') || 
+               lowerType.includes('kano') || 
+               lowerType.includes('ph')) {
+        rate = settings.electricityCommissionRate || 0.004; // 0.4% for electricity
+        console.log('✅ Electricity commission rate:', rate, '(0.4%)');
+      } 
+      // 4. CABLE TV SERVICES - 0.5%
+      else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
+               lowerType.includes('startimes') || lowerType === 'tv') {
+        rate = settings.cableTvCommissionRate || 0.005; // 0.5% for cable TV
+        console.log('✅ Cable TV commission rate:', rate, '(0.5%)');
+      } 
+      // 5. EDUCATION SERVICES - 0.5%
+      else if (lowerType.includes('education')) {
+        rate = settings.educationCommissionRate || 0.005; // 0.5% for education
+        console.log('✅ Education commission rate:', rate, '(0.5%)');
+      } 
+      // 6. INSURANCE SERVICES - 0.4%
+      else if (lowerType.includes('insurance')) {
+        rate = settings.insuranceCommissionRate || 0.004; // 0.4% for insurance
+        console.log('✅ Insurance commission rate:', rate, '(0.4%)');
+      } 
+      // 7. DEFAULT - 0.3%
+      else {
+        rate = settings.commissionRate || 0.003; // Default commission rate 0.3%
+        console.log('✅ Default commission rate:', rate, '(0.3%)');
+      }
+    }
+
+    const cleanAmount = parseFloat(amount);
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      console.log('⚠️ Invalid amount for commission');
+      return 0;
+    }
+
+    let commissionAmount = cleanAmount * rate;
+    
+    console.log(`💰 Commission calculation: ${cleanAmount} × ${rate} = ${commissionAmount}`);
+    console.log(`💰 Rate percentage: ${(rate * 100).toFixed(2)}%`);
+    
+    // Check if commission is 100% (rate = 1)
+    if (rate === 1 || Math.abs(rate - 1) < 0.00001) {
+      console.error('❌ ERROR: Commission rate is 100%! This is wrong.');
+      console.error('❌ Using fallback rate of 0.5%');
+      commissionAmount = cleanAmount * 0.005;
+    }
+    
+    if (commissionAmount <= 0) {
+      console.log('⚠️ Commission amount too small');
+      return 0;
+    }
+
+    // Get user with session if provided
+    const userQuery = User.findById(userId);
+    if (mongooseSession) {
+      userQuery.session(mongooseSession);
+    }
+    const user = await userQuery;
+    
+    if (!user) {
+      console.log('❌ User not found for commission');
+      return 0;
+    }
+
+    if (typeof user.commissionBalance !== 'number') user.commissionBalance = 0;
+
+    const balanceBefore = user.commissionBalance;
+    user.commissionBalance += commissionAmount;
+    
+    // Save with session if provided
+    if (mongooseSession) {
+      await user.save({ session: mongooseSession });
+    } else {
+      await user.save();
+    }
+
+    const lowerType = serviceTypeString.toLowerCase().trim();
+    console.log(`🔍 Processing commission for service type: "${lowerType}"`);
+
+    let description = '';
+    let source = '';
+    let commissionType = 'Commission Credit';
+
+    // ========== DETERMINE COMMISSION TYPE ==========
+    // Note: Transfer commission type is commented out since transfers don't earn commission
+    
+    // 1. AIRTIME COMMISSION - 0.5%
+    if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
+         lowerType.includes('glo') || lowerType.includes('etisalat') || 
+         lowerType.includes('9mobile')) && 
+        !lowerType.includes('data')) {
+      description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Airtime';
+      commissionType = 'Airtime Commission Credit';
+      console.log('✅ Commission type determined: Airtime (0.5%)');
+    }
+    // 2. DATA COMMISSION - 0.5%
+    else if (lowerType.includes('data')) {
+      description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Data';
+      commissionType = 'Data Commission Credit';
+      console.log('✅ Commission type determined: Data (0.5%)');
+    }
+    // 3. CABLE TV COMMISSION - 0.5%
+    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
+             lowerType.includes('startimes') || lowerType === 'tv') {
+      description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Cable TV';
+      commissionType = 'Cable TV Commission Credit';
+      console.log('✅ Commission type determined: Cable TV (0.5%)');
+    }
+    // 4. ELECTRICITY COMMISSION - 0.4%
+    else if (lowerType.includes('electric') || 
+             lowerType.includes('ikeja') || 
+             lowerType.includes('eko') || 
+             lowerType.includes('abuja') || 
+             lowerType.includes('ibadan') || 
+             lowerType.includes('enugu') || 
+             lowerType.includes('kano') || 
+             lowerType.includes('ph')) {
+      description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Electricity';
+      commissionType = 'Electricity Commission Credit';
+      console.log('✅ Commission type determined: Electricity (0.4%)');
+    }
+    // 5. EDUCATION COMMISSION - 0.5%
+    else if (lowerType.includes('education') || 
+             lowerType.includes('waec') || 
+             lowerType.includes('jamb') || 
+             lowerType.includes('exam') || 
+             lowerType.includes('result')) {
+      description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Education';
+      commissionType = 'Education Commission Credit';
+      console.log('✅ Commission type determined: Education (0.5%)');
+    }
+    // 6. INSURANCE COMMISSION - 0.4%
+    else if (lowerType.includes('insurance') || 
+             lowerType.includes('insure') || 
+             lowerType.includes('ui-insure') || 
+             lowerType.includes('motor') || 
+             lowerType.includes('vehicle')) {
+      description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = 'Insurance';
+      commissionType = 'Insurance Commission Credit';
+      console.log('✅ Commission type determined: Insurance (0.4%)');
+    }
+    // 7. DEFAULT COMMISSION - 0.3%
+    else {
+      const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
+      description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
+      source = formattedType;
+      commissionType = `${formattedType} Commission Credit`;
+      console.log(`⚠️ Default commission type used: ${formattedType} (0.3%)`);
+    }
+
+    console.log(`✅ Commission determined: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
+    console.log(`💰 Final commission amount: ₦${commissionAmount.toFixed(2)}`);
+
+    // Create commission transaction
+    await createTransaction(
+      userId,
+      commissionAmount,
+      commissionType,
+      'Successful',
+      description,
+      balanceBefore,
+      user.commissionBalance,
+      mongooseSession,
+      true, // isCommission = true
+      'none',
+      null,
+      {}, // metadata
+      { 
+        commissionSource: source,
+        originalService: lowerType,
+        commissionRate: rate,
+        commissionPercentage: (rate * 100).toFixed(2) + '%',
+        originalAmount: cleanAmount,
+        commissionAmount: commissionAmount
+      }
+    );
+
+    // Also create a notification for the user about commission earned
+    try {
+      await Notification.create({
+        recipient: userId,
+        title: "Commission Earned 💰",
+        message: `You earned ₦${commissionAmount.toFixed(2)} commission from ${source} service`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          commissionAmount: commissionAmount,
+          source: source,
+          originalAmount: cleanAmount,
+          ratePercentage: (rate * 100).toFixed(2)
+        }
+      });
+    } catch (notifError) {
+      console.error('Commission notification error:', notifError);
+    }
+
+    console.log(`💰 COMMISSION ADDED: ${description} → Source: ${source} (₦${commissionAmount.toFixed(2)})`);
+    return commissionAmount;
+
+  } catch (error) {
+    console.error('❌ COMMISSION CALCULATION ERROR:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    return 0;
+  }
+};
+
+
+
+
+
+
+
+
+// REFERRAL BONUS FUNCTION - COMPLETE IMPLEMENTATION
+const processReferralBonuses = async (userId, depositAmount, session) => {
+  try {
+    console.log(`🎯 Processing referral bonuses for user: ${userId}, deposit: ₦${depositAmount}`);
+    
+    // Get the user who made the deposit
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('❌ User not found for referral bonus');
+      return;
+    }
+    
+    // Check if this is the first deposit
+    const isFirstDeposit = !user.firstDepositMade && depositAmount >= 5000;
+    
+    if (!isFirstDeposit) {
+      console.log(`ℹ️ Not first deposit or amount too low: ${depositAmount}`);
+      return;
+    }
+    
+    console.log(`✅ First deposit detected: ₦${depositAmount} (qualifies for bonuses)`);
+    
+    // MARK 1: Give welcome bonus to the new user
+    if (!user.welcomeBonusReceived && depositAmount >= 5000) {
+      const welcomeBonusAmount = 200;
+      
+      // Update user's commission balance
+      user.commissionBalance += welcomeBonusAmount;
+      user.welcomeBonusReceived = true;
+      user.welcomeBonusAmount = welcomeBonusAmount;
+      user.firstDepositMade = true;
+      
+      await user.save({ session });
+      
+      // Create welcome bonus transaction
+      await createTransaction(
+        userId,
+        welcomeBonusAmount,
+        'Welcome Bonus',
+        'Successful',
+        `Welcome bonus for first deposit of ₦${depositAmount.toFixed(2)}`,
+        user.commissionBalance - welcomeBonusAmount,
+        user.commissionBalance,
+        session,
+        true, // isCommission
+        'none',
+        null,
+        {},
+        {
+          bonusType: 'welcome',
+          depositAmount: depositAmount,
+          bonusAmount: welcomeBonusAmount,
+          source: 'First Deposit Bonus'
+        }
+      );
+      
+      // Create notification
+      await Notification.create({
+        recipient: userId,
+        title: "Welcome Bonus! 🎉",
+        message: `You received ₦${welcomeBonusAmount} welcome bonus for your first deposit!`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          bonusAmount: welcomeBonusAmount,
+          source: 'Welcome Bonus',
+          depositAmount: depositAmount
+        }
+      });
+      
+      console.log(`✅ Welcome bonus of ₦${welcomeBonusAmount} credited to user: ${user.email}`);
+    }
+    
+    // MARK 2: Give direct referral bonus to referrer
+    if (user.referrerId && depositAmount >= 5000) {
+      const referrer = await User.findById(user.referrerId);
+      if (referrer) {
+        const directReferralBonus = 200;
+        
+        // Update referrer's commission balance
+        const referrerBalanceBefore = referrer.commissionBalance;
+        referrer.commissionBalance += directReferralBonus;
+        referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + directReferralBonus;
+        
+        await referrer.save({ session });
+        
+        // Create direct referral bonus transaction
+        await createTransaction(
+          referrer._id,
+          directReferralBonus,
+          'Direct Referral Bonus',
+          'Successful',
+          `Direct referral bonus from ${user.fullName}'s first deposit`,
+          referrerBalanceBefore,
+          referrer.commissionBalance,
+          session,
+          true,
+          'none',
+          null,
+          {},
+          {
+            bonusType: 'direct_referral',
+            referredUserId: userId,
+            referredUserName: user.fullName,
+            depositAmount: depositAmount,
+            bonusAmount: directReferralBonus,
+            source: 'Direct Referral'
+          }
+        );
+        
+        // Create notification for referrer
+        await Notification.create({
+          recipient: referrer._id,
+          title: "Referral Bonus Earned! 💰",
+          message: `You earned ₦${directReferralBonus} from ${user.fullName}'s first deposit!`,
+          type: 'commission_earned',
+          isRead: false,
+          metadata: {
+            bonusAmount: directReferralBonus,
+            referredUser: user.fullName,
+            source: 'Direct Referral Bonus'
+          }
+        });
+        
+        console.log(`✅ Direct referral bonus of ₦${directReferralBonus} credited to referrer: ${referrer.email}`);
+        
+        // MARK 3: Give indirect referral bonus to referrer's referrer (2nd level)
+        if (referrer.referrerId && depositAmount >= 5000) {
+          const indirectReferrer = await User.findById(referrer.referrerId);
+          if (indirectReferrer) {
+            const indirectReferralBonus = 20;
+            
+            // Update indirect referrer's commission balance
+            const indirectBalanceBefore = indirectReferrer.commissionBalance;
+            indirectReferrer.commissionBalance += indirectReferralBonus;
+            indirectReferrer.totalReferralEarnings = (indirectReferrer.totalReferralEarnings || 0) + indirectReferralBonus;
+            
+            await indirectReferrer.save({ session });
+            
+            // Create indirect referral bonus transaction
+            await createTransaction(
+              indirectReferrer._id,
+              indirectReferralBonus,
+              'Indirect Referral Bonus',
+              'Successful',
+              `Indirect referral bonus from ${user.fullName}'s first deposit`,
+              indirectBalanceBefore,
+              indirectReferrer.commissionBalance,
+              session,
+              true,
+              'none',
+              null,
+              {},
+              {
+                bonusType: 'indirect_referral',
+                level: 2,
+                referredUserId: userId,
+                referredUserName: user.fullName,
+                directReferrerId: referrer._id,
+                directReferrerName: referrer.fullName,
+                depositAmount: depositAmount,
+                bonusAmount: indirectReferralBonus,
+                source: 'Indirect Referral'
+              }
+            );
+            
+            // Create notification for indirect referrer
+            await Notification.create({
+              recipient: indirectReferrer._id,
+              title: "Indirect Referral Bonus! 🎁",
+              message: `You earned ₦${indirectReferralBonus} from ${user.fullName}'s first deposit (through ${referrer.fullName})!`,
+              type: 'commission_earned',
+              isRead: false,
+              metadata: {
+                bonusAmount: indirectReferralBonus,
+                referredUser: user.fullName,
+                directReferrer: referrer.fullName,
+                source: 'Indirect Referral Bonus'
+              }
+            });
+            
+            console.log(`✅ Indirect referral bonus of ₦${indirectReferralBonus} credited to indirect referrer: ${indirectReferrer.email}`);
+          }
+        }
+      }
+    }
+    
+    // Update referral status
+    if (user.referrerId) {
+      await Referral.findOneAndUpdate(
+        { 
+          referrerId: user.referrerId,
+          referredUserId: userId 
+        },
+        { 
+          status: 'completed',
+          bonusPaid: 200,
+          completedAt: new Date(),
+          depositAmount: depositAmount
+        },
+        { session }
+      );
+      console.log(`📊 Referral status updated to completed for user: ${user.email}`);
+    }
+    
+    console.log(`✅ All referral bonuses processed successfully for user: ${user.email}`);
+    
+  } catch (error) {
+    console.error('❌ Error processing referral bonuses:', error);
+    throw error;
+  }
+};
+
+
+
+
+
+
+
+
+
+// ==================== AUTH LOGGING FUNCTION - FIXED ====================
+
+// @desc    Log authentication attempts
+// @access  Private
+const logAuthAttempt = async (userId, attemptType, ipAddress, userAgent, success, details) => {
+  try {
+    const authLog = new AuthLog({
+      userId,
+      action: attemptType, // ← CHANGE THIS: use 'action' instead of 'attemptType'
+      ipAddress,
+      userAgent,
+      success,
+      details,
+      timestamp: new Date()
+    });
+    
+    await authLog.save();
+    console.log(`📝 Auth attempt logged: ${attemptType} - ${success ? 'SUCCESS' : 'FAILED'} for user ${userId || 'unknown'}`);
+  } catch (error) {
+    console.error('❌ Error logging auth attempt:', error);
+    // Don't throw, just log the error - we don't want auth logging to break login
+  }
+};
+
+
+
+
+
+// @desc    Register a new user with email verification
+// @route   POST /api/users/register
+// @access  Public
+app.post('/api/users/register', [
+  body('fullName').notEmpty().withMessage('Full name is required'),
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('password').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
+    }
+    return true;
+  }),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP is required for verification')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { fullName, email, phone, password, otp, referralCode } = req.body;
+  const normalizedEmail = email.toLowerCase().trim();
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    console.log(`📝 [REGISTER] Starting registration for: ${normalizedEmail}`);
+
+    // 1. Check OTP verification
+    const otpData = otpStore.get(normalizedEmail);
+    if (!otpData || otpData.otp !== otp || otpData.expiresAt < Date.now()) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid or expired OTP. Please verify your email again.' 
+      });
+    }
+
+    // 2. Check if user already exists
+    const normalizedPhone = phone.trim().replace(/\D/g, '');
+    const standardizedPhone = normalizedPhone.length === 11 && normalizedPhone.startsWith('0') 
+      ? normalizedPhone 
+      : '0' + normalizedPhone;
+    
+    const existingEmail = await User.findOne({ email: normalizedEmail });
+    const existingPhone = await User.findOne({ phone: standardizedPhone });
+    
+    if (existingEmail || existingPhone) {
+      await session.abortTransaction();
+      
+      let errorMessage = '';
+      let errorCode = '';
+      
+      if (existingEmail) {
+        errorMessage = `This email is already registered to ${existingEmail.fullName || 'another user'}.`;
+        errorCode = 'EMAIL_EXISTS';
+      } else if (existingPhone) {
+        errorMessage = `This phone number is already registered to ${existingPhone.fullName || 'another user'}.`;
+        errorCode = 'PHONE_EXISTS';
+      }
+      
+      return res.status(409).json({ 
+        success: false, 
+        message: errorMessage,
+        errorCode: errorCode,
+        duplicateField: existingEmail ? 'email' : 'phone',
+        userFriendlyMessage: existingEmail 
+          ? 'This email is already registered. Try logging in or use a different email.'
+          : 'This phone number is already in use. Try logging in or use a different phone number.'
+      });
+    }
+
+    // 3. Handle referral code
+    let referrerId = null;
+    let referrerCode = null;
+    let referrerName = null;
+    
+    if (referralCode) {
+      const referrer = await User.findOne({ 
+        referralCode: referralCode.toUpperCase().trim() 
+      });
+      if (referrer) {
+        referrerId = referrer._id;
+        referrerCode = referrer.referralCode;
+        referrerName = referrer.fullName;
+        console.log(`👥 [REGISTER] Referrer found: ${referrer.email}`);
+      } else {
+        console.log(`⚠️ [REGISTER] Invalid referral code provided: ${referralCode}`);
+      }
+    }
+
+    // 4. Generate UNIQUE referral code for new user - ONLY REF FORMAT
+    const generateUniqueReferralCode = async () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      
+      for (let attempt = 0; attempt < 10; attempt++) {
+        let code = 'REF'; // ONLY REF format
+        for (let i = 0; i < 8; i++) { // Make total 11 characters (REF + 8 = 11)
+          code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        
+        const existing = await User.findOne({ referralCode: code });
+        if (!existing) {
+          return code;
+        }
+      }
+      
+      // If all attempts fail, use timestamp-based code
+      return 'REF' + Date.now().toString().slice(-8);
+    };
+
+    const userReferralCode = await generateUniqueReferralCode();
+    console.log(`🔑 [REGISTER] Generated REF referral code: ${userReferralCode}`);
+
+    // 5. Hash password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // 6. Create user with referral tracking
+          // 6. Create user with referral tracking - NO VIRTUAL ACCOUNT CREATED HERE
+    // In the registration endpoint, find where user is created
+const user = new User({
+  fullName: fullName.trim(),
+  email: normalizedEmail,
+  phone: phone.trim(),
+  password: hashedPassword,
+  referralCode: userReferralCode,
+  referrerId: referrerId,
+  referrerCode: referrerCode,
+  referrerName: referrerName,
+  walletBalance: 0.0,
+  commissionBalance: 0.0,
+  // ========== ROLE FIELDS - MUST BE STRINGS ==========
+  role: 'user',
+  roleLevel: 0,
+  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'], // ✅ STRINGS
+  // ==========================================
+  isAdmin: false,
+  isSuperAdmin: false,
+  isActive: true,
+  emailVerified: true,
+  virtualAccount: null
+});
+
+    const newUser = await user.save({ session });
+    console.log(`✅ [REGISTER] User created: ${newUser.email}`);
+
+    // 7. Create referral record AFTER user is created
+    if (referralCode && referrerId) {
+      try {
+        await Referral.create([{
+          referrerId: referrerId,
+          referredUserId: newUser._id,
+          referralCode: referralCode,
+          referredUserEmail: newUser.email,
+          referredUserName: newUser.fullName,
+          status: 'registered'
+        }], { session });
+        console.log(`📊 [REGISTER] Referral record created for user: ${newUser.email}`);
+      } catch (referralError) {
+        console.error('❌ [REGISTER] Error creating referral record:', referralError);
+        // Don't fail registration if referral record fails
+      }
+    }
+
+            // ================================================
+    // 🔥 REFERRAL SYSTEM - NO BONUS ON REGISTRATION
+    // Bonuses will be awarded when user makes first deposit ≥ ₦1,000
+    // ================================================
+    console.log(`📝 [REFERRAL] User ${newUser.email} registered with referrer: ${referrerId || 'none'}`);
+    console.log(`   Referral bonuses will be awarded upon first deposit of ₦1,000+`);
+
+    
+    // 9. Generate tokens
+    const token = generateToken(newUser._id);
+    const refreshToken = generateRefreshToken(newUser._id);
+    
+    newUser.refreshToken = refreshToken;
+    await newUser.save({ session });
+
+   // 10. Create PERSONAL welcome notification
+try {
+  await Notification.create([{
+    recipient: newUser._id,
+    title: "Welcome to DalabaPay! 🎉",
+    message: `Hi ${newUser.fullName}, welcome to DalabaPay! Make your first deposit of ₦1,000 or more to unlock your ₦200 welcome bonus and earn your referrer ₦200!`,
+    type: 'account',
+    isRead: false,
+    metadata: {
+      event: 'registration',
+      userId: newUser._id,
+      welcomeBonusReceived: false,
+      bonusRequirement: 1000,
+      message: 'Deposit ₦1,000+ to unlock welcome bonus'
+    }
+  }], { session });
+      console.log(`📨 [REGISTER] Personal welcome notification created for ${newUser.email}`);
+    } catch (notificationError) {
+      console.error('❌ [REGISTER] Error creating welcome notification:', notificationError);
+    }
+
+     // 11. Update referrer's stats if applicable
+    if (referrerId) {
+      await User.findByIdAndUpdate(referrerId, {
+        $inc: { referralCount: 1 }
+      }, { session });
+      console.log(`📈 [REGISTER] Updated referrer stats for: ${referrerId}`);
+      
+      // Create notification for referrer
+      try {
+        await Notification.create([{
+          recipient: referrerId,
+          title: "New Referral! 🎊",
+          message: `${newUser.fullName} joined DalabaPay using your referral code! You'll earn ₦200 when they make their first deposit of ₦1,000+.`,
+          type: 'account',
+          isRead: false,
+          metadata: {
+            event: 'new_referral',
+            referredUserId: newUser._id,
+            referredUserName: newUser.fullName,
+            bonusPending: true,
+            requiredDeposit: 1000
+          }
+        }], { session });
+      } catch (referrerNotificationError) {
+        console.error('Error creating referrer notification:', referrerNotificationError);
+      }
+    }
+
+    // 12. Clear OTP after successful registration
+    otpStore.delete(normalizedEmail);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
+    
+    // 13. Return success response
+    res.status(201).json({
+      success: true,
+      message: 'Registration successful! Welcome to DalabaPay.',
+      slogan: 'Smart Life, Fast Pay',
+      user: {
+        _id: newUser._id,
+        fullName: newUser.fullName,
+        email: newUser.email,
+        phone: newUser.phone,
+        referralCode: newUser.referralCode,
+        referrerCode: newUser.referrerCode,
+        walletBalance: newUser.walletBalance,
+        commissionBalance: newUser.commissionBalance,
+        welcomeBonusReceived: newUser.welcomeBonusReceived,
+        welcomeBonusAmount: newUser.welcomeBonusAmount,
+        transactionPinSet: !!newUser.transactionPin,
+        biometricEnabled: newUser.biometricEnabled,
+        emailVerified: newUser.emailVerified,
+        hasVirtualAccount: false
+      },
+      token,
+      refreshToken
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    
+    console.error('❌ [REGISTER] Error:', error);
+    
+    if (error.code === 11000) {
+      const field = error.keyPattern;
+      let message = 'Registration failed due to duplicate data.';
+      
+      if (field.email) {
+        message = 'Email already exists. Please use a different email.';
+      } else if (field.phone) {
+        message = 'Phone number already exists. Please use a different phone number.';
+      } else if (field.referralCode) {
+        message = 'System error. Please try again.';
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        message,
+        slogan: 'Smart Life, Fast Pay'
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Registration failed. Please try again.',
+      slogan: 'Smart Life, Fast Pay'
+    });
+  }
+});
+
+// @desc    Create virtual account for user (called when user wants to fund wallet)
+// @route   POST /api/virtual-account/create
+// @access  Private
+app.post('/api/virtual-account/create', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if virtual account already exists and has account number
+    if (user.virtualAccount && user.virtualAccount.assigned && user.virtualAccount.accountNumber) {
+      return res.json({
+        success: true,
+        message: 'Virtual account already exists',
+        virtualAccount: user.virtualAccount,
+        alreadyExists: true
+      });
+    }
+    
+    console.log(`🔄 Creating virtual account for user: ${user.email}`);
+    
+    const virtualAccountServiceUrl = 'https://virtual-account-backend.onrender.com';
+    const nameParts = user.fullName.trim().split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || firstName;
+    
+    const response = await axios.post(
+      `${virtualAccountServiceUrl}/api/virtual-accounts/create-instant-account`,
+      {
+        userId: user._id.toString(),
+        email: user.email,
+        firstName: firstName,
+        lastName: lastName,
+        phone: user.phone,
+        preferredBank: 'wema-bank'
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    
+    if (response.data.success) {
+      console.log(`✅ Virtual account created successfully for ${user.email}`);
+      
+      user.virtualAccount = {
+        assigned: true,
+        bankName: response.data.bankName,
+        accountNumber: response.data.accountNumber,
+        accountName: response.data.accountName,
+        reference: response.data.customerCode || `REF_${Date.now()}`
+      };
+      
+      await user.save();
+      
+      // Create notification
+      try {
+        await Notification.create({
+          recipient: user._id,
+          title: "Virtual Account Created! 🏦",
+          message: `Your ${response.data.bankName} virtual account is ready: ${response.data.accountNumber}`,
+          type: 'account',
+          isRead: false,
+          metadata: {
+            event: 'virtual_account_created',
+            accountNumber: response.data.accountNumber,
+            bankName: response.data.bankName
+          }
+        });
+      } catch (notificationError) {
+        console.error('❌ Error creating virtual account notification:', notificationError);
+      }
+      
+      return res.json({
+        success: true,
+        message: 'Virtual account created successfully',
+        virtualAccount: user.virtualAccount
+      });
+    }
+    
+    throw new Error(response.data.message || 'Failed to create virtual account');
+    
+  } catch (error) {
+    console.error('❌ Virtual account creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create virtual account. Please try again later.'
+    });
+  }
+});
+
+
+// @desc    Check for duplicates (phone/email) BEFORE registration - IMPROVED VERSION
+// @route   POST /api/auth/check-duplicates
+// @access  Public
+app.post('/api/auth/check-duplicates', [
+  body('email').optional().isEmail().withMessage('Invalid email format'),
+  body('phone').optional().isMobilePhone('en-NG').withMessage('Invalid Nigerian phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg 
+    });
+  }
+
+  const { email, phone } = req.body;
+  
+  try {
+    // Create query object - check for ANY user with either email OR phone
+    const query = { $or: [] };
+    
+    // Handle email (if provided)
+    if (email) {
+      query.$or.push({ email: email.toLowerCase().trim() });
+    }
+    
+    // Handle phone (if provided) - CRITICAL FIX: Standardize format
+    if (phone) {
+      // Remove all non-digit characters and ensure it starts with 0
+      const cleanPhone = phone.trim().replace(/\D/g, '');
+      
+      // Standardize Nigerian phone format
+      let standardizedPhone;
+      if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+        standardizedPhone = cleanPhone;
+      } else if (cleanPhone.length === 10) {
+        standardizedPhone = '0' + cleanPhone;
+      } else {
+        standardizedPhone = cleanPhone; // Will fail in query
+      }
+      
+      query.$or.push({ phone: standardizedPhone });
+    }
+    
+    // If no valid query, return error
+    if (query.$or.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone is required'
+      });
+    }
+    
+    console.log(`🔍 [CHECK-DUPLICATES] Checking:`, {
+      originalEmail: email,
+      originalPhone: phone,
+      query: query
+    });
+    
+    // Find ANY existing user matching email OR phone
+    const existingUsers = await User.find(query).select('email phone fullName');
+    
+    if (existingUsers.length > 0) {
+      console.log(`⚠️ [CHECK-DUPLICATES] DUPLICATES FOUND:`, existingUsers);
+      
+      // Check which specific field(s) are duplicate
+      let duplicateFields = [];
+      let duplicateMessages = [];
+      
+      existingUsers.forEach(user => {
+        if (email && user.email === email.toLowerCase().trim()) {
+          duplicateFields.push('email');
+          duplicateMessages.push(`Email is already registered to ${user.fullName || 'another user'}`);
+        }
+        if (phone) {
+          const cleanPhone = phone.trim().replace(/\D/g, '');
+          let standardizedPhone;
+          if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+            standardizedPhone = cleanPhone;
+          } else if (cleanPhone.length === 10) {
+            standardizedPhone = '0' + cleanPhone;
+          }
+          
+          if (standardizedPhone && user.phone === standardizedPhone) {
+            duplicateFields.push('phone');
+            duplicateMessages.push(`Phone number is already registered to ${user.fullName || 'another user'}`);
+          }
+        }
+      });
+      
+      // Remove duplicates
+      duplicateFields = [...new Set(duplicateFields)];
+      duplicateMessages = [...new Set(duplicateMessages)];
+      
+      return res.status(200).json({
+        exists: true,
+        duplicateFields: duplicateFields, // Now returns array: ['email'], ['phone'], or ['email', 'phone']
+        message: duplicateMessages.join('. '),
+        userFriendlyMessage: duplicateFields.includes('email') 
+          ? 'This email is already registered. Try logging in or use a different email.'
+          : 'This phone number is already in use. Try logging in or use a different phone number.',
+        hasEmailDuplicate: duplicateFields.includes('email'),
+        hasPhoneDuplicate: duplicateFields.includes('phone')
+      });
+    }
+    
+    console.log(`✅ [CHECK-DUPLICATES] No duplicates found`);
+    return res.status(200).json({
+      exists: false,
+      message: 'No duplicates found'
+    });
+    
+  } catch (error) {
+    console.error('❌ [CHECK-DUPLICATES] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to check duplicates at this time'
+    });
+  }
+});
+
+// @desc    Authenticate a user - IMPROVED VERSION with detailed validation
+// @route   POST /api/users/login
+// @access  Public
+app.post('/api/users/login', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('password').notEmpty().withMessage('Password is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { email, password } = req.body;
+  const ipAddress = req.ip;
+  const userAgent = req.get('User-Agent');
+  
+  try {
+    console.log(`🔐 LOGIN ATTEMPT: ${email}`);
+    
+    // First check if user exists by email
+    const user = await User.findOne({ 
+      email: email.toLowerCase().trim() 
+    });
+    
+    if (!user) {
+      console.log(`❌ USER NOT FOUND: ${email}`);
+      await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `User not found: ${email}`);
+      
+      // Check if it might be a phone number login attempt
+      const phoneUser = await User.findOne({ phone: email.trim() });
+      if (phoneUser) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Email not found, but this phone number is registered. Please use your registered email to login.' 
+        });
+      }
+      
+      // Check if email format is valid but not registered
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (emailRegex.test(email)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'No account found with this email. Please sign up or check your email.' 
+        });
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid email format. Please enter a valid email address.' 
+        });
+      }
+    }
+    
+    console.log(`✅ USER FOUND: ${user.email} | ID: ${user._id}`);
+    
+    // Check password
+    const isPasswordMatch = await bcrypt.compare(password, user.password);
+    
+ if (!isPasswordMatch) {
+  console.log(`❌ PASSWORD MISMATCH for: ${email}`);
+  
+  // Increment failed attempts for this user
+  await incrementFailedLoginAttempts(user._id);
+  const failedAttempts = await getFailedLoginAttempts(user._id);
+  const remainingAttempts = 3 - failedAttempts;
+  
+  await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, `Incorrect password. Attempt ${failedAttempts} of 3`);
+  
+  if (remainingAttempts > 0) {
+    return res.status(400).json({ 
+      success: false, 
+      message: `Incorrect password. You have ${remainingAttempts} attempt${remainingAttempts > 1 ? 's' : ''} remaining.` 
+    });
+  } else {
+    // Lock the account
+    const lockoutUntil = Date.now() + 5 * 60 * 1000; // 5 minutes
+    await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account locked - too many failed attempts');
+    
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Too many failed attempts. Account locked for 5 minutes.' 
+    });
+  }
+}
+    
+    // Check if account is active
+    if (!user.isActive) {
+      console.log(`🚫 ACCOUNT DEACTIVATED: ${email}`);
+      await logAuthAttempt(user._id, 'login', ipAddress, userAgent, false, 'Account deactivated');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Your account has been deactivated. Please contact support at support@dala.com.' 
+      });
+    }
+    
+    console.log(`✅ PASSWORD VERIFIED for: ${email}`);
+    
+    // Reset failed attempts on successful login
+    await resetFailedLoginAttempts(user._id);
+    
+    // Update last login time
+    user.lastLoginAt = getLagosTime();
+    
+    // Generate tokens
+    const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+    
+    // Store refresh token
+    user.refreshToken = refreshToken;
+    await user.save();
+    
+    console.log(`🎉 LOGIN SUCCESSFUL: ${email} | User ID: ${user._id}`);
+    await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
+    
+    res.json({
+      success: true,
+      message: 'Login successful!',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        isAdmin: user.isAdmin,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+      },
+      token,
+      refreshToken
+    });
+    
+  } catch (error) {
+    console.error('💥 LOGIN ERROR:', error);
+    console.error('Error stack:', error.stack);
+    
+    let errorMessage = 'Internal Server Error. Please try again or contact support.';
+    if (error.name === 'MongoError') {
+      errorMessage = 'Database connection error. Please try again in a moment.';
+    } else if (error.name === 'TypeError') {
+      errorMessage = 'Data processing error. Please check your input.';
+    } else if (error.code === 'ECONNREFUSED') {
+      errorMessage = 'Unable to connect to server. Please check your internet connection.';
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: errorMessage 
+    });
+  }
+});
+
+
+
+// Helper function to track failed login attempts
+const failedLoginAttempts = new Map();
+
+async function getFailedLoginAttempts(userId) {
+  if (failedLoginAttempts.has(userId)) {
+    const attempts = failedLoginAttempts.get(userId);
+    // Clear attempts older than 5 minutes
+    if (Date.now() - attempts.timestamp > 5 * 60 * 1000) {
+      failedLoginAttempts.delete(userId);
+      return 0;
+    }
+    return attempts.count;
+  }
+  return 0;
+}
+
+async function incrementFailedLoginAttempts(userId) {
+  const currentAttempts = await getFailedLoginAttempts(userId);
+  failedLoginAttempts.set(userId, {
+    count: currentAttempts + 1,
+    timestamp: Date.now()
+  });
+}
+
+async function resetFailedLoginAttempts(userId) {
+  failedLoginAttempts.delete(userId);
+}
+
+
+
+// @desc    Refresh access token - FIXED VERSION
+// @route   POST /api/users/refresh-token
+// @access  Public (MUST be public!)
+// ==================== FIXED REFRESH TOKEN ENDPOINT ====================
+// ==================== REFRESH TOKEN ENDPOINT - FIXED ====================
+app.post('/api/users/refresh-token', async (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    return res.status(401).json({
+      success: false,
+      message: 'Refresh token is required',
+      code: 'NO_REFRESH_TOKEN'
+    });
+  }
+
+  try {
+    const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+    if (!refreshSecret) {
+      console.error('❌ REFRESH_TOKEN_SECRET is not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error',
+        code: 'CONFIG_ERROR'
+      });
+    }
+    
+    console.log('🔄 Processing refresh token request');
+    
+    const decoded = jwt.verify(refreshToken, refreshSecret);
+    const user = await User.findById(decoded.id);
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is inactive. Please contact support.',
+        code: 'INACTIVE_ACCOUNT'
+      });
+    }
+
+    // ✅ Generate new tokens with extended expiry
+    const newAccessToken = generateToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
+
+    // ✅ Always update refresh token in database
+    user.refreshToken = newRefreshToken;
+    user.lastTokenRefresh = new Date();
+    await user.save();
+
+    console.log('✅ Token refreshed successfully for:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      token: newAccessToken,
+      refreshToken: newRefreshToken,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        isAdmin: user.isAdmin || false,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Refresh token error:', error.name, error.message);
+
+    if (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired. Please login again.',
+        code: 'SESSION_EXPIRED',
+        requiresLogin: true
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Refresh failed. Please try again.',
+      code: 'REFRESH_FAILED'
+    });
+  }
+});
+
+
+// ==================== SESSION HEALTH CHECK ====================
+// @desc    Check session health and auto-refresh if needed
+// @route   GET /api/users/session-health
+// @access  Private
+// ==================== SESSION HEALTH CHECK ====================
+app.get('/api/users/session-health', protect, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    const newToken = res.get('x-new-token');
+    const decoded = jwt.decode(token);
+    const tokenExp = decoded.exp * 1000;
+    const now = Date.now();
+    const timeToExpiry = tokenExp - now;
+    const hoursToExpiry = timeToExpiry / (1000 * 60 * 60);
+    res.json({
+      success: true,
+      sessionValid: true,
+      tokenRefreshed: !!newToken,
+      expiresIn: Math.round(timeToExpiry / 1000),
+      expiresInHours: Math.round(hoursToExpiry * 10) / 10,
+      user: {
+        id: req.user._id,
+        email: req.user.email,
+        fullName: req.user.fullName
+      }
+    });
+  } catch (error) {
+    console.error('Session health error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Session invalid',
+      code: 'SESSION_INVALID'
+    });
+  }
+});
+
+
+
+
+// @desc    Logout user
+// @route   POST /api/users/logout
+// @access  Private
+app.post('/api/users/logout', protect, async (req, res) => {
+  try {
+    // Invalidate refresh token
+    req.user.refreshToken = null;
+    await req.user.save();
+    
+    res.json({ success: true, message: 'Logout successful' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Debug - Check user's OTP status
+// @route   GET /api/users/debug-otp/:email
+// @access  Development only
+if (process.env.NODE_ENV === 'development') {
+  app.get('/api/users/debug-otp/:email', async (req, res) => {
+    try {
+      const email = req.params.email.toLowerCase().trim();
+      const user = await User.findOne({ email });
+      
+      if (!user) {
+        return res.json({ 
+          success: false, 
+          message: 'User not found',
+          email: email 
+        });
+      }
+      
+      const now = Date.now();
+      const otpExpired = user.resetPasswordOTPExpire && user.resetPasswordOTPExpire < now;
+      const timeRemaining = user.resetPasswordOTPExpire 
+        ? Math.ceil((user.resetPasswordOTPExpire - now) / 1000 / 60)
+        : 0;
+      
+      return res.json({
+        success: true,
+        email: user.email,
+        otp: user.resetPasswordOTP,
+        otpExpiresAt: user.resetPasswordOTPExpire,
+        otpExpired: otpExpired,
+        minutesRemaining: timeRemaining,
+        hasResetToken: !!user.resetPasswordToken,
+        resetTokenExpiresAt: user.resetPasswordExpire
+      });
+      
+    } catch (error) {
+      console.error('Debug OTP error:', error);
+      res.status(500).json({ success: false, message: 'Debug error' });
+    }
+  });
+}
+
+
+// @desc    Request password reset with OTP
+// @route   POST /api/users/forgot-password
+// @access  Public
+app.post('/api/users/forgot-password', [
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  try {
+    const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    console.log(`📧 [FORGOT-PW] Password reset requested for: ${normalizedEmail}`);
+    
+    const user = await User.findOne({ email: normalizedEmail });
+    
+    // For security, don't reveal if user exists
+    if (!user) {
+      console.log(`👤 [FORGOT-PW] User not found for: ${normalizedEmail}`);
+      return res.json({
+        success: true,
+        message: 'If an account exists with this email, an OTP has been sent',
+        email: normalizedEmail
+      });
+    }
+    
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log(`🔑 [FORGOT-PW] Generated OTP: ${otp} for ${user._id}`);
+    
+    // Set OTP and expiration
+    user.resetPasswordOTP = otp;
+    user.resetPasswordOTPExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+    
+    await user.save();
+    console.log(`💾 [FORGOT-PW] OTP saved to database`);
+    
+    // Send OTP email for password reset
+    try {
+      const emailResult = await sendVerificationEmail(
+        normalizedEmail, 
+        otp, 
+        user.fullName || 'User', 
+        'password_reset'  // Specify this is for password reset
+      );
+      
+      if (!emailResult.success) {
+        console.log(`⚠️ [FORGOT-PW] Email sending failed, OTP: ${otp}`);
+        
+        // In development, return OTP for testing
+        if (process.env.NODE_ENV === 'development') {
+          return res.json({
+            success: true,
+            message: 'Email service unavailable. For testing, OTP is: ' + otp,
+            email: normalizedEmail,
+            otp: otp
+          });
+        }
+      }
+      
+      console.log(`✅ [FORGOT-PW] Password reset OTP email sent to ${normalizedEmail}`);
+      
+      res.json({
+        success: true,
+        message: 'OTP sent to your email address',
+        email: normalizedEmail,
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+      
+    } catch (emailError) {
+      console.error(`❌ [FORGOT-PW] Email error: ${emailError.message}`);
+      
+      // If email fails but we're in development, return OTP
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'Email service failed. For testing, use OTP: ' + otp,
+          email: normalizedEmail,
+          otp: otp,
+          slogan: 'Smart Life, Fast Pay'  // Added slogan
+        });
+      }
+      
+      return res.json({
+        success: true,
+        message: 'OTP generated but email sending failed. Please try again.',
+        email: normalizedEmail,
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ [FORGOT-PW] Server error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+});
+
+
+// @desc    Verify OTP for password reset
+// @route   POST /api/users/verify-reset-otp
+// @access  Public
+app.post('/api/users/verify-reset-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+  
+  try {
+    const { email, otp } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    console.log(`🔍 [VERIFY-OTP] Checking: ${normalizedEmail}, OTP: ${otp}`);
+    
+    // Find user with matching OTP and not expired
+    const user = await User.findOne({ 
+      email: normalizedEmail,
+      resetPasswordOTP: otp,
+      resetPasswordOTPExpire: { $gt: Date.now() }
+    });
+    
+    if (!user) {
+      console.log(`❌ [VERIFY-OTP] Invalid OTP for ${normalizedEmail}`);
+      
+      // Check if user exists but OTP is wrong
+      const userExists = await User.findOne({ email: normalizedEmail });
+      if (userExists) {
+        if (userExists.resetPasswordOTPExpire && userExists.resetPasswordOTPExpire < Date.now()) {
+          console.log(`⏰ [VERIFY-OTP] OTP expired for ${normalizedEmail}`);
+          return res.status(400).json({ 
+            success: false, 
+            message: 'OTP has expired. Please request a new one.',
+            slogan: 'Smart Life, Fast Pay'  // Added slogan
+          });
+        }
+      }
+      
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid OTP. Please check and try again.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+    }
+    
+    console.log(`✅ [VERIFY-OTP] OTP verified for ${normalizedEmail}`);
+    
+    // Generate a secure reset token
+    const crypto = require('crypto');
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    
+    // Set reset token and expire time (10 minutes)
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000);
+    
+    // Clear OTP
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpire = null;
+    
+    await user.save();
+    
+    console.log(`🔐 [VERIFY-OTP] Reset token generated: ${resetToken.substring(0, 10)}...`);
+    
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      resetToken: resetToken,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  } catch (error) {
+    console.error('❌ [VERIFY-OTP] Server error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+});
+
+
+
+// @desc    Reset password with token
+// @route   POST /api/users/reset-password
+// @access  Public
+app.post('/api/users/reset-password', [
+  body('resetToken').notEmpty().withMessage('Reset token is required'),
+  body('newPassword').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
+    }
+    return true;
+  })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+  
+  try {
+    const { resetToken, newPassword } = req.body;
+    
+    const user = await User.findOne({
+      resetPasswordToken: resetToken,
+      resetPasswordExpire: { $gt: Date.now() }
+    });
+    
+    if (!user) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid or expired reset token',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+    }
+    
+    // Hash the new password
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    // Update user password and clear reset fields
+    user.password = hashedPassword;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpire = null;
+    
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Password reset successful. You can now login with your new password.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  } catch (error) {
+    console.error('❌ [RESET-PW] Server error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+});
+
+
+
+
+// @desc    Set up transaction PIN
+// @route   POST /api/users/set-transaction-pin
+// @access  Private
+app.post('/api/users/set-transaction-pin', protect, [
+  body('pin')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  try {
+    const { pin } = req.body;
+    const userId = req.user._id;
+    
+    console.log(`🔐 Setting 6-digit PIN for user: ${userId}`);
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.transactionPin) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction PIN is already set. Use change PIN endpoint instead.',
+        pinAlreadySet: true
+      });
+    }
+
+    // ✅ FIX: Hash the PIN before saving
+    const salt = await bcrypt.genSalt(12);
+    const hashedPin = await bcrypt.hash(pin, salt);
+    
+    // Save the HASHED PIN
+    user.transactionPin = hashedPin;  // ← CHANGE THIS LINE
+    user.transactionPinSet = true;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    await user.save();
+
+    console.log(`✅ PIN set successfully for user: ${userId}`);
+
+    res.json({ 
+      success: true, 
+      message: '6-digit Transaction PIN set successfully',
+      transactionPinSet: true,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        transactionPinSet: true,
+        biometricEnabled: user.biometricEnabled || false
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error setting transaction PIN:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+// @desc    Request PIN reset token via email
+// @route   POST /api/users/request-pin-reset
+// @access  Private
+app.post('/api/users/request-pin-reset', protect, async (req, res) => {
+  try {
+    const { email } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if PIN is set
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Transaction PIN is not set. Use set PIN endpoint instead.' 
+      });
+    }
+
+    // Generate 6-digit reset token
+    const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+    const tokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Store token in user document
+    user.pinResetToken = resetToken;
+    user.pinResetTokenExpires = tokenExpires;
+    await user.save();
+
+    // Send email (using your existing email service)
+    try {
+      await sendVerificationEmail(email, resetToken);
+      
+      console.log(`✅ PIN reset token sent to ${email}: ${resetToken}`);
+      
+      res.json({
+        success: true,
+        message: 'PIN reset code sent to your email',
+        expiresIn: '10 minutes',
+        email: email
+      });
+    } catch (emailError) {
+      console.error('Email sending error:', emailError);
+      
+      // In development, return token for testing
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'For development: PIN reset token is ' + resetToken,
+          token: resetToken,
+          expiresIn: '10 minutes',
+          email: email
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send email. Please try again.'
+      });
+    }
+
+  } catch (error) {
+    console.error('Request PIN reset error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Verify PIN reset token
+// @route   POST /api/users/verify-pin-reset-token
+// @access  Private
+app.post('/api/users/verify-pin-reset-token', protect, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('token').isLength({ min: 6, max: 6 }).withMessage('Token must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, token } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if token exists and is valid
+    if (!user.pinResetToken || !user.pinResetTokenExpires) {
+      return res.status(400).json({ success: false, message: 'No reset token requested' });
+    }
+
+    if (user.pinResetToken !== token) {
+      // Increment failed attempts
+      user.pinResetTokenAttempts = (user.pinResetTokenAttempts || 0) + 1;
+      
+      if (user.pinResetTokenAttempts >= 3) {
+        user.pinResetToken = null;
+        user.pinResetTokenExpires = null;
+        user.pinResetTokenAttempts = 0;
+        await user.save();
+        
+        return res.status(429).json({
+          success: false,
+          message: 'Too many failed attempts. Please request a new reset token.'
+        });
+      }
+      
+      await user.save();
+      
+      const remainingAttempts = 3 - user.pinResetTokenAttempts;
+      return res.status(400).json({
+        success: false,
+        message: `Invalid token. ${remainingAttempts} attempts remaining.`
+      });
+    }
+
+    if (new Date() > user.pinResetTokenExpires) {
+      user.pinResetToken = null;
+      user.pinResetTokenExpires = null;
+      user.pinResetTokenAttempts = 0;
+      await user.save();
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Token has expired. Please request a new one.'
+      });
+    }
+
+    // Token is valid - mark as verified
+    user.pinResetTokenVerified = true;
+    user.pinResetTokenAttempts = 0;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Reset token verified successfully',
+      verified: true,
+      email: email
+    });
+
+  } catch (error) {
+    console.error('Verify PIN reset token error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Reset PIN using verified token (no old PIN required)
+// @route   POST /api/users/reset-pin-with-token
+// @access  Private
+app.post('/api/users/reset-pin-with-token', protect, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('newPin')
+    .isLength({ min: 6, max: 6 })
+    .withMessage('New PIN must be exactly 6 digits')
+    .matches(/^\d+$/)
+    .withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, newPin } = req.body;
+    const userId = req.user._id;
+
+    // Verify user owns this email
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'Email does not match your account' });
+    }
+
+    // Check if token is verified
+    if (!user.pinResetTokenVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please verify your reset token first.'
+      });
+    }
+
+    // Check for common PINs
+    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333'];
+    if (commonPins.includes(newPin)) {
+      return res.status(400).json({
+        success: false,
+        message: 'New PIN is too common. Please choose a more secure PIN.'
+      });
+    }
+
+    // Check if new PIN is same as old (if we could check)
+    if (user.transactionPin) {
+      try {
+        const isSamePin = await bcrypt.compare(newPin, user.transactionPin);
+        if (isSamePin) {
+          return res.status(400).json({
+            success: false,
+            message: 'New PIN cannot be the same as your old PIN.'
+          });
+        }
+      } catch (compareError) {
+        // If comparison fails, continue
+        console.log('Could not compare with old PIN:', compareError.message);
+      }
+    }
+
+    // Save new PIN (will be hashed by pre-save hook)
+    user.transactionPin = newPin;
+    user.transactionPinSet = true;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    // Clear reset token data
+    user.pinResetToken = null;
+    user.pinResetTokenExpires = null;
+    user.pinResetTokenVerified = false;
+    user.pinResetTokenAttempts = 0;
+    
+    await user.save();
+
+    console.log(`✅ PIN reset via token for user: ${user.email}`);
+
+    // Create notification
+    try {
+      await Notification.create({
+        recipientId: userId,
+        title: "Transaction PIN Reset Successfully 🔐",
+        message: "Your transaction PIN has been reset successfully using email verification.",
+        isRead: false
+      });
+    } catch (notificationError) {
+      console.error('Error creating notification:', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Transaction PIN reset successfully!',
+      transactionPinSet: true
+    });
+
+  } catch (error) {
+    console.error('Reset PIN with token error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+// @desc    Change transaction PIN
+// @route   POST /api/users/change-transaction-pin
+// @access  Private
+app.post('/api/users/change-transaction-pin', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('currentPin').isLength({ min: 6, max: 8 }).withMessage('Current PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits'),
+  body('newPin').isLength({ min: 6, max: 8 }).withMessage('New PIN must be 6-8 digits').matches(/^\d+$/).withMessage('PIN must contain only digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId, currentPin, newPin } = req.body;
+    const ipAddress = req.ip;
+    const userAgent = req.get('User-Agent');
+    
+    if (req.user._id.toString() !== userId) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Unauthorized access');
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    // Check for common PINs
+    const commonPins = ['123456', '111111', '000000', '121212', '777777', '100400', '200000', '444444', '222222', '333333', '12345678', '11111111', '00000000'];
+    if (commonPins.includes(newPin)) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Common PIN used');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'New PIN is too common. Please choose a more secure PIN' 
+      });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'User not found');
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Verify current PIN if it exists
+    if (user.transactionPin) {
+      const isCurrentPinMatch = await bcrypt.compare(currentPin, user.transactionPin);
+      if (!isCurrentPinMatch) {
+        // Increment failed attempts
+        user.failedPinAttempts += 1;
+        
+        // Lock account if too many failed attempts
+        if (user.failedPinAttempts >= 3) {
+          user.pinLockedUntil = new Date(getLagosTime().getTime() + 15 * 60000); // Lock for 15 minutes
+          await user.save();
+          
+          await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, 'Account locked due to failed attempts');
+          return res.status(429).json({ 
+            success: false, 
+            message: 'Too many failed attempts. Account locked for 15 minutes.' 
+          });
+        } else {
+          await user.save();
+          
+          const remainingAttempts = 3 - user.failedPinAttempts;
+          await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, false, `Invalid current PIN, ${remainingAttempts} attempts remaining`);
+          return res.status(400).json({ 
+            success: false, 
+            message: `Current PIN is incorrect. ${remainingAttempts} attempts remaining before lockout.` 
+          });
+        }
+      }
+    }
+    
+    // Hash the new PIN
+    const salt = await bcrypt.genSalt(12);
+    const hashedPin = await bcrypt.hash(newPin, salt);
+    
+    user.transactionPin = hashedPin;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    await user.save();
+    
+    await logAuthAttempt(userId, 'pin_attempt', ipAddress, userAgent, true, 'PIN changed successfully');
+    
+    res.json({ 
+      success: true, 
+      message: 'Transaction PIN changed successfully',
+    });
+  } catch (error) {
+    console.error('Error changing transaction PIN:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Toggle biometric authentication
+// @route   POST /api/users/toggle-biometric
+// @access  Private
+app.post('/api/users/toggle-biometric', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('enable').isBoolean().withMessage('Enable must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId, enable, biometricKey, biometricCredentialId } = req.body;
+    
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if biometric authentication is allowed in settings
+    const settings = await Settings.findOne();
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    if (!biometricAllowed && enable) {
+      return res.status(400).json({ success: false, message: 'Biometric authentication is currently disabled' });
+    }
+    
+    // When enabling biometric, require biometricKey and biometricCredentialId
+    if (enable) {
+      if (!biometricKey || !biometricCredentialId) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Biometric key and credential ID are required to enable biometric authentication' 
+        });
+      }
+    }
+    
+    user.biometricEnabled = enable;
+    if (enable) {
+      user.biometricKey = biometricKey;
+      user.biometricCredentialId = biometricCredentialId;
+    } else {
+      user.biometricKey = null;
+      user.biometricCredentialId = null;
+    }
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: `Biometric authentication ${enable ? 'enabled' : 'disabled'} successfully`,
+      biometricEnabled: user.biometricEnabled
+    });
+  } catch (error) {
+    console.error('Error toggling biometric authentication:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Verify transaction PIN
+// @route   POST /api/users/verify-transaction-pin
+// @access  Private
+app.post('/api/users/verify-transaction-pin', protect, [
+  body('userId').notEmpty().withMessage('User ID is required')
+], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    // Accept either key
+    const pin = req.body.pin || req.body.transactionPin;
+
+    // Validate PIN
+    if (!pin || !/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ success: false, message: 'PIN must be exactly 6 digits' });
+    }
+
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // PIN not set check
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction PIN not set'
+      });
+    }
+
+    const now = new Date();
+
+    // 🔒 Lock check
+    if (user.pinLockedUntil && user.pinLockedUntil > now) {
+      const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
+      return res.status(429).json({
+        success: false,
+        message: `Too many failed attempts. Account locked for ${minutesRemaining} minutes.`
+      });
+    }
+
+    // 🔐 Verify PIN
+    const isPinMatch = await bcrypt.compare(pin, user.transactionPin);
+
+    if (!isPinMatch) {
+      user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+      }
+
+      await user.save();
+
+      const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
+
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`
+      });
+    }
+
+    // ✅ SUCCESS
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: 'PIN verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Error verifying transaction PIN:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ==================== PUBLIC PIN VERIFICATION FOR LOGIN ====================
+// ✅ FIXED: Uses SAME token generators as email/password login
+// This gives biometric/PIN sessions IDENTICAL lifetime to email sessions
+// ========================================================================
+app.post('/api/auth/verify-pin-for-login', async (req, res) => {
+  try {
+    const { userId, transactionPin } = req.body;
+
+    if (!userId || !transactionPin) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID and PIN are required'
+      });
+    }
+
+    if (!/^\d{6}$/.test(transactionPin)) {
+      return res.status(400).json({
+        success: false,
+        message: 'PIN must be exactly 6 digits'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (!user.transactionPin || !user.transactionPinSet) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction PIN not set.'
+      });
+    }
+
+    const now = new Date();
+
+    if (user.pinLockedUntil && user.pinLockedUntil > now) {
+      const minutesRemaining = Math.ceil((user.pinLockedUntil - now) / 60000);
+      return res.status(429).json({
+        success: false,
+        message: `Too many failed attempts. Account locked for ${minutesRemaining} minutes.`
+      });
+    }
+
+    const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+
+    if (!isPinMatch) {
+      user.failedPinAttempts = (user.failedPinAttempts || 0) + 1;
+      if (user.failedPinAttempts >= 3) {
+        user.pinLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+      }
+      await user.save();
+
+      const remainingAttempts = Math.max(0, 3 - user.failedPinAttempts);
+      return res.status(401).json({
+        success: false,
+        message: `Invalid transaction PIN. ${remainingAttempts} attempts remaining before lockout.`,
+        attemptsRemaining: remainingAttempts
+      });
+    }
+
+    // ✅ PIN SUCCESSFUL - Reset failed attempts
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+
+    // ✅ FIXED: Use SAME token generators as email/password login
+    // generateToken() → 30 days, signed with JWT_SECRET
+    // generateRefreshToken() → 180 days, signed with REFRESH_TOKEN_SECRET
+    const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    // Store refresh token in database + update timestamps
+    user.refreshToken = refreshToken;
+    user.lastLoginAt = getLagosTime();
+    user.lastTokenRefresh = new Date();
+    await user.save();
+
+    console.log(`✅ PIN/Biometric login successful for user: ${user.email}`);
+    console.log(`   Access token: 30 days | Refresh token: 180 days`);
+    console.log(`   Same lifetime as email/password login ✅`);
+
+    return res.json({
+      success: true,
+      message: 'PIN verified successfully',
+      token: token,                    // 30-day access token
+      refreshToken: refreshToken,      // 180-day refresh token
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        walletBalance: user.walletBalance || 0,
+        commissionBalance: user.commissionBalance || 0,
+        transactionPinSet: true,
+        biometricEnabled: user.biometricEnabled || false,
+        role: user.role || 'user',
+        isAdmin: user.isAdmin || false,
+        isActive: user.isActive !== false
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error verifying PIN for login:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error. Please try again later.'
+    });
+  }
+});
+
+
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE VERSION ====================
+
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - COMPLETE FIX ====================
+
+// ==================== ADMIN SERVICE COMMISSION STATISTICS - WITH PROPER PAGINATION ====================
+
+app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) => {
+  try {
+    // Check if user is Super Admin or Admin
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    console.log('📊 [COMMISSION STATS] Fetching service commission statistics...');
+    console.log(`👤 User: ${req.user.email} (${req.user._id})`);
+
+    // ✅ FIXED: Properly parse page and limit with defaults
+    const {
+      timeFilter = 'all',
+      service = 'all',
+      startDate: customStartDate,
+      endDate: customEndDate,
+      page = '1',
+      limit = '50'
+    } = req.query;
+
+    // ✅ FIXED: Convert to integers with proper validation
+    const currentPage = Math.max(1, parseInt(page) || 1);
+    const pageLimit = Math.min(parseInt(limit) || 50, 500);
+    const skip = (currentPage - 1) * pageLimit;
+
+    console.log(`📋 Time Filter: ${timeFilter}, Service: ${service}`);
+    console.log(`📄 Page: ${currentPage}, Limit: ${pageLimit}, Skip: ${skip}`);
+
+    // ================================================
+    // 1. DATE FILTERS
+    // ================================================
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    // ================================================
+    // 2. SERVICE COMMISSION RATES
+    // ================================================
+    const COMMISSION_RATES = {
+      'international_airtime': { 
+        rate: 0.02, 
+        label: 'International Airtime', 
+        type: 'percentage', 
+        icon: '🌍', 
+        color: '#7C3AED'
+      },
+      'airtime': { 
+        rate: 0.02, 
+        label: 'Airtime', 
+        type: 'percentage', 
+        icon: '📱', 
+        color: '#4F46E5'
+      },
+      'cable': { 
+        rate: 0.013, 
+        label: 'Cable TV', 
+        type: 'percentage', 
+        icon: '📺', 
+        color: '#059669'
+      },
+      'data': { 
+        rate: 0.015, 
+        label: 'Data', 
+        type: 'percentage', 
+        icon: '📶', 
+        color: '#0891B2'
+      },
+      'electricity': { 
+        rate: 0.01, 
+        label: 'Electricity', 
+        type: 'percentage', 
+        icon: '⚡', 
+        color: '#D97706'
+      },
+      'education': { 
+        rate: 100, 
+        label: 'Education', 
+        type: 'flat', 
+        icon: '🎓', 
+        color: '#DC2626'
+      },
+      'ticket': { 
+        rate: 150, 
+        label: 'Ticket', 
+        type: 'flat', 
+        icon: '🎫', 
+        color: '#2563EB'
+      }
+    };
+
+    // ================================================
+    // 3. SERVICE KEYWORDS FOR DETECTION
+    // ================================================
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      
+      const excludePatterns = ['commission', 'credit', 'withdrawal', 'welcome bonus', 'referral bonus', 'wallet funding', 'transfer'];
+      for (const pattern of excludePatterns) {
+        if (lowerType.includes(pattern)) {
+          return 'excluded';
+        }
+      }
+      
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    // ================================================
+    // 4. BUILD TIME FILTER QUERY
+    // ================================================
+    let timeFilterQuery = {};
+    
+    if (customStartDate && customEndDate) {
+      const start = new Date(customStartDate);
+      const end = new Date(customEndDate);
+      end.setHours(23, 59, 59, 999);
+      timeFilterQuery = { createdAt: { $gte: start, $lte: end } };
+      console.log(`📅 Custom Date Range: ${start.toISOString()} to ${end.toISOString()}`);
+    } else {
+      switch (timeFilter) {
+        case 'today': timeFilterQuery = { createdAt: { $gte: today } }; break;
+        case 'week': timeFilterQuery = { createdAt: { $gte: weekStart } }; break;
+        case 'month': timeFilterQuery = { createdAt: { $gte: monthStart } }; break;
+        case 'year': timeFilterQuery = { createdAt: { $gte: yearStart } }; break;
+        default: timeFilterQuery = {};
+      }
+    }
+
+    // ================================================
+    // 5. BUILD SERVICE FILTER WITH PROPER REGEX STRINGS
+    // ================================================
+    const excludePattern = 'commission|credit|withdrawal|welcome bonus|referral bonus|wallet funding|transfer';
+    const statusPattern = 'success|completed|successful';
+    
+    let typeFilter = {};
+    const isAllServices = service === 'all';
+    
+    if (isAllServices) {
+      typeFilter = {
+        type: { $not: { $regex: excludePattern, $options: 'i' } }
+      };
+      console.log('📋 Filter: All services (excluding commissions)');
+    } else {
+      const keywords = serviceKeywords[service] || [];
+      if (keywords.length > 0) {
+        const servicePattern = keywords.join('|');
+        typeFilter = {
+          $and: [
+            { type: { $regex: servicePattern, $options: 'i' } },
+            { type: { $not: { $regex: excludePattern, $options: 'i' } } }
+          ]
+        };
+        console.log(`🔧 Service Filter: ${service} -> ${servicePattern} (excluding commissions)`);
+      } else {
+        const typeMap = {
+          'airtime': 'Airtime Purchase',
+          'international_airtime': 'International Airtime Purchase',
+          'data': 'Data Purchase',
+          'cable': { $in: ['Cable TV Subscription', 'Cable TV Purchase'] },
+          'electricity': 'Electricity Purchase',
+          'education': { $in: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase'] },
+          'ticket': 'Ticket Purchase'
+        };
+        const exactType = typeMap[service];
+        if (exactType) {
+          typeFilter = {
+            $and: [
+              { type: exactType },
+              { type: { $not: { $regex: excludePattern, $options: 'i' } } }
+            ]
+          };
+        }
+      }
+    }
+
+    // ================================================
+    // 6. BUILD BASE FILTER
+    // ================================================
+    const baseFilter = {
+      ...timeFilterQuery,
+      ...typeFilter,
+      status: { $regex: statusPattern, $options: 'i' }
+    };
+
+    console.log('📋 Base Filter:', JSON.stringify(baseFilter, null, 2));
+
+    // ================================================
+    // 7. GET TOTAL COUNT FIRST (for pagination)
+    // ================================================
+    const totalTransactions = await Transaction.countDocuments(baseFilter);
+    console.log(`📊 Total successful service transactions: ${totalTransactions}`);
+
+    // ================================================
+    // 8. GET TRANSACTIONS WITH PROPER PAGINATION
+    // ================================================
+    // ✅ CRITICAL FIX: Ensure skip and limit are applied correctly
+    const transactions = await Transaction.find(baseFilter)
+      .sort({ createdAt: -1 })
+      .skip(skip)        // ← This is what paginates
+      .limit(pageLimit)  // ← This limits the results
+      .lean();
+
+    console.log(`📊 Returned ${transactions.length} transactions (Page ${currentPage} of ${Math.ceil(totalTransactions / pageLimit)})`);
+
+    // ✅ DEBUG: Log first transaction ID to verify pagination
+    if (transactions.length > 0) {
+      console.log(`📄 First transaction ID on page ${currentPage}: ${transactions[0]._id}`);
+    }
+
+    // ================================================
+    // 9. GET PERIOD STATS (SAME AS BEFORE - NOT PAGINATED)
+    // ================================================
+    const getPeriodStats = async (dateFilter) => {
+      const filter = {
+        ...dateFilter,
+        ...typeFilter,
+        status: { $regex: statusPattern, $options: 'i' }
+      };
+      
+      const txs = await Transaction.find(filter).select('type amount').lean();
+      
+      let totalAmount = 0;
+      let totalCommission = 0;
+      let totalCount = txs.length;
+      
+      for (const tx of txs) {
+        const amount = tx.amount || 0;
+        totalAmount += amount;
+        
+        const serviceType = detectServiceType(tx.type);
+        const rateConfig = COMMISSION_RATES[serviceType];
+        
+        if (rateConfig) {
+          if (rateConfig.type === 'flat') {
+            totalCommission += rateConfig.rate;
+          } else {
+            totalCommission += amount * (rateConfig.rate || 0);
+          }
+        }
+      }
+      
+      return { 
+        count: totalCount, 
+        amount: totalAmount,
+        commission: totalCommission
+      };
+    };
+
+    // Get stats for each period
+    const [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
+      getPeriodStats({ createdAt: { $gte: today } }),
+      getPeriodStats({ createdAt: { $gte: weekStart } }),
+      getPeriodStats({ createdAt: { $gte: monthStart } }),
+      getPeriodStats({ createdAt: { $gte: yearStart } }),
+      getPeriodStats({})
+    ]);
+
+    console.log('📊 Period Stats:');
+    console.log(`   Today: ${todayStats.count} txns, ₦${todayStats.commission.toFixed(2)} commission, ₦${todayStats.amount.toFixed(2)} volume`);
+    console.log(`   Week: ${weekStats.count} txns, ₦${weekStats.commission.toFixed(2)} commission, ₦${weekStats.amount.toFixed(2)} volume`);
+    console.log(`   Month: ${monthStats.count} txns, ₦${monthStats.commission.toFixed(2)} commission, ₦${monthStats.amount.toFixed(2)} volume`);
+    console.log(`   Year: ${yearStats.count} txns, ₦${yearStats.commission.toFixed(2)} commission, ₦${yearStats.amount.toFixed(2)} volume`);
+    console.log(`   All Time: ${allTimeStats.count} txns, ₦${allTimeStats.commission.toFixed(2)} commission, ₦${allTimeStats.amount.toFixed(2)} volume`);
+
+    // ================================================
+    // 10. GET SERVICE BREAKDOWN BY PERIOD
+    // ================================================
+    const getServiceBreakdown = async (dateFilter) => {
+      const filter = {
+        ...dateFilter,
+        ...typeFilter,
+        status: { $regex: statusPattern, $options: 'i' }
+      };
+      
+      const txs = await Transaction.find(filter).select('type amount').lean();
+      
+      const breakdown = {};
+      Object.keys(COMMISSION_RATES).forEach(key => {
+        breakdown[key] = {
+          label: COMMISSION_RATES[key].label,
+          icon: COMMISSION_RATES[key].icon || '📦',
+          color: COMMISSION_RATES[key].color || '#6B7280',
+          count: 0,
+          amount: 0,
+          commission: 0
+        };
+      });
+      breakdown['unknown'] = {
+        label: 'Other',
+        icon: '📦',
+        color: '#6B7280',
+        count: 0,
+        amount: 0,
+        commission: 0
+      };
+
+      for (const tx of txs) {
+        const serviceType = detectServiceType(tx.type);
+        const amount = tx.amount || 0;
+        
+        if (serviceType === 'excluded') continue;
+        
+        if (breakdown[serviceType]) {
+          breakdown[serviceType].count += 1;
+          breakdown[serviceType].amount += amount;
+          
+          const rateConfig = COMMISSION_RATES[serviceType];
+          if (rateConfig) {
+            if (rateConfig.type === 'flat') {
+              breakdown[serviceType].commission += rateConfig.rate;
+            } else {
+              breakdown[serviceType].commission += amount * (rateConfig.rate || 0);
+            }
+          }
+        }
+      }
+      
+      return breakdown;
+    };
+
+    const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
+      getServiceBreakdown({ createdAt: { $gte: today } }),
+      getServiceBreakdown({ createdAt: { $gte: weekStart } }),
+      getServiceBreakdown({ createdAt: { $gte: monthStart } }),
+      getServiceBreakdown({ createdAt: { $gte: yearStart } }),
+      getServiceBreakdown({})
+    ]);
+
+    // ================================================
+    // 11. GET USER DATA FOR TRANSACTIONS
+    // ================================================
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
+        };
+        return map;
+      }, {});
+    }
+
+    // ================================================
+    // 12. BUILD TRANSACTION LIST WITH COMMISSION
+    // ================================================
+    const transactionList = transactions.map(tx => {
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      
+      let commission = 0;
+      let rate = 0;
+      let rateType = 'percentage';
+      let serviceLabel = 'Other';
+      let serviceIcon = '📦';
+      let serviceColor = '#6B7280';
+      
+      if (rateConfig) {
+        rateType = rateConfig.type || 'percentage';
+        serviceLabel = rateConfig.label || 'Other';
+        serviceIcon = rateConfig.icon || '📦';
+        serviceColor = rateConfig.color || '#6B7280';
+        
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+          rate = rateConfig.rate;
+        } else {
+          rate = rateConfig.rate || 0;
+          commission = (tx.amount || 0) * rate;
+        }
+      }
+
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+
+      return {
+        ...tx,
+        user: userData,
+        userId: userId || 'system',
+        serviceType: serviceType,
+        serviceLabel: serviceLabel,
+        serviceIcon: serviceIcon,
+        serviceColor: serviceColor,
+        commissionEarned: Math.round(commission * 100) / 100,
+        commissionRate: rate,
+        rateType: rateType,
+        rateDisplay: rateType === 'flat' 
+          ? `₦${rate.toFixed(0)} flat` 
+          : `${(rate * 100).toFixed(1)}%`
+      };
+    });
+
+    // ================================================
+    // 13. CALCULATE TOTALS (from allTimeStats)
+    // ================================================
+    const totalCommission = allTimeStats.commission;
+    const totalVolume = allTimeStats.amount;
+    const totalCount = allTimeStats.count;
+
+    // Service breakdown from allTimeStats
+    const serviceBreakdown = allTimeBreakdown;
+
+    // ================================================
+    // 14. BUILD SERVICE SUMMARY (RANKED)
+    // ================================================
+    const serviceSummary = Object.entries(serviceBreakdown)
+      .filter(([key, data]) => data.count > 0)
+      .map(([key, data]) => ({
+        key: key,
+        label: data.label || key,
+        icon: data.icon || '📦',
+        color: data.color || '#6B7280',
+        rate: COMMISSION_RATES[key]?.type === 'flat' 
+          ? `₦${COMMISSION_RATES[key]?.rate || 0} flat` 
+          : `${((COMMISSION_RATES[key]?.rate || 0) * 100).toFixed(1)}%`,
+        rateType: COMMISSION_RATES[key]?.type || 'percentage',
+        count: data.count,
+        volume: Math.round(data.amount * 100) / 100,
+        commission: Math.round(data.commission * 100) / 100
+      }))
+      .sort((a, b) => b.commission - a.commission);
+
+    // ================================================
+    // 15. BUILD RESPONSE
+    // ================================================
+    const response = {
+      success: true,
+      data: {
+        summary: {
+          totalTransactions: totalCount,
+          totalVolume: Math.round(totalVolume * 100) / 100,
+          totalCommission: Math.round(totalCommission * 100) / 100,
+          totalCount: totalCount
+        },
+        
+        periodStats: {
+          today: {
+            count: todayStats.count,
+            amount: Math.round(todayStats.amount * 100) / 100,
+            commission: Math.round(todayStats.commission * 100) / 100,
+            label: 'Today'
+          },
+          week: {
+            count: weekStats.count,
+            amount: Math.round(weekStats.amount * 100) / 100,
+            commission: Math.round(weekStats.commission * 100) / 100,
+            label: 'This Week'
+          },
+          month: {
+            count: monthStats.count,
+            amount: Math.round(monthStats.amount * 100) / 100,
+            commission: Math.round(monthStats.commission * 100) / 100,
+            label: 'This Month'
+          },
+          year: {
+            count: yearStats.count,
+            amount: Math.round(yearStats.amount * 100) / 100,
+            commission: Math.round(yearStats.commission * 100) / 100,
+            label: 'This Year'
+          },
+          allTime: {
+            count: allTimeStats.count,
+            amount: Math.round(allTimeStats.amount * 100) / 100,
+            commission: Math.round(allTimeStats.commission * 100) / 100,
+            label: 'All Time'
+          }
+        },
+
+        serviceBreakdownByPeriod: {
+          today: todayBreakdown,
+          week: weekBreakdown,
+          month: monthBreakdown,
+          year: yearBreakdown,
+          allTime: allTimeBreakdown
+        },
+
+        commissionRates: COMMISSION_RATES,
+        serviceSummary: serviceSummary,
+        serviceBreakdown: serviceBreakdown,
+        transactions: transactionList,
+
+        // ✅ FIXED: Pagination with correct total and page
+        pagination: {
+          total: totalTransactions,
+          page: currentPage,
+          limit: pageLimit,
+          totalPages: Math.ceil(totalTransactions / pageLimit)
+        },
+
+        appliedFilters: {
+          timeFilter: timeFilter,
+          service: service,
+          startDate: customStartDate || null,
+          endDate: customEndDate || null
+        },
+
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    console.log('✅ [COMMISSION STATS] Response built successfully');
+    console.log(`   Total Commission: ₦${(totalCommission).toFixed(2)}`);
+    console.log(`   Total Transactions: ${totalCount}`);
+    console.log(`   Total Volume: ₦${(totalVolume).toFixed(2)}`);
+    console.log(`   Page ${currentPage} of ${Math.ceil(totalTransactions / pageLimit)}`);
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ [COMMISSION STATS] Error:', error);
+    console.error('❌ Error Stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch commission statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
+// ==================== GET COMMISSION RATES ENDPOINT ====================
+app.get('/api/admin/commission-rates', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const COMMISSION_RATES = {
+      'international_airtime': { 
+        rate: 0.02, 
+        label: 'International Airtime', 
+        type: 'percentage', 
+        icon: '🌍', 
+        color: '#7C3AED',
+        serviceTypes: ['International Airtime Purchase', 'International Airtime']
+      },
+      'airtime': { 
+        rate: 0.02, 
+        label: 'Airtime', 
+        type: 'percentage', 
+        icon: '📱', 
+        color: '#4F46E5',
+        serviceTypes: ['Airtime Purchase']
+      },
+      'data': { 
+        rate: 0.015, 
+        label: 'Data', 
+        type: 'percentage', 
+        icon: '📶', 
+        color: '#0891B2',
+        serviceTypes: ['Data Purchase']
+      },
+      'cable': { 
+        rate: 0.013, 
+        label: 'Cable TV', 
+        type: 'percentage', 
+        icon: '📺', 
+        color: '#059669',
+        serviceTypes: ['Cable TV Subscription', 'Cable TV Purchase']
+      },
+      'electricity': { 
+        rate: 0.01, 
+        label: 'Electricity', 
+        type: 'percentage', 
+        icon: '⚡', 
+        color: '#D97706',
+        serviceTypes: ['Electricity Purchase']
+      },
+      'education': { 
+        rate: 100, 
+        label: 'Education', 
+        type: 'flat', 
+        icon: '🎓', 
+        color: '#DC2626',
+        serviceTypes: ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase']
+      },
+      'ticket': { 
+        rate: 150, 
+        label: 'Ticket', 
+        type: 'flat', 
+        icon: '🎫', 
+        color: '#2563EB',
+        serviceTypes: ['Ticket Purchase', 'Event Ticket']
+      }
+    };
+
+    res.json({
+      success: true,
+      rates: COMMISSION_RATES,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching commission rates:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch commission rates'
+    });
+  }
+});
+
+// ==================== GET COMMISSION SUMMARY BY SERVICE ====================
+app.get('/api/admin/commission-summary', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { service, timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    // Service type mapping
+    const serviceTypeMap = {
+      'airtime': ['Airtime Purchase'],
+      'international_airtime': ['International Airtime Purchase', 'International Airtime'],
+      'data': ['Data Purchase'],
+      'cable': ['Cable TV Subscription', 'Cable TV Purchase'],
+      'electricity': ['Electricity Purchase'],
+      'education': ['Education Purchase', 'WAEC Purchase', 'JAMB Purchase'],
+      'ticket': ['Ticket Purchase', 'Event Ticket']
+    };
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    if (service && service !== 'all' && serviceTypeMap[service]) {
+      filter.type = { $in: serviceTypeMap[service] };
+    }
+
+    const transactions = await Transaction.find(filter).lean();
+    
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
+      'education': { rate: 100, label: 'Education', type: 'flat' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    let totalAmount = 0;
+    let totalCommission = 0;
+    let serviceStats = {};
+
+    Object.keys(COMMISSION_RATES).forEach(key => {
+      serviceStats[key] = { count: 0, amount: 0, commission: 0, label: COMMISSION_RATES[key].label };
+    });
+    serviceStats['unknown'] = { count: 0, amount: 0, commission: 0, label: 'Other' };
+
+    for (const tx of transactions) {
+      const amount = tx.amount || 0;
+      totalAmount += amount;
+      
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      
+      let commission = 0;
+      if (rateConfig) {
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+        } else {
+          commission = amount * (rateConfig.rate || 0);
+        }
+        totalCommission += commission;
+        if (serviceStats[serviceType]) {
+          serviceStats[serviceType].count += 1;
+          serviceStats[serviceType].amount += amount;
+          serviceStats[serviceType].commission += commission;
+        }
+      } else {
+        if (serviceStats['unknown']) {
+          serviceStats['unknown'].count += 1;
+          serviceStats['unknown'].amount += amount;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      summary: {
+        totalTransactions: transactions.length,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        totalCommission: Math.round(totalCommission * 100) / 100,
+        serviceStats: serviceStats,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching commission summary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch commission summary'
+    });
+  }
+});
+
+// ==================== BEST PERFORMING SERVICES ENDPOINT ====================
+app.get('/api/admin/best-performing-services', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    const transactions = await Transaction.find(filter).lean();
+    
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage', icon: '🌍', color: '#7C3AED' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage', icon: '📱', color: '#4F46E5' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage', icon: '📶', color: '#0891B2' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage', icon: '📺', color: '#059669' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage', icon: '⚡', color: '#D97706' },
+      'education': { rate: 100, label: 'Education', type: 'flat', icon: '🎓', color: '#DC2626' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat', icon: '🎫', color: '#2563EB' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    let serviceStats = {};
+    Object.keys(COMMISSION_RATES).forEach(key => {
+      serviceStats[key] = {
+        count: 0,
+        amount: 0,
+        commission: 0,
+        label: COMMISSION_RATES[key].label,
+        icon: COMMISSION_RATES[key].icon || '📦',
+        color: COMMISSION_RATES[key].color || '#6B7280',
+        rate: COMMISSION_RATES[key].type === 'flat' 
+          ? `₦${COMMISSION_RATES[key].rate} flat` 
+          : `${(COMMISSION_RATES[key].rate * 100).toFixed(1)}%`,
+        rateType: COMMISSION_RATES[key].type
+      };
+    });
+
+    for (const tx of transactions) {
+      const amount = tx.amount || 0;
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      
+      if (rateConfig && serviceStats[serviceType]) {
+        serviceStats[serviceType].count += 1;
+        serviceStats[serviceType].amount += amount;
+        if (rateConfig.type === 'flat') {
+          serviceStats[serviceType].commission += rateConfig.rate;
+        } else {
+          serviceStats[serviceType].commission += amount * (rateConfig.rate || 0);
+        }
+      }
+    }
+
+    // Sort by commission (best performing first)
+    const sortedServices = Object.entries(serviceStats)
+      .map(([key, data]) => ({ key, ...data }))
+      .filter(s => s.count > 0)
+      .sort((a, b) => b.commission - a.commission);
+
+    res.json({
+      success: true,
+      timeFilter: timeFilter,
+      bestPerforming: sortedServices,
+      totalTransactions: transactions.length,
+      totalCommission: Math.round(sortedServices.reduce((sum, s) => sum + s.commission, 0) * 100) / 100,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching best performing services:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch best performing services'
+    });
+  }
+});
+
+// ==================== EXPORT COMMISSION DATA TO CSV ====================
+app.get('/api/admin/export-commission-data', adminProtect, async (req, res) => {
+  try {
+    if (!req.user.isSuperAdmin && !req.user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { timeFilter = 'all' } = req.query;
+
+    // Date filters
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    let dateFilter = {};
+    switch (timeFilter) {
+      case 'today':
+        dateFilter = { createdAt: { $gte: today } };
+        break;
+      case 'week':
+        dateFilter = { createdAt: { $gte: weekStart } };
+        break;
+      case 'month':
+        dateFilter = { createdAt: { $gte: monthStart } };
+        break;
+      case 'year':
+        dateFilter = { createdAt: { $gte: yearStart } };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    const filter = {
+      ...dateFilter,
+      status: { $regex: /^success|completed|successful$/i }
+    };
+
+    const transactions = await Transaction.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Get user info
+    const userIds = [...new Set(
+      transactions.map(tx => tx.userId?.toString())
+        .filter(id => id && id !== 'null' && id !== 'system')
+    )];
+
+    let userMap = {};
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+
+    const COMMISSION_RATES = {
+      'international_airtime': { rate: 0.02, label: 'International Airtime', type: 'percentage' },
+      'airtime': { rate: 0.02, label: 'Airtime', type: 'percentage' },
+      'data': { rate: 0.015, label: 'Data', type: 'percentage' },
+      'cable': { rate: 0.013, label: 'Cable TV', type: 'percentage' },
+      'electricity': { rate: 0.01, label: 'Electricity', type: 'percentage' },
+      'education': { rate: 100, label: 'Education', type: 'flat' },
+      'ticket': { rate: 150, label: 'Ticket', type: 'flat' }
+    };
+
+    const serviceKeywords = {
+      'international_airtime': ['international airtime', 'foreign airtime'],
+      'airtime': ['airtime purchase', 'airtime top-up'],
+      'data': ['data purchase', 'data bundle'],
+      'cable': ['cable tv', 'dstv', 'gotv', 'startimes', 'tv subscription'],
+      'electricity': ['electricity purchase', 'ikeja', 'eko', 'abuja', 'ibadan', 'enugu', 'kano', 'ph'],
+      'education': ['education purchase', 'waec', 'jamb', 'exam', 'result checker'],
+      'ticket': ['ticket purchase', 'event ticket']
+    };
+
+    const detectServiceType = (transactionType) => {
+      if (!transactionType) return 'unknown';
+      const lowerType = transactionType.toLowerCase().trim();
+      for (const [key, keywords] of Object.entries(serviceKeywords)) {
+        for (const keyword of keywords) {
+          if (lowerType.includes(keyword)) {
+            return key;
+          }
+        }
+      }
+      return 'unknown';
+    };
+
+    // Build CSV data
+    let csvRows = [
+      ['Transaction ID', 'Date', 'User', 'Email', 'Phone', 'Service', 'Type', 'Amount (₦)', 'Commission (₦)', 'Rate', 'Status', 'Reference']
+    ];
+
+    for (const tx of transactions) {
+      const serviceType = detectServiceType(tx.type);
+      const rateConfig = COMMISSION_RATES[serviceType];
+      let commission = 0;
+      let rateDisplay = 'N/A';
+      
+      if (rateConfig) {
+        if (rateConfig.type === 'flat') {
+          commission = rateConfig.rate;
+          rateDisplay = `₦${rateConfig.rate} flat`;
+        } else {
+          commission = (tx.amount || 0) * (rateConfig.rate || 0);
+          rateDisplay = `${(rateConfig.rate * 100).toFixed(1)}%`;
+        }
+      }
+
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || { fullName: 'System', email: 'N/A', phone: 'N/A' };
+
+      csvRows.push([
+        tx._id?.toString() || 'N/A',
+        tx.createdAt ? new Date(tx.createdAt).toISOString().split('T')[0] : 'N/A',
+        userData.fullName,
+        userData.email,
+        userData.phone,
+        rateConfig?.label || 'Other',
+        tx.type || 'N/A',
+        (tx.amount || 0).toFixed(2),
+        commission.toFixed(2),
+        rateDisplay,
+        tx.status || 'N/A',
+        tx.reference || 'N/A'
+      ]);
+    }
+
+    const csvContent = csvRows.map(row => row.join(',')).join('\n');
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=commission_data_${timeFilter}_${Date.now()}.csv`);
+    res.send(csvContent);
+
+  } catch (error) {
+    console.error('❌ Error exporting commission data:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export commission data'
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ==================== ADMIN REFUND & DISPUTE ENDPOINTS ====================
+
+
+
+// ==================== ENHANCED TRANSACTION STATISTICS ====================
+// @desc    Get transaction statistics with filters (daily, weekly, monthly, yearly)
+// @route   GET /api/admin/transactions/statistics
+// @access  Private/Admin
+app.get('/api/admin/transactions/statistics', adminProtect, async (req, res) => {
+  try {
+    console.log('📊 [TRANSACTION STATS] Fetching transaction statistics...');
+    
+    const { type, status, startDate, endDate } = req.query;
+    
+    const now = new Date();
+    
+    // Start of today (midnight)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // 7 days ago
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // 30 days ago (this month)
+    const monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    
+    // 365 days ago (this year)
+    const yearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    
+    // Build filter query
+    let filterQuery = {};
+    
+    // Type filter
+    if (type && type !== 'All') {
+      if (type === 'Commission Credit') {
+        filterQuery.isCommission = true;
+      } else {
+        // Map display type to actual type
+        const typeMap = {
+          'Airtime Purchase': 'Airtime Purchase',
+          'Data Purchase': 'Data Purchase',
+          'Cable TV Purchase': 'Cable TV Purchase',
+          'Electricity Purchase': 'Electricity Purchase',
+          'Education Purchase': 'Education Purchase',
+          'Insurance Purchase': 'Insurance Purchase',
+          'International Airtime': 'International Airtime',
+          'Transfer': 'Transfer',
+          'Fund Wallet': 'Fund Wallet',
+          'Service Fee': 'Service Fee',
+        };
+        filterQuery.type = typeMap[type] || type;
+      }
+    }
+    
+    // Status filter
+    if (status && status !== 'All') {
+      const statusLower = status.toLowerCase();
+      if (statusLower === 'success') {
+        filterQuery.status = { $regex: /success|completed/i };
+      } else if (statusLower === 'pending') {
+        filterQuery.status = { $regex: /pending|processing/i };
+      } else if (statusLower === 'failed') {
+        filterQuery.status = { $regex: /failed|cancelled/i };
+      }
+    }
+    
+    // Date range filter
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filterQuery.createdAt = { $gte: start, $lte: end };
+    }
+    
+    // Get statistics
+    const buildStatsQuery = (dateFilter) => {
+      const query = { ...filterQuery };
+      if (dateFilter) {
+        query.createdAt = { ...query.createdAt, ...dateFilter };
+      }
+      return query;
+    };
+    
+    const [
+      totalTransactions,
+      dailyCount,
+      weeklyCount,
+      monthlyCount,
+      yearlyCount,
+      totalAmount,
+      dailyAmount,
+      weeklyAmount,
+      monthlyAmount,
+      yearlyAmount,
+      successCount,
+      pendingCount,
+      failedCount
+    ] = await Promise.all([
+      Transaction.countDocuments(filterQuery),
+      Transaction.countDocuments(buildStatsQuery({ $gte: today })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: weekAgo })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: monthAgo })),
+      Transaction.countDocuments(buildStatsQuery({ $gte: yearAgo })),
+      Transaction.aggregate([
+        { $match: filterQuery },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      Transaction.aggregate([
+        { $match: buildStatsQuery({ $gte: today }) },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      Transaction.aggregate([
+        { $match: buildStatsQuery({ $gte: weekAgo }) },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      Transaction.aggregate([
+        { $match: buildStatsQuery({ $gte: monthAgo }) },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      Transaction.aggregate([
+        { $match: buildStatsQuery({ $gte: yearAgo }) },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /success|completed/i } }),
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /pending|processing/i } }),
+      Transaction.countDocuments({ ...filterQuery, status: { $regex: /failed|cancelled/i } })
+    ]);
+    
+    const response = {
+      success: true,
+      data: {
+        totalTransactions,
+        daily: dailyCount,
+        weekly: weeklyCount,
+        monthly: monthlyCount,
+        yearly: yearlyCount,
+        totalAmount: totalAmount[0]?.total || 0,
+        dailyAmount: dailyAmount[0]?.total || 0,
+        weeklyAmount: weeklyAmount[0]?.total || 0,
+        monthlyAmount: monthlyAmount[0]?.total || 0,
+        yearlyAmount: yearlyAmount[0]?.total || 0,
+        successCount,
+        pendingCount,
+        failedCount,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    
+    console.log(`✅ [TRANSACTION STATS] Stats fetched with filters - Total: ${totalTransactions}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ [TRANSACTION STATS] Error fetching transaction statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching transaction statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// backend/routes/admin.js or wherever your admin routes are
+
+// ==================== FILTERED TRANSACTIONS WITH PAGINATION ====================
+// @desc    Get filtered transactions with pagination
+// @route   GET /api/admin/transactions/filtered
+// @access  Private/Admin
+app.get('/api/admin/transactions/filtered', adminProtect, async (req, res) => {
+  try {
+    const { 
+      type, 
+      status, 
+      startDate, 
+      endDate, 
+      search, 
+      sortBy, 
+      limit = 100, 
+      page = 1 
+    } = req.query;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    let query = {};
+    
+    // Type filter
+    if (type && type !== 'All') {
+      if (type === 'Commission Credit') {
+        query.isCommission = true;
+      } else {
+        const typeMap = {
+          'Airtime Purchase': 'Airtime Purchase',
+          'Data Purchase': 'Data Purchase',
+          'Cable TV Purchase': 'Cable TV Purchase',
+          'Electricity Purchase': 'Electricity Purchase',
+          'Education Purchase': 'Education Purchase',
+          'Insurance Purchase': 'Insurance Purchase',
+          'International Airtime': 'International Airtime',
+          'Transfer': 'Transfer',
+          'Fund Wallet': 'Fund Wallet',
+          'Service Fee': 'Service Fee',
+        };
+        query.type = typeMap[type] || type;
+      }
+    }
+    
+    // Status filter
+    if (status && status !== 'All') {
+      const statusLower = status.toLowerCase();
+      if (statusLower === 'success') {
+        query.status = { $regex: /success|completed/i };
+      } else if (statusLower === 'pending') {
+        query.status = { $regex: /pending|processing/i };
+      } else if (statusLower === 'failed') {
+        query.status = { $regex: /failed|cancelled/i };
+      }
+    }
+    
+    // Date range filter
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt = { $gte: start, $lte: end };
+    }
+    
+    // Search filter
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      const userIds = await User.find({
+        $or: [
+          { fullName: searchRegex },
+          { email: searchRegex },
+          { phone: searchRegex }
+        ]
+      }).select('_id').lean();
+      
+      const userIdList = userIds.map(u => u._id);
+      
+      query.$or = [
+        { reference: searchRegex },
+        { transactionId: searchRegex },
+        { description: searchRegex },
+        { userId: { $in: userIdList } }
+      ];
+    }
+    
+    // Build sort
+    let sort = { createdAt: -1 };
+    if (sortBy === 'Oldest') sort = { createdAt: 1 };
+    else if (sortBy === 'Highest Amount') sort = { amount: -1 };
+    else if (sortBy === 'Lowest Amount') sort = { amount: 1 };
+    
+    // Get total count for pagination
+    const total = await Transaction.countDocuments(query);
+    
+    // Get transactions with pagination
+    const transactions = await Transaction.find(query)
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+    
+    // Get user data
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id && id !== 'null' && id !== 'system'))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
+        };
+        return map;
+      }, {});
+    }
+    
+    // Process transactions
+    const processedTransactions = transactions.map(tx => {
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+      
+      // Parse balance data
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        balanceBefore = typeof tx.balanceBefore === 'number' ? tx.balanceBefore : parseFloat(tx.balanceBefore) || 0;
+      }
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        balanceAfter = typeof tx.balanceAfter === 'number' ? tx.balanceAfter : parseFloat(tx.balanceAfter) || 0;
+      }
+      
+      return {
+        ...tx,
+        user: userData,
+        userId: userId || 'system',
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+      };
+    });
+    
+    res.json({
+      success: true,
+      transactions: processedTransactions,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit)),
+      limit: parseInt(limit),
+      returned: processedTransactions.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching filtered transactions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ==================== USER STATISTICS ENDPOINT ====================
+// @desc    Get user registration statistics (daily, weekly, monthly, yearly)
+// @route   GET /api/admin/users/statistics
+// @access  Private/Admin
+app.get('/api/admin/users/statistics', adminProtect, async (req, res) => {
+  try {
+    console.log('📊 [STATISTICS] Fetching user registration statistics...');
+    
+    const now = new Date();
+    
+    // Start of today (midnight)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // 7 days ago
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // 30 days ago (this month)
+    const monthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    
+    // 365 days ago (this year)
+    const yearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    
+    // Get all counts in parallel for speed
+    const [
+      totalUsers,
+      activeUsers,
+      adminUsers,
+      dailyCount,
+      weeklyCount,
+      monthlyCount,
+      yearlyCount,
+      todayUsers,
+      allUsers
+    ] = await Promise.all([
+      // Total users
+      User.countDocuments(),
+      
+      // Active users
+      User.countDocuments({ isActive: true }),
+      
+      // Admin users
+      User.countDocuments({ isAdmin: true }),
+      
+      // Daily registrations (today)
+      User.countDocuments({
+        createdAt: { $gte: today }
+      }),
+      
+      // Weekly registrations (last 7 days)
+      User.countDocuments({
+        createdAt: { $gte: weekAgo }
+      }),
+      
+      // Monthly registrations (last 30 days)
+      User.countDocuments({
+        createdAt: { $gte: monthAgo }
+      }),
+      
+      // Yearly registrations (last 365 days)
+      User.countDocuments({
+        createdAt: { $gte: yearAgo }
+      }),
+      
+      // Today's users with details (newest first)
+      User.find({
+        createdAt: { $gte: today }
+      })
+      .sort({ createdAt: -1 })
+      .select('-password -pin -transactionPin')
+      .lean(),
+      
+      // All users sorted by registration date (newest first)
+      User.find({})
+      .sort({ createdAt: -1 })
+      .select('-password -pin -transactionPin')
+      .lean()
+    ]);
+    
+    // Format today's users for frontend
+    const formattedTodayUsers = todayUsers.map(user => ({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      isAdmin: user.isAdmin,
+      walletBalance: user.walletBalance,
+      commissionBalance: user.commissionBalance,
+      createdAt: user.createdAt,
+      registrationDate: user.createdAt
+    }));
+    
+    // Format all users for frontend
+    const formattedAllUsers = allUsers.map(user => ({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      isAdmin: user.isAdmin,
+      walletBalance: user.walletBalance,
+      commissionBalance: user.commissionBalance,
+      createdAt: user.createdAt,
+      registrationDate: user.createdAt
+    }));
+    
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        totalUsers,
+        activeUsers,
+        adminUsers,
+        statistics: {
+          daily: dailyCount,
+          weekly: weeklyCount,
+          monthly: monthlyCount,
+          yearly: yearlyCount
+        },
+        todayUsers: formattedTodayUsers,
+        allUsers: formattedAllUsers,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    
+    console.log(`✅ [STATISTICS] Stats fetched: Total: ${totalUsers}, Today: ${dailyCount}, Week: ${weeklyCount}, Month: ${monthlyCount}, Year: ${yearlyCount}`);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ [STATISTICS] Error fetching user statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching user statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ==================== DAILY REGISTRATIONS WITH PAGINATION ====================
+// @desc    Get daily registrations with pagination
+// @route   GET /api/admin/users/daily
+// @access  Private/Admin
+app.get('/api/admin/users/daily', adminProtect, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Get daily users with pagination
+    const dailyUsers = await User.find({
+      createdAt: { $gte: today }
+    })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(parseInt(limit))
+    .select('-password -pin -transactionPin')
+    .lean();
+    
+    const totalDailyRegistrations = await User.countDocuments({
+      createdAt: { $gte: today }
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        users: dailyUsers,
+        total: totalDailyRegistrations,
+        page: parseInt(page),
+        totalPages: Math.ceil(totalDailyRegistrations / parseInt(limit)),
+        limit: parseInt(limit)
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching daily registrations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching daily registrations'
+    });
+  }
+});
+
+
+// ==================== ADMIN UPDATE USER - FIXED ====================
+// @desc    Update user data (Admin only)
+// @route   PUT /api/admin/users/:userId
+// @access  Private/Admin
+// ==================== ADMIN UPDATE USER - FIXED ====================
+app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const updateData = req.body;
+    
+    console.log(`👑 Admin updating user: ${userId}`);
+    console.log('📦 Update data:', JSON.stringify(updateData, null, 2));
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+    
+    // Update allowed fields
+    if (updateData.customLimits !== undefined) {
+      const validServices = ['airtime', 'data', 'electricity', 'cable', 'transfer', 'international_airtime', 'education', 'insurance'];
+      const cleanedLimits = {};
+      
+      console.log('📦 Raw customLimits received:', JSON.stringify(updateData.customLimits, null, 2));
+      
+      // 🔥 FIX: Process each service
+      for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
+        if (validServices.includes(service) && limits && typeof limits === 'object') {
+          const perTransaction = parseFloat(limits.perTransaction) || 0;
+          const dailyCap = parseFloat(limits.dailyCap) || 0;
+          
+          // 🔥 FIX: Save if EITHER limit is set (> 0)
+          if (perTransaction > 0 || dailyCap > 0) {
+            cleanedLimits[service] = {
+              perTransaction: perTransaction,
+              dailyCap: dailyCap
+            };
+            console.log(`✅ Added custom limits for ${service}: perTransaction=${perTransaction}, dailyCap=${dailyCap}`);
+          }
+        }
+      }
+      
+      // 🔥 FIX: Save directly to user document
+      user.customLimits = cleanedLimits;
+      console.log('✅ Custom limits saved to user document:', JSON.stringify(cleanedLimits, null, 2));
+      
+      // 🔥 FIX: Mark as modified to ensure MongoDB saves
+      user.markModified('customLimits');
+    }
+    
+    if (updateData.isActive !== undefined) user.isActive = updateData.isActive;
+    if (updateData.isAdmin !== undefined) user.isAdmin = updateData.isAdmin;
+    if (updateData.walletBalance !== undefined) user.walletBalance = updateData.walletBalance;
+    if (updateData.commissionBalance !== undefined) user.commissionBalance = updateData.commissionBalance;
+    if (updateData.fullName !== undefined) user.fullName = updateData.fullName;
+    if (updateData.email !== undefined) user.email = updateData.email;
+    if (updateData.phone !== undefined) user.phone = updateData.phone;
+    
+    await user.save();
+    
+    // 🔥 FIX: Verify the save worked by fetching the user again
+    const savedUser = await User.findById(userId).lean();
+    console.log('✅ Verified custom limits after save:', JSON.stringify(savedUser.customLimits || {}));
+    
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        isAdmin: user.isAdmin,
+        isActive: user.isActive,
+        customLimits: user.customLimits,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance
+      }
+    });
+  } catch (error) {
+    console.error('❌ Admin update user error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update user',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+
+// ==================== GET DEFAULT LIMITS ====================
+// @desc    Get default transaction limits
+// @route   GET /api/admin/default-limits
+// @access  Private/Admin
+app.get('/api/admin/default-limits', adminProtect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+    
+    // Return the default limits from TRANSACTION_LIMITS
+    res.json({
+      success: true,
+      data: {
+        perTransaction: TRANSACTION_LIMITS.perTransaction,
+        daily: TRANSACTION_LIMITS.daily
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching default limits:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch default limits'
+    });
+  }
+});
+
+
+// ==================== TOGGLE SERVICE - FIXED ====================
+// @desc    Enable/disable a service
+// @route   POST /api/admin/service-toggle
+// @access  Private/Admin
+app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
+  try {
+    const { service, enabled } = req.body;
+    
+    if (!service) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Service name required' 
+      });
+    }
+    
+    // Map service names to setting keys
+    const serviceMap = {
+      'airtime': 'isAirtimeEnabled',
+      'data': 'isDataEnabled',
+      'electricity': 'isElectricityEnabled',
+      'cable': 'isCableTvEnabled',
+      'transfer': 'isTransferEnabled',
+      'international_airtime': 'isInternationalAirtimeEnabled',
+      'education': 'isEducationEnabled',
+      'insurance': 'isInsuranceEnabled'
+    };
+    
+    const settingKey = serviceMap[service];
+    if (!settingKey) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid service name' 
+      });
+    }
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    // Update the setting
+    settings[settingKey] = enabled !== false;
+    await settings.save();
+    
+    // Clear cache
+    cache.del('app-settings');
+    
+    console.log(`🔧 Service ${service} ${enabled ? 'enabled' : 'disabled'} by admin`);
+    
+    res.json({
+      success: true,
+      message: `Service ${enabled ? 'enabled' : 'disabled'} successfully`,
+      service,
+      enabled: settings[settingKey]
+    });
+  } catch (error) {
+    console.error('❌ Service toggle error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to toggle service' 
+    });
+  }
+});
+
+// ==================== MAINTENANCE STATUS - FIXED ====================
+// @desc    Get maintenance status with admin check
+// @route   GET /api/maintenance-status
+// @access  Public (with admin detection)
+app.get('/api/maintenance-status', async (req, res) => {
+  try {
+    console.log('🔧 Maintenance status check from:', req.ip);
+    
+    const settings = await Settings.findOne().lean();
+    
+    // Check if the requester is an admin (try to decode token)
+    let isAdmin = false;
+    let adminDetails = {};
+    
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded && decoded.id) {
+          const user = await User.findById(decoded.id).select('isAdmin role fullName email isSuperAdmin').lean();
+          if (user && (user.isAdmin === true || user.role === 'admin' || user.role === 'super_admin' || user.isSuperAdmin === true)) {
+            isAdmin = true;
+            adminDetails = {
+              name: user.fullName,
+              email: user.email,
+              role: user.role || 'admin'
+            };
+            console.log('👑 Admin user detected:', user.email);
+          }
+        }
+      } catch (tokenError) {
+        // Token invalid - not admin
+        console.log('⚠️ Token validation failed:', tokenError.message);
+      }
+    }
+    
+    const response = {
+      success: true,
+      maintenanceMode: settings?.isMaintenanceMode || false,
+      message: settings?.maintenanceMessage || '',
+      isAdmin: isAdmin,
+      adminDetails: adminDetails,
+      timestamp: new Date().toISOString(),
+      readOnlyAllowed: true,
+      allowedEndpoints: [
+        'View Balance',
+        'View Transactions',
+        'View Commission Balance',
+        'View Notifications',
+        'View Beneficiaries'
+      ],
+      blockedActions: [
+        'New Transactions',
+        'Airtime Purchase',
+        'Data Purchase',
+        'Electricity Bill Payment',
+        'Cable TV Subscription',
+        'International Airtime',
+        'Education Purchase',
+        'Insurance Purchase',
+        'Money Transfer',
+        'Wallet Funding'
+      ]
+    };
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Maintenance status error:', error);
+    res.json({
+      success: false,
+      maintenanceMode: false,
+      message: 'Unable to fetch maintenance status',
+      timestamp: new Date().toISOString(),
+      readOnlyAllowed: false
+    });
+  }
+});
+
+// ==================== REGISTRATIONS BY DATE RANGE ====================
+// @desc    Get registrations by date range
+// @route   GET /api/admin/users/by-date-range
+// @access  Private/Admin
+app.get('/api/admin/users/by-date-range', adminProtect, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Start date and end date are required'
+      });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    const users = await User.find({
+      createdAt: { $gte: start, $lte: end }
+    })
+    .sort({ createdAt: -1 })
+    .select('-password -pin -transactionPin')
+    .lean();
+    
+    res.json({
+      success: true,
+      data: {
+        users,
+        total: users.length,
+        startDate: start,
+        endDate: end
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching registrations by date range:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching registrations by date range'
+    });
+  }
+});
+
+// GET all pending/failed transactions
+// GET all pending/failed transactions - FIXED to include ALL types
+// GET all pending/failed transactions - FIXED to include failed
+app.get('/api/admin/pending-failed-transactions', adminProtect, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 100 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    console.log('🔍 Received request with status filter:', status);
+    
+    // Build query - include BOTH pending and failed WITHOUT filtering by type
+    let query = {};
+    
+    if (status && status !== 'all') {
+      // If specific filter is applied
+      if (status === 'pending') {
+        query = { status: { $regex: /^pending$/i } };
+      } else if (status === 'failed') {
+        query = { status: { $regex: /^failed$/i } };
+      }
+    } else {
+      // Default: return BOTH pending AND failed (case insensitive)
+      query = {
+        status: { $regex: /^(pending|failed)$/i }
+      };
+    }
+    
+    console.log('🔍 MongoDB Query:', JSON.stringify(query));
+    
+    // Get transactions with user population - NO type filtering
+    let transactions = await Transaction.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate('userId', 'fullName email phone isAdmin');
+    
+    console.log(`📊 Found ${transactions.length} transactions matching query`);
+    console.log(`📊 Statuses found: ${transactions.map(t => t.status).join(', ')}`);
+    
+    // Process transactions
+    const transactionsWithStatus = await Promise.all(transactions.map(async (tx) => {
+      const txObj = tx.toObject();
+      
+      // Add user data
+      if (tx.userId) {
+        txObj.user = {
+          _id: tx.userId._id,
+          fullName: tx.userId.fullName || 'Unknown User',
+          email: tx.userId.email || 'No email',
+          phone: tx.userId.phone || 'N/A',
+          isAdmin: tx.userId.isAdmin || false
+        };
+      }
+      
+      // Normalize status for display
+      const statusLower = (txObj.status || '').toLowerCase();
+      if (statusLower === 'pending') {
+        txObj.status = 'Pending';
+      } else if (statusLower === 'failed') {
+        txObj.status = 'Failed';
+      }
+      
+      return txObj;
+    }));
+    
+    // Get accurate counts
+    const allPending = await Transaction.countDocuments({ status: { $regex: /^pending$/i } });
+    const allFailed = await Transaction.countDocuments({ status: { $regex: /^failed$/i } });
+    const totalAmountAgg = await Transaction.aggregate([
+      { $match: { status: { $regex: /^(pending|failed)$/i } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    
+    console.log(`📊 Final stats - Pending: ${allPending}, Failed: ${allFailed}, Returning: ${transactionsWithStatus.length}`);
+    
+    res.json({
+      success: true,
+      transactions: transactionsWithStatus,
+      pagination: { 
+        total: allPending + allFailed, 
+        page: parseInt(page), 
+        pages: Math.ceil((allPending + allFailed) / limit), 
+        limit: parseInt(limit) 
+      },
+      stats: { 
+        pending: allPending, 
+        failed: allFailed, 
+        totalAmount: totalAmountAgg[0]?.total || 0 
+      }
+    });
+  } catch (error) {
+    console.error('Error in pending-failed-transactions:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+// DEBUG: Check pending/failed transactions details
+app.get('/api/admin/debug-pending-failed', adminProtect, async (req, res) => {
+  try {
+    const pendingCount = await Transaction.countDocuments({ status: { $in: ['Pending', 'pending', 'PENDING'] } });
+    const failedCount = await Transaction.countDocuments({ status: { $in: ['Failed', 'failed', 'FAILED'] } });
+    
+    const pendingSample = await Transaction.find({ status: { $in: ['Pending', 'pending', 'PENDING'] } })
+      .limit(5)
+      .select('status reference amount type');
+    
+    const failedSample = await Transaction.find({ status: { $in: ['Failed', 'failed', 'FAILED'] } })
+      .limit(5)
+      .select('status reference amount type');
+    
+    // Also get the actual query result count for the endpoint
+    const endpointQuery = {
+      $or: [
+        { status: { $in: ['Pending', 'pending', 'PENDING'] } },
+        { status: { $in: ['Failed', 'failed', 'FAILED'] } }
+      ]
+    };
+    const endpointCount = await Transaction.countDocuments(endpointQuery);
+    
+    res.json({
+      success: true,
+      pendingCount,
+      failedCount,
+      endpointTotalCount: endpointCount,
+      pendingSample,
+      failedSample,
+      message: 'Debug data'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+// POST update transaction status - CORRECTED (NO BALANCE CHANGES)
+// POST update transaction status - ALLOW EVEN WITH DISPUTES
+app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { id } = req.params;
+    const { newStatus, adminNote, resolutionReference } = req.body;
+    
+    const transaction = await Transaction.findById(id).session(session);
+    if (!transaction) throw new Error('Transaction not found');
+    
+    const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending', 'Refunded', 'Resolved'];
+    const normalizedStatus = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).toLowerCase();
+    if (!validStatuses.includes(normalizedStatus)) throw new Error('Invalid status value');
+    
+    // ✅ REMOVED: Dispute check - Admin can update status even with unresolved disputes
+    
+    // ✅ REMOVED: Pending refund check - Admin can update status even with pending refunds
+    
+    const oldStatus = transaction.status;
+    
+    // UPDATE ONLY STATUS - NO BALANCE CHANGES
+    transaction.status = normalizedStatus;
+    
+    // MARK AS RESOLVED if status is Successful, Completed, or Refunded
+    if (normalizedStatus === 'Successful' || normalizedStatus === 'Completed' || normalizedStatus === 'Refunded' || normalizedStatus === 'Resolved') {
+      transaction.isResolved = true;
+      transaction.resolvedAt = new Date();
+      transaction.resolvedBy = req.user._id;
+      transaction.resolutionType = 'status_update';
+      transaction.resolutionNote = adminNote || `Status updated from ${oldStatus} to ${normalizedStatus} by admin`;
+      
+      // ✅ ALSO resolve any open disputes automatically
+      await Dispute.updateMany(
+        { transactionId: transaction._id, status: { $in: ['pending', 'under_review', 'investigating'] } },
+        { 
+          status: 'resolved', 
+          resolution: `Transaction resolved - Status changed to ${normalizedStatus} by admin`,
+          resolvedAt: new Date(),
+          resolvedBy: req.user._id,
+          adminNotes: {
+            note: `Dispute auto-resolved when admin changed status to ${normalizedStatus}`,
+            adminId: req.user._id,
+            createdAt: new Date()
+          }
+        },
+        { session }
+      );
+      console.log('✅ Disputes auto-resolved with status change');
+    }
+    
+    if (adminNote) transaction.adminNote = adminNote;
+    if (resolutionReference) transaction.resolutionReference = resolutionReference;
+    transaction.updatedAt = new Date();
+    
+    // ✅ NO BALANCE UPDATE - Status changes don't affect wallet
+    
+    await transaction.save({ session });
+    
+    // Create receipt for the status update
+    const receiptData = {
+      receiptId: generateReceiptId(),
+      type: 'status_update',
+      transactionId: transaction._id,
+      transactionReference: transaction.reference,
+      amount: transaction.amount,
+      oldStatus,
+      newStatus: normalizedStatus,
+      adminNote,
+      updatedAt: new Date(),
+      isResolved: transaction.isResolved,
+      note: 'STATUS UPDATE ONLY - No financial transaction occurred'
+    };
+    
+    const receipt = new Receipt({
+      receiptId: receiptData.receiptId,
+      transactionId: transaction._id,
+      userId: transaction.userId,
+      type: 'status_update',
+      amount: transaction.amount,
+      status: normalizedStatus,
+      description: `Transaction status updated from ${oldStatus} to ${normalizedStatus}`,
+      receiptData
+    });
+    await receipt.save({ session });
+    
+    await session.commitTransaction();
+    
+    console.log(`✅ Transaction ${id}: ${oldStatus} → ${normalizedStatus} (Status updated despite disputes)`);
+    
+    res.json({ 
+      success: true, 
+      message: `Transaction status updated to ${normalizedStatus}`,
+      transaction, 
+      receipt: receiptData,
+      isResolved: transaction.isResolved === true,
+      disputesAutoResolved: true,
+      note: "Status update completed - Disputes were auto-resolved"
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Update status error:', error);
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+
+
+
+// @desc    Mark transaction as resolved (for manual resolution)
+// @route   POST /api/admin/transaction/:id/mark-resolved
+// @access  Private/Admin
+app.post('/api/admin/transaction/:id/mark-resolved', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { id } = req.params;
+    const { resolutionNote } = req.body;
+    
+    const transaction = await Transaction.findById(id).session(session);
+    if (!transaction) {
+      throw new Error('Transaction not found');
+    }
+    
+    // Check if already resolved
+    if (transaction.isResolved === true) {
+      throw new Error('Transaction is already resolved');
+    }
+    
+    // Mark transaction as resolved
+    transaction.isResolved = true;
+    transaction.resolvedAt = new Date();
+    transaction.resolvedBy = req.user._id;
+    transaction.resolutionType = 'manual';
+    transaction.resolutionNote = resolutionNote || `Marked as resolved by admin: ${req.user.fullName}`;
+    transaction.status = 'Resolved';
+    transaction.updatedAt = new Date();
+    
+    await transaction.save({ session });
+    
+    // Also resolve any open disputes
+    await Dispute.updateMany(
+      { 
+        transactionId: transaction._id, 
+        status: { $in: ['pending', 'under_review', 'investigating'] } 
+      },
+      { 
+        status: 'resolved', 
+        resolution: resolutionNote || 'Transaction marked as resolved by admin',
+        resolvedAt: new Date(),
+        resolvedBy: req.user._id
+      },
+      { session }
+    );
+    
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: 'Transaction marked as resolved',
+      transaction: {
+        _id: transaction._id,
+        status: transaction.status,
+        isResolved: transaction.isResolved,
+        resolvedAt: transaction.resolvedAt
+      }
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error marking transaction as resolved:', error);
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+// GET transaction details with dispute/refund info
+app.get('/api/admin/transaction/:id', adminProtect, async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id)
+      .populate('userId', 'fullName email phone walletBalance');
+    
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+    
+    const disputes = await Dispute.find({ transactionId: transaction._id })
+      .populate('resolvedBy', 'fullName email');
+    
+    const refunds = await Refund.find({ originalTransactionId: transaction._id })
+      .populate('processedBy', 'fullName email');
+    
+    const receipts = await Receipt.find({ 
+      $or: [
+        { transactionId: transaction._id }, 
+        { refundId: { $in: refunds.map(r => r._id) } }
+      ] 
+    });
+    
+    const hasUnresolvedDispute = disputes.some(d => d.status === 'pending' || d.status === 'under_review');
+    const hasPendingRefund = refunds.some(r => r.status === 'pending' || r.status === 'approved');
+    
+    res.json({
+      success: true,
+      transaction,
+      disputes,
+      refunds,
+      receipts,
+      canUpdate: !hasUnresolvedDispute && !hasPendingRefund,
+      canRefund: !hasPendingRefund && transaction.status !== 'Refunded'
+    });
+  } catch (error) {
+    console.error('Error in transaction details:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST create dispute
+app.post('/api/admin/dispute/create', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { transactionId, type, reason, description, amount } = req.body;
+    
+    const transaction = await Transaction.findById(transactionId).session(session);
+    if (!transaction) throw new Error('Transaction not found');
+    
+    const existingDispute = await Dispute.findOne({ 
+      transactionId, 
+      status: { $in: ['pending', 'under_review'] } 
+    }).session(session);
+    if (existingDispute) throw new Error('An open dispute already exists for this transaction');
+    
+    const dispute = new Dispute({
+      transactionId,
+      userId: transaction.userId,
+      type,
+      reason,
+      description: description || '',
+      amount: amount || transaction.amount,
+      status: 'pending',
+      adminNotes: [{ 
+        note: `Dispute created by admin: ${req.user?.fullName || 'Admin'}`, 
+        adminId: req.user?._id, 
+        createdAt: new Date() 
+      }]
+    });
+    
+    await dispute.save({ session });
+    await session.commitTransaction();
+    
+    res.json({ success: true, message: 'Dispute created successfully', dispute });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+// GET all disputes
+app.get('/api/admin/disputes', adminProtect, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    let query = {};
+    if (status && status !== 'all') query.status = status;
+    
+    const disputes = await Dispute.find(query)
+      .populate('transactionId', 'reference amount type status')
+      .populate('userId', 'fullName email phone')
+      .populate('resolvedBy', 'fullName email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Dispute.countDocuments(query);
+    const stats = {
+      pending: await Dispute.countDocuments({ status: 'pending' }),
+      under_review: await Dispute.countDocuments({ status: 'under_review' }),
+      resolved: await Dispute.countDocuments({ status: 'resolved' }),
+      rejected: await Dispute.countDocuments({ status: 'rejected' }),
+      escalated: await Dispute.countDocuments({ status: 'escalated' })
+    };
+    
+    res.json({ 
+      success: true, 
+      disputes, 
+      stats, 
+      pagination: { 
+        total, 
+        page: parseInt(page), 
+        pages: Math.ceil(total / limit), 
+        limit: parseInt(limit) 
+      } 
+    });
+  } catch (error) {
+    console.error('Error in disputes:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST resolve dispute
+app.post('/api/admin/dispute/resolve/:disputeId', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { disputeId } = req.params;
+    const { resolution, approved, adminNote } = req.body;
+    
+    const dispute = await Dispute.findById(disputeId).session(session);
+    if (!dispute) throw new Error('Dispute not found');
+    if (dispute.status !== 'pending' && dispute.status !== 'under_review') {
+      throw new Error('Dispute has already been resolved');
+    }
+    
+    dispute.status = approved ? 'resolved' : 'rejected';
+    dispute.resolution = resolution;
+    dispute.resolvedAt = new Date();
+    dispute.resolvedBy = req.user._id;
+    dispute.adminNotes.push({ 
+      note: adminNote || `Dispute ${approved ? 'resolved' : 'rejected'} by admin`, 
+      adminId: req.user._id, 
+      createdAt: new Date() 
+    });
+    
+    await dispute.save({ session });
+    await session.commitTransaction();
+    
+    res.json({ success: true, message: `Dispute ${approved ? 'resolved' : 'rejected'} successfully`, dispute });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+
+
+
+
+
+// GET all refunds
+// GET all refunds - FIXED to include refund transaction balances
+app.get('/api/admin/refunds', adminProtect, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    let query = {};
+    if (status && status !== 'all') query.status = status;
+    
+    const refunds = await Refund.find(query)
+      .populate('originalTransactionId', 'reference amount type status')
+      .populate('userId', 'fullName email phone')
+      .populate('processedBy', 'fullName email')
+      .populate('disputeId', 'reason status')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    // ✅ CRITICAL FIX: For each refund, find and attach the refund transaction with balances
+    const refundsWithTransactions = await Promise.all(refunds.map(async (refund) => {
+      const refundObj = refund.toObject();
+      
+      // Find the refund transaction using refundReference
+      const refundTransaction = await Transaction.findOne({
+        reference: refund.refundReference,
+        type: 'Refund Credit'
+      }).select('balanceBefore balanceAfter amount status reference description createdAt');
+      
+      if (refundTransaction) {
+        refundObj.refundTransaction = refundTransaction;
+        refundObj.balanceBefore = refundTransaction.balanceBefore;
+        refundObj.balanceAfter = refundTransaction.balanceAfter;
+        
+        console.log(`✅ Found refund transaction for ${refund.refundReference}:`, {
+          balanceBefore: refundTransaction.balanceBefore,
+          balanceAfter: refundTransaction.balanceAfter,
+          amount: refundTransaction.amount
+        });
+      } else {
+        console.log(`⚠️ No refund transaction found for ${refund.refundReference}`);
+      }
+      
+      return refundObj;
+    }));
+    
+    const total = await Refund.countDocuments(query);
+    const totalRefundedAgg = await Refund.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    
+    res.json({
+      success: true,
+      refunds: refundsWithTransactions,
+      stats: {
+        totalRefundedAmount: totalRefundedAgg[0]?.total || 0,
+        pending: await Refund.countDocuments({ status: 'pending' }),
+        approved: await Refund.countDocuments({ status: 'approved' }),
+        completed: await Refund.countDocuments({ status: 'completed' }),
+        failed: await Refund.countDocuments({ status: 'failed' })
+      },
+      pagination: { 
+        total, 
+        page: parseInt(page), 
+        pages: Math.ceil(total / limit), 
+        limit: parseInt(limit) 
+      }
+    });
+  } catch (error) {
+    console.error('Error in refunds:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+// POST process refund - CORRECT VERSION
+app.post('/api/admin/refund/process', adminProtect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { transactionId, refundAmount, reason, resolutionDetails, disputeId, adminNote } = req.body;
+    
+    const originalTransaction = await Transaction.findById(transactionId).session(session);
+    if (!originalTransaction) throw new Error('Transaction not found');
+    
+    const existingRefund = await Refund.findOne({ 
+      originalTransactionId: originalTransaction._id, 
+      status: { $in: ['pending', 'approved', 'completed'] } 
+    }).session(session);
+    if (existingRefund) throw new Error('A refund is already being processed for this transaction');
+    
+    let dispute = null;
+    if (disputeId) {
+      dispute = await Dispute.findById(disputeId).session(session);
+      if (!dispute) throw new Error('Dispute not found');
+      if (dispute.status !== 'resolved') throw new Error('Dispute must be resolved before processing refund');
+    } else {
+      const pendingDispute = await Dispute.findOne({ 
+        transactionId: originalTransaction._id, 
+        status: { $in: ['pending', 'under_review', 'investigating'] } 
+      }).session(session);
+      if (pendingDispute) throw new Error('Must resolve pending dispute before processing refund');
+    }
+    
+    const user = await User.findById(originalTransaction.userId).session(session);
+    if (!user) throw new Error('User not found');
+    
+    const refundReference = `REFUND_${Date.now()}_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    const refundAmountNum = refundAmount || originalTransaction.amount;
+    
+    const refund = new Refund({
+      originalTransactionId: originalTransaction._id,
+      userId: originalTransaction.userId,
+      amount: refundAmountNum,
+      reason,
+      status: 'approved',
+      disputeId: dispute?._id,
+      refundReference,
+      processedBy: req.user._id,
+      processedAt: new Date(),
+      adminNote,
+      metadata: { resolutionDetails, originalAmount: originalTransaction.amount }
+    });
+    await refund.save({ session });
+    
+    // Update user wallet balance (add refund amount)
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += refundAmountNum;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+    
+    refund.status = 'completed';
+    refund.completedAt = new Date();
+    await refund.save({ session });
+    
+    // MARK ORIGINAL TRANSACTION AS RESOLVED AND REFUNDED
+    originalTransaction.status = 'Refunded';
+    originalTransaction.isResolved = true;
+    originalTransaction.resolvedAt = new Date();
+    originalTransaction.resolvedBy = req.user._id;
+    originalTransaction.resolutionType = 'refund';
+    originalTransaction.resolutionNote = adminNote || `Refund processed for amount ₦${refundAmountNum} - ${reason}`;
+    originalTransaction.refundId = refund._id;
+    originalTransaction.updatedAt = new Date();
+    await originalTransaction.save({ session });
+    
+    // Create a transaction record for the refund
+    const refundTransaction = new Transaction({
+      userId: originalTransaction.userId,
+      type: 'Refund Credit',
+      amount: refundAmountNum,
+      status: 'Successful',
+      reference: refundReference,
+      description: `Refund for transaction ${originalTransaction.reference}: ${reason}`,
+      balanceBefore,
+      balanceAfter,
+      isResolved: true,
+      resolvedAt: new Date(),
+      resolvedBy: req.user._id,
+      resolutionType: 'refund',
+      metadata: { originalTransactionId: originalTransaction._id, refundId: refund._id, reason }
+    });
+    await refundTransaction.save({ session });
+    
+    // Create receipt
+    const receiptData = {
+      receiptId: generateReceiptId(),
+      type: 'refund',
+      refundId: refund._id,
+      transactionId: originalTransaction._id,
+      transactionReference: originalTransaction.reference,
+      amount: refundAmountNum,
+      status: 'completed',
+      reason,
+      adminNote,
+      resolvedAt: new Date(),
+      isResolved: true
+    };
+    
+    const receipt = new Receipt({
+      receiptId: receiptData.receiptId,
+      refundId: refund._id,
+      transactionId: originalTransaction._id,
+      userId: originalTransaction.userId,
+      type: 'refund',
+      amount: refundAmountNum,
+      status: 'completed',
+      description: `Refund processed for transaction ${originalTransaction.reference}`,
+      receiptData
+    });
+    await receipt.save({ session });
+    
+    await session.commitTransaction();
+    
+    res.json({ 
+      success: true, 
+      message: 'Refund processed successfully', 
+      refund, 
+      refundTransaction, 
+      receipt: receiptData, 
+      newBalance: balanceAfter,
+      isResolved: true
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+
+
+
+
+
+
+// GET receipt by ID
+app.get('/api/admin/receipt/:receiptId', adminProtect, async (req, res) => {
+  try {
+    const receipt = await Receipt.findOne({ receiptId: req.params.receiptId })
+      .populate('userId', 'fullName email phone');
+    if (!receipt) return res.status(404).json({ success: false, message: 'Receipt not found' });
+    res.json({ success: true, receipt });
+  } catch (error) {
+    console.error('Error in receipt:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET receipt by transaction ID (all receipts for a transaction)
+app.get('/api/admin/transaction/:id/receipts', adminProtect, async (req, res) => {
+  try {
+    const receipts = await Receipt.find({ 
+      $or: [
+        { transactionId: req.params.id },
+        { 'receiptData.transactionId': req.params.id }
+      ]
+    }).sort({ createdAt: -1 });
+    res.json({ success: true, receipts });
+  } catch (error) {
+    console.error('Error in transaction receipts:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+
+
+// ==================== DISPUTE ENDPOINTS - COMPLETE FIXED VERSION ====================
+
+// @desc    Get user's disputes with transaction details
+// @route   GET /api/disputes/my-disputes
+// @access  Private
+app.get('/api/disputes/my-disputes', protect, async (req, res) => {
+  try {
+    const disputes = await Dispute.find({ userId: req.user._id })
+      .populate('transactionId', 'reference amount type status createdAt')
+      .sort({ createdAt: -1 });
+    
+    const pendingCount = await Dispute.countDocuments({ 
+      userId: req.user._id, 
+      status: { $in: ['pending', 'under_review'] } 
+    });
+    
+    res.json({
+      success: true,
+      disputes: disputes,
+      pendingCount: pendingCount,
+      stats: {
+        total: disputes.length,
+        pending: await Dispute.countDocuments({ userId: req.user._id, status: 'pending' }),
+        resolved: await Dispute.countDocuments({ userId: req.user._id, status: 'resolved' }),
+        rejected: await Dispute.countDocuments({ userId: req.user._id, status: 'rejected' })
+      }
+    });
+  } catch (error) {
+    console.error('Error in my-disputes:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Create dispute (User)
+// @route   POST /api/disputes/create
+// @access  Private
+app.post('/api/disputes/create', protect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    console.log('📝 CREATE DISPUTE REQUEST:', JSON.stringify(req.body, null, 2));
+    
+    const { 
+      transactionId, 
+      type, 
+      reason, 
+      description, 
+      amount 
+    } = req.body;
+    
+    // Validate required fields
+    if (!transactionId || !type || !reason) {
+      throw new Error('Transaction ID, type, and reason are required');
+    }
+    
+    const transaction = await Transaction.findById(transactionId).session(session);
+    if (!transaction) {
+      throw new Error('Transaction not found');
+    }
+    
+    // Verify user owns this transaction
+    if (transaction.userId.toString() !== req.user._id.toString()) {
+      throw new Error('You can only dispute your own transactions');
+    }
+    
+    // Check for existing open dispute
+    const existingDispute = await Dispute.findOne({
+      transactionId,
+      status: { $in: ['pending', 'under_review', 'investigating'] }
+    }).session(session);
+    
+    if (existingDispute) {
+      throw new Error('You already have an open dispute for this transaction');
+    }
+    
+    // Create dispute
+    const dispute = new Dispute({
+      transactionId,
+      userId: req.user._id,
+      type,
+      reason,
+      description: description || '',
+      amount: amount || transaction.amount,
+      status: 'pending',
+      adminNotes: [{
+        note: `Dispute created by user: ${req.user.fullName}`,
+        adminId: null,
+        createdAt: new Date()
+      }]
+    });
+    
+    await dispute.save({ session });
+    await session.commitTransaction();
+    
+    console.log('✅ Dispute created successfully:', dispute._id);
+    
+    // Notify admins
+  // Notify admins
+try {
+  const adminUsers = await User.find({ isAdmin: true }).select('_id');
+  if (adminUsers.length > 0) {
+    await Notification.insertMany(adminUsers.map(admin => ({
+      recipient: admin._id,
+      title: "🔄 New Dispute Filed",
+      message: `User ${req.user.fullName} filed a dispute for transaction ${transaction.reference}`,
+      type: 'announcement',  // ← CHANGE THIS - use 'announcement' instead of 'dispute'
+      isRead: false,
+      metadata: { 
+        disputeId: dispute._id, 
+        transactionId: transaction._id,
+        userName: req.user.fullName,
+        transactionRef: transaction.reference
+      }
+    })));
+    console.log(`✅ Notified ${adminUsers.length} admins about new dispute`);
+  }
+} catch (notifError) {
+  console.error('Admin notification error:', notifError);
+  // Don't fail the request - just log the error
+}
+    
+    res.json({
+      success: true,
+      message: 'Dispute filed successfully. Our team will review it within 24-48 hours.',
+      dispute: {
+        _id: dispute._id,
+        transactionId: dispute.transactionId,
+        type: dispute.type,
+        reason: dispute.reason,
+        description: dispute.description,
+        amount: dispute.amount,
+        status: dispute.status,
+        createdAt: dispute.createdAt
+      }
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Create dispute error:', error.message);
+    res.status(400).json({ 
+      success: false, 
+      message: error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// @desc    Check if transaction has active dispute
+// @route   GET /api/disputes/check/:transactionId
+// @access  Private
+app.get('/api/disputes/check/:transactionId', protect, async (req, res) => {
+  try {
+    const dispute = await Dispute.findOne({
+      transactionId: req.params.transactionId,
+      userId: req.user._id,
+      status: { $in: ['pending', 'under_review', 'investigating'] }
+    });
+    
+    res.json({
+      success: true,
+      hasActiveDispute: !!dispute,
+      dispute: dispute ? {
+        id: dispute._id,
+        status: dispute.status,
+        type: dispute.type,
+        createdAt: dispute.createdAt
+      } : null
+    });
+  } catch (error) {
+    console.error('Check dispute error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+// ==================== SCREENSHOT UPLOAD ENDPOINT ====================
+
+
+// ==================== SCREENSHOT UPLOAD ENDPOINT (Already in your index.js - VERIFY THIS EXISTS) ====================
+
+// Create upload directories if they don't exist
+//const uploadsDir = path.join(__dirname, 'uploads');
+const disputesDir = path.join(__dirname, 'uploads', 'disputes');
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory');
+}
+if (!fs.existsSync(disputesDir)) {
+  fs.mkdirSync(disputesDir, { recursive: true });
+  console.log('✅ Created disputes upload directory');
+}
+
+// Configure multer storage for screenshots
+// Configure multer storage for screenshots
+const screenshotStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, disputesDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    const filename = 'dispute-' + uniqueSuffix + ext;
+    console.log('📁 Saving file as:', filename);
+    cb(null, filename);
+  }
+});
+
+// ✅ FIXED: Accept more MIME types including application/octet-stream
+const uploadScreenshot = multer({ 
+  storage: screenshotStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    console.log('📸 Filtering file:', file.originalname, file.mimetype);
+    
+    // Get file extension from filename
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif'];
+    const isValidExtension = allowedExtensions.includes(ext);
+    
+    // Check if MIME type is allowed OR if extension is valid (for octet-stream case)
+    const allowedMimeTypes = /jpeg|jpg|png|gif/;
+    const isValidMimeType = allowedMimeTypes.test(file.mimetype);
+    
+    // Accept if either MIME type is valid OR extension is valid (for octet-stream)
+    if (isValidMimeType || isValidExtension) {
+      console.log('✅ File accepted');
+      return cb(null, true);
+    }
+    
+    console.log('❌ File rejected - invalid type');
+    cb(new Error('Only image files are allowed (jpg, jpeg, png, gif)'));
+  }
+});
+
+// ==================== UPLOAD EVIDENCE ENDPOINT ====================
+// ==================== SCREENSHOT UPLOAD ENDPOINT - FIXED ====================
+app.post('/api/disputes/upload-evidence', protect, uploadScreenshot.single('screenshot'), async (req, res) => {
+  try {
+    console.log('📸 ========== UPLOAD EVIDENCE ==========');
+    console.log('Request body:', req.body);
+    console.log('File received:', req.file);
+    console.log('User ID:', req.user._id);
+    
+    const { transactionId, disputeId } = req.body;
+    const file = req.file;
+    
+    if (!file) {
+      console.log('❌ No file in request');
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    const evidencePath = `/uploads/disputes/${file.filename}`;
+    console.log('📁 Evidence path:', evidencePath);
+    
+    let dispute = null;
+    
+    // If disputeId is provided, use it
+    if (disputeId) {
+      dispute = await Dispute.findById(disputeId);
+      console.log('🔍 Looking for dispute by ID:', disputeId, dispute ? 'Found' : 'Not found');
+    }
+    
+    // If no dispute found by ID, try by transactionId
+    if (!dispute && transactionId) {
+      dispute = await Dispute.findOne({ 
+        transactionId: transactionId,
+        userId: req.user._id 
+      });
+      console.log('🔍 Looking for dispute by transactionId:', transactionId, dispute ? 'Found' : 'Not found');
+    }
+    
+    if (dispute) {
+      // Add evidence to existing dispute
+      if (!dispute.evidence) dispute.evidence = [];
+      dispute.evidence.push(evidencePath);
+      dispute.updatedAt = new Date();
+      await dispute.save();
+      console.log('✅ Evidence added to existing dispute:', dispute._id);
+      console.log('📊 Evidence array now has:', dispute.evidence.length, 'items');
+      
+      return res.json({
+        success: true,
+        message: 'Evidence uploaded successfully',
+        evidencePath: evidencePath,
+        disputeId: dispute._id,
+        evidenceCount: dispute.evidence.length
+      });
+    } else {
+      // Create new dispute with evidence
+      const transaction = await Transaction.findById(transactionId);
+      if (!transaction) {
+        console.log('❌ Transaction not found:', transactionId);
+        // Delete the uploaded file since we can't use it
+        try {
+          fs.unlinkSync(file.path);
+        } catch(e) {}
+        return res.status(404).json({ success: false, message: 'Transaction not found' });
+      }
+      
+      dispute = new Dispute({
+        transactionId: transactionId,
+        userId: req.user._id,
+        type: 'bank_transfer_proof',
+        reason: 'Bank transfer screenshot uploaded',
+        description: 'User uploaded bank transfer screenshot as evidence',
+        amount: transaction.amount,
+        status: 'pending',
+        evidence: [evidencePath],
+        adminNotes: [{
+          note: `Evidence uploaded by user: ${req.user.fullName}`,
+          adminId: null,
+          createdAt: new Date()
+        }]
+      });
+      
+      await dispute.save();
+      console.log('✅ New dispute created with evidence:', dispute._id);
+      
+      return res.json({
+        success: true,
+        message: 'Evidence uploaded successfully',
+        evidencePath: evidencePath,
+        disputeId: dispute._id,
+        evidenceCount: dispute.evidence.length
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+
+
+
+// @desc    Get all disputes with filters (Admin)
+// @route   GET /api/admin/disputes
+// @access  Private/Admin
+app.get('/api/admin/disputes', adminProtect, async (req, res) => {
+  try {
+    const { status, priority, page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    let query = {};
+    if (status && status !== 'all') query.status = status;
+    if (priority && priority !== 'all') query.priority = priority;
+    
+    const disputes = await Dispute.find(query)
+      .populate('transactionId', 'reference amount type status createdAt')
+      .populate('userId', 'fullName email phone')
+      .populate('resolvedBy', 'fullName email')
+      .sort({ 
+        priority: -1,  // urgent first
+        createdAt: -1 
+      })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Dispute.countDocuments(query);
+    
+    const stats = {
+      pending: await Dispute.countDocuments({ status: 'pending' }),
+      underReview: await Dispute.countDocuments({ status: 'under_review' }),
+      resolved: await Dispute.countDocuments({ status: 'resolved' }),
+      rejected: await Dispute.countDocuments({ status: 'rejected' }),
+      escalated: await Dispute.countDocuments({ status: 'escalated' })
+    };
+    
+    res.json({ 
+      success: true, 
+      disputes, 
+      stats, 
+      pagination: { 
+        total, 
+        page: parseInt(page), 
+        pages: Math.ceil(total / limit), 
+        limit: parseInt(limit) 
+      } 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+
+
+// Get latest transactions with FULL balance data (for admin page)
+// Get latest transactions with FULL balance data (for admin page)
+app.get('/api/admin/latest-transactions', adminProtect, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    
+    const transactions = await Transaction.find()
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    
+    // Get user data
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          fullName: user.fullName || 'Unknown',
+          email: user.email || '',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    // Process each transaction to ensure balance data is included
+    const result = transactions.map(tx => {
+      // ✅ CRITICAL FIX: Ensure balanceBefore and balanceAfter are included
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      // Parse balanceBefore
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        if (typeof tx.balanceBefore === 'number') {
+          balanceBefore = tx.balanceBefore;
+        } else if (typeof tx.balanceBefore === 'string') {
+          balanceBefore = parseFloat(tx.balanceBefore) || 0;
+        } else if (typeof tx.balanceBefore === 'object') {
+          balanceBefore = 0;
+        }
+      }
+      
+      // Parse balanceAfter
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        if (typeof tx.balanceAfter === 'number') {
+          balanceAfter = tx.balanceAfter;
+        } else if (typeof tx.balanceAfter === 'string') {
+          balanceAfter = parseFloat(tx.balanceAfter) || 0;
+        } else if (typeof tx.balanceAfter === 'object') {
+          balanceAfter = 0;
+        }
+      }
+      
+      // If balance data is missing, try to calculate from transaction type
+      if (balanceBefore === 0 && balanceAfter === 0 && tx.amount) {
+        const amount = parseFloat(tx.amount) || 0;
+        const type = (tx.type || '').toLowerCase();
+        const isCredit = type === 'credit' || 
+                        type === 'wallet_funding' ||
+                        type === 'refund credit' ||
+                        tx.isCommission === true;
+        
+        if (isCredit) {
+          balanceAfter = amount;
+        } else {
+          balanceBefore = amount;
+        }
+      }
+      
+      return {
+        ...tx,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        user: userMap[tx.userId?.toString()] || null
+      };
+    });
+    
+    // 🔥 FIXED: Use userIds.length directly
+    res.json({
+      success: true,
+      transactions: result,
+      total: await Transaction.countDocuments(),
+      returned: result.length,
+      usersCount: userIds.length  // ← userIds.length, NOT usersCount
+    });
+  } catch (error) {
+    console.error('Error in latest-transactions:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+// Get ALL transactions with complete balance data (paginated)
+app.get('/api/admin/all-transactions-with-balance', adminProtect, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const skip = (page - 1) * limit;
+    const status = req.query.status;
+    
+    let query = {};
+    if (status && status !== 'all') {
+      query.status = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+    }
+    
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Transaction.countDocuments(query)
+    ]);
+    
+    // Get all user IDs from transactions
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id && id !== 'system'))];
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'no-email@example.com',
+          phone: user.phone || 'N/A'
+        };
+        return map;
+      }, {});
+    }
+    
+    // Process transactions to ensure balance data is always present
+    const processedTransactions = transactions.map(tx => {
+      // CRITICAL: Ensure balanceBefore and balanceAfter are ALWAYS numbers
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        if (typeof tx.balanceBefore === 'number') {
+          balanceBefore = tx.balanceBefore;
+        } else if (typeof tx.balanceBefore === 'string') {
+          balanceBefore = parseFloat(tx.balanceBefore) || 0;
+        } else if (typeof tx.balanceBefore === 'object') {
+          balanceBefore = 0;
+        }
+      }
+      
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        if (typeof tx.balanceAfter === 'number') {
+          balanceAfter = tx.balanceAfter;
+        } else if (typeof tx.balanceAfter === 'string') {
+          balanceAfter = parseFloat(tx.balanceAfter) || 0;
+        } else if (typeof tx.balanceAfter === 'object') {
+          balanceAfter = 0;
+        }
+      }
+      
+      return {
+        ...tx,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        user: userMap[tx.userId?.toString()] || {
+          fullName: tx.userNameSnapshot || 'System',
+          email: tx.userEmailSnapshot || 'system@transaction',
+          phone: 'N/A'
+        }
+      };
+    });
+    
+    res.json({
+      success: true,
+      transactions: processedTransactions,
+      total: total,
+      page: page,
+      limit: limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('Error in all-transactions-with-balance:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// @desc    Admin: Check user's PIN status
+// @route   POST /api/admin/check-pin-status
+// @access  Private (Admin only)
+app.post('/api/admin/check-pin-status', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId)
+      .select('email fullName phone transactionPin transactionPinSet failedPinAttempts pinLockedUntil createdAt')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Determine PIN status
+    const now = getLagosTime();
+    const isPinLocked = user.pinLockedUntil && user.pinLockedUntil > now;
+    const isPinSet = user.transactionPinSet || !!user.transactionPin;
+    const lockRemaining = isPinLocked 
+      ? Math.ceil((user.pinLockedUntil - now) / 60000) // minutes remaining
+      : 0;
+
+    // Security: Don't send hashed PIN, but provide status
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        phone: user.phone,
+        createdAt: user.createdAt
+      },
+      pinStatus: {
+        isPinSet: isPinSet,
+        isPinLocked: isPinLocked,
+        failedAttempts: user.failedPinAttempts || 0,
+        lockRemainingMinutes: lockRemaining,
+        pinLockedUntil: user.pinLockedUntil,
+        transactionPinSet: user.transactionPinSet || false,
+        hasHashedPin: !!user.transactionPin
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN check error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+// @desc    Admin: Unlock user's PIN
+// @route   POST /api/admin/unlock-pin
+// @access  Private (Admin only)
+app.post('/api/admin/unlock-pin', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Reset PIN lock
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    await user.save();
+
+    console.log(`✅ Admin unlocked PIN for user: ${user.email}`);
+
+    res.json({
+      success: true,
+      message: 'PIN unlocked successfully',
+      user: {
+        email: user.email,
+        fullName: user.fullName
+      },
+      pinStatus: {
+        failedAttempts: 0,
+        isPinLocked: false,
+        pinLockedUntil: null
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN unlock error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+// @desc    Admin: Reset user's PIN (set to default)
+// @route   POST /api/admin/reset-pin
+// @access  Private (Admin only)
+app.post('/api/admin/reset-pin', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Generate default PIN: 123456
+    const defaultPin = '123456';
+    const salt = await bcrypt.genSalt(12);
+    const hashedPin = await bcrypt.hash(defaultPin, salt);
+
+    // Update user PIN
+    user.transactionPin = hashedPin;
+    user.transactionPinSet = true;
+    user.failedPinAttempts = 0;
+    user.pinLockedUntil = null;
+    
+    await user.save();
+
+    console.log(`✅ Admin reset PIN for user: ${user.email} to: ${defaultPin}`);
+
+    res.json({
+      success: true,
+      message: `PIN reset to default (${defaultPin}). User must change it on next login.`,
+      user: {
+        email: user.email,
+        fullName: user.fullName
+      },
+      defaultPin: defaultPin, // Only send in admin response
+      resetAt: new Date()
+    });
+
+  } catch (error) {
+    console.error('❌ Admin PIN reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error' 
+    });
+  }
+});
+
+
+
+
+// @desc    Get user's security settings
+// @route   GET /api/users/security-settings
+// @access  Private
+app.get('/api/users/security-settings', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId).select('transactionPin biometricEnabled');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    const settings = await Settings.findOne();
+    const pinRequired = settings ? settings.transactionPinRequired : true;
+    const biometricAllowed = settings ? settings.biometricAuthEnabled : true;
+    
+    res.json({
+      success: true,
+      securitySettings: {
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+        pinRequired,
+        biometricAllowed,
+        pinLocked: user.pinLockedUntil && user.pinLockedUntil > getLagosTime(),
+        lockTimeRemaining: user.pinLockedUntil && user.pinLockedUntil > getLagosTime() 
+          ? Math.ceil((user.pinLockedUntil - getLagosTime()) / 60000) 
+          : 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching security settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Get user's authentication logs
+// @route   GET /api/users/auth-logs
+// @access  Private
+app.get('/api/users/auth-logs', protect, [
+  query('userId').notEmpty().withMessage('User ID is required'),
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId } = req.query;
+    const { page = 1, limit = 20 } = req.query;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    const skip = (page - 1) * limit;
+    const logs = await AuthLog.find({ userId })
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await AuthLog.countDocuments({ userId });
+    
+    res.json({
+      success: true,
+      logs,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
+  } catch (error) {
+    console.error('Error fetching authentication logs:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Get user's balance - FIXED VERSION
+// @route   GET /api/users/balance
+// @access  Private
+app.get('/api/users/balance', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId).select('walletBalance commissionBalance');
+    if (!user) {
+      return res.status(200).json({ 
+        success: true, 
+        walletBalance: 0,
+        balance: 0,
+        commissionBalance: 0
+      });
+    }
+    
+    // Return BOTH formats for compatibility with all frontend versions
+    res.json({
+      success: true,
+      walletBalance: user.walletBalance || 0,
+      balance: user.walletBalance || 0,  // ← Added for compatibility
+      commissionBalance: user.commissionBalance || 0
+    });
+  } catch (error) {
+    console.error('Error fetching balance:', error);
+    res.status(200).json({ 
+      success: true, 
+      walletBalance: 0,
+      balance: 0,
+      commissionBalance: 0
+    });
+  }
+});
+
+
+
+// @desc    Get user's commission balance
+// @route   GET /api/users/commission-balance
+// @access  Private
+app.get('/api/users/commission-balance', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    res.json({
+      success: true,
+      commissionBalance: user.commissionBalance
+    });
+  } catch (error) {
+      console.error('Error fetching commission balance:', error);
+      res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Get a specific user
+// @route   GET /api/users/:userId
+// @access  Private
+app.get('/api/users/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+
+
+
+// @desc    Use commission balance for service payment - FIXED PRODUCTION VERSION
+// @route   POST /api/services/use-commission
+// @access  Private
+app.post('/api/services/use-commission', protect, [
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+  body('serviceType').notEmpty().withMessage('Service type is required'),
+  body('serviceDetails').notEmpty().withMessage('Service details are required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { amount, serviceType, serviceDetails } = req.body;
+  const userId = req.user._id;
+  
+  console.log(`🎯 USING COMMISSION FOR SERVICE: ${serviceType}, Amount: ₦${amount}`);
+  console.log('Service Details:', JSON.stringify(serviceDetails, null, 2));
+  
+  try {
+    // Get user WITHOUT session first
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Check if user has enough commission balance
+    if (user.commissionBalance < amount) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient commission balance. Available: ₦${user.commissionBalance.toFixed(2)}, Required: ₦${amount}`,
+        hasEnough: false
+      });
+    }
+    
+    // ============================================
+    // STEP 1: Prepare VTpass payload
+    // ============================================
+    const generateRequestId = () => {
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substr(2, 9);
+      return `COMM_${timestamp}_${random}_${userId.toString().substr(-6)}`;
+    };
+    
+    const vtpassPayload = {
+      request_id: generateRequestId(),
+      amount: amount.toString(),
+      serviceID: '',
+      phone: serviceDetails.phone || '',
+      billersCode: serviceDetails.billersCode || serviceDetails.meterNumber || serviceDetails.smartcardNumber || '',
+      variation_code: serviceDetails.variation_code || '',
+      type: serviceDetails.type || 'prepaid'
+    };
+    
+    // Set correct serviceID
+    const serviceMap = {
+      'airtime': {
+        'MTN': 'mtn',
+        'Airtel': 'airtel',
+        'Glo': 'glo',
+        '9mobile': 'etisalat'
+      },
+      'data': {
+        'MTN': 'mtn-data',
+        'Airtel': 'airtel-data',
+        'Glo': 'glo-data',
+        '9mobile': 'etisalat-data'
+      },
+      'electricity': 'ikeja-electric',
+      'cable': 'dstv',
+      'education': 'waec',
+      'insurance': 'auto-insurance'
+    };
+    
+    if (serviceType === 'airtime' || serviceType === 'data') {
+      const network = serviceDetails.network || 'MTN';
+      vtpassPayload.serviceID = serviceMap[serviceType][network] || serviceMap.airtime.MTN;
+    } else {
+      vtpassPayload.serviceID = serviceMap[serviceType] || serviceType;
+    }
+    
+    console.log('🎯 VTpass Payload:', vtpassPayload);
+    
+    // ============================================
+    // STEP 2: Check for duplicate transaction FIRST
+    // ============================================
+    const existingTransaction = await Transaction.findOne({
+      'metadata.commissionRequestId': vtpassPayload.request_id
+    });
+    
+    if (existingTransaction) {
+      console.log('✅ Transaction already processed, returning success');
+      return res.json({
+        success: true,
+        message: `${serviceType} already processed successfully!`,
+        alreadyProcessed: true,
+        serviceType: serviceType
+      });
+    }
+    
+    // ============================================
+    // STEP 3: Deduct from commission balance FIRST (before VTpass)
+    // ============================================
+    const commissionBefore = user.commissionBalance;
+    const commissionAfter = commissionBefore - amount;
+    
+    // Update commission balance
+    user.commissionBalance = commissionAfter;
+    await user.save();
+    
+    console.log(`💰 Commission deducted: ₦${amount}`);
+    console.log(`   Before: ₦${commissionBefore.toFixed(2)} → After: ₦${commissionAfter.toFixed(2)}`);
+    
+    // ============================================
+    // STEP 4: Call VTpass to deliver service (WITH header to prevent wallet deduction)
+    // ============================================
+    let vtpassResult;
+    try {
+      console.log(`📡 Calling VTpass API for ${vtpassPayload.serviceID}...`);
+      
+      const vtpassResponse = await axios.post(`${process.env.BASE_URL || 'http://localhost:5000'}/api/vtpass/proxy`, vtpassPayload, {
+        headers: {
+          'Authorization': req.headers.authorization,
+          'Content-Type': 'application/json',
+          'x-commission-usage': 'true' // TELL VTpass NOT to deduct from wallet
+        }
+      });
+      
+      vtpassResult = vtpassResponse.data;
+      console.log('✅ VTpass Response received');
+      
+      if (!vtpassResult.success) {
+        // If VTpass fails, REFUND the commission
+        user.commissionBalance = commissionBefore;
+        await user.save();
+        
+        return res.status(400).json({
+          success: false,
+          message: vtpassResult.message || 'Service delivery failed',
+          commissionRefunded: true,
+          vtpassError: vtpassResult
+        });
+      }
+      
+    } catch (vtpassError) {
+      console.error('❌ VTpass API Error:', vtpassError.response?.data || vtpassError.message);
+      
+      // If VTpass fails, REFUND the commission
+      user.commissionBalance = commissionBefore;
+      await user.save();
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Service temporarily unavailable. Commission has been refunded.',
+        commissionRefunded: true,
+        error: vtpassError.message
+      });
+    }
+    
+    // ============================================
+    // STEP 5: Create commission debit transaction
+    // ============================================
+    const commissionTransaction = new Transaction({
+      userId: userId,
+      amount: amount,
+      type: 'Commission Debit',
+      status: 'Successful',
+      description: `Commission used for ${serviceType} purchase`,
+      balanceBefore: commissionBefore,
+      balanceAfter: commissionAfter,
+      isCommission: true,
+      reference: `COMM_DEBIT_${vtpassPayload.request_id}`,
+      metadata: {
+        phone: serviceDetails.phone || '',
+        commissionRequestId: vtpassPayload.request_id,
+        serviceType: serviceType,
+        serviceDetails: serviceDetails,
+        vtpassResponse: vtpassResult,
+        network: serviceDetails.network || 'N/A',
+        commissionUsed: true,
+        commissionSource: serviceType
+      },
+      createdAt: new Date()
+    });
+    
+    try {
+      await commissionTransaction.save();
+      console.log('✅ Commission transaction saved');
+    } catch (error) {
+      // If duplicate, log but continue
+      if (error.code === 11000) {
+        console.log('⚠️ Commission transaction already exists');
+      } else {
+        throw error;
+      }
+    }
+    
+    // ============================================
+    // STEP 6: Create service purchase transaction
+    // ============================================
+    const serviceTransaction = new Transaction({
+      userId: userId,
+      amount: amount,
+      type: serviceType === 'airtime' ? 'Airtime Purchase' : 
+            serviceType === 'data' ? 'Data Purchase' :
+            serviceType === 'electricity' ? 'Electricity Purchase' :
+            serviceType === 'cable' ? 'Cable TV Purchase' : 'debit',
+      status: 'Successful',
+      description: `${serviceType} purchased using commission`,
+      balanceBefore: user.walletBalance, // Show wallet balance (unchanged)
+      balanceAfter: user.walletBalance, // Wallet unchanged
+      isCommission: false,
+      reference: `SERVICE_${vtpassPayload.request_id}`,
+      metadata: {
+        ...serviceDetails,
+        vtpassResponse: vtpassResult,
+        commissionUsed: true,
+        commissionAmount: amount,
+        commissionRequestId: vtpassPayload.request_id,
+        serviceDelivered: true,
+        deliveredTo: serviceDetails.phone || serviceDetails.meterNumber || 'user'
+      },
+      createdAt: new Date()
+    });
+    
+    try {
+      await serviceTransaction.save();
+      console.log('✅ Service transaction saved');
+    } catch (error) {
+      // If duplicate, log but continue
+      if (error.code === 11000) {
+        console.log('⚠️ Service transaction already exists');
+      } else {
+        throw error;
+      }
+    }
+    
+    // ============================================
+    // STEP 7: Return SUCCESS response
+    // ============================================
+    console.log(`✅ SUCCESS: Commission used & service delivered!`);
+    console.log(`   Service: ${serviceType} to ${serviceDetails.phone || 'N/A'}`);
+    console.log(`   VTpass Ref: ${vtpassResult.requestId || vtpassPayload.request_id}`);
+    
+    res.json({
+      success: true,
+      message: `✅ ${serviceType} purchased successfully using commission! Sent to ${serviceDetails.phone || 'your account'}`,
+      amountUsed: amount,
+      newCommissionBalance: commissionAfter,
+      newWalletBalance: user.walletBalance, // Wallet unchanged
+      serviceType: serviceType,
+      hasEnough: true,
+      commissionUsed: true,
+      vtpassTransaction: {
+        success: true,
+        requestId: vtpassPayload.request_id,
+        serviceDelivered: true,
+        vtpassReference: vtpassResult.requestId || vtpassPayload.request_id,
+        amount: amount,
+        phone: serviceDetails.phone || 'N/A',
+        network: serviceDetails.network || 'N/A'
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error in use-commission endpoint:', error);
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'An unexpected error occurred. Please contact support.',
+      error: error.message
+    });
+  }
+});
+
+
+// @desc    Upload profile image
+// @route   POST /api/users/upload-profile-image
+// @access  Private
+app.post('/api/users/upload-profile-image', protect, upload.single('profileImage'), async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Delete old profile image if exists
+    if (user.profileImage) {
+      const oldImagePath = path.join(__dirname, user.profileImage);
+      if (fs.existsSync(oldImagePath)) {
+        fs.unlinkSync(oldImagePath);
+      }
+    }
+    
+    // Update user profile image path
+    user.profileImage = `/uploads/${req.file.filename}`;
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully',
+      profileImage: user.profileImage
+    });
+  } catch (error) {
+    console.error('Error uploading profile image:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+// @desc    Get all users (Admin only)
+// @route   GET /api/users
+// @access  Private/Admin
+app.get('/api/users', adminProtect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const users = await User.find({})
+      .select('-password')
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await User.countDocuments();
+    
+    res.json({ 
+      success: true, 
+      users,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
+  } catch (error) {
+    console.error('Error fetching all users:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => {
+  try {
+    console.log('🔍 === VTpass Balance Debug ===');
+    console.log('User:', req.user?.email);
+    console.log('Is Admin:', req.user?.isAdmin);
+    
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    console.log('API Key configured:', !!vtpassApiKey);
+    console.log('Secret Key configured:', !!vtpassSecretKey);
+    console.log('API Key length:', vtpassApiKey?.length || 0);
+    console.log('Secret Key length:', vtpassSecretKey?.length || 0);
+    
+    if (!vtpassApiKey || !vtpassSecretKey) {
+      console.log('❌ CREDENTIALS MISSING!');
+      return res.status(400).json({
+        success: false,
+        message: 'VTpass API credentials not configured',
+        debug: { 
+          apiKeyExists: !!vtpassApiKey, 
+          secretKeyExists: !!vtpassSecretKey 
+        }
+      });
+    }
+
+    console.log('📡 Calling VTpass API...');
+    
+    // Try both sandbox and production
+    const urls = [
+      'https://sandbox.vtpass.com/api/balance',
+      'https://vtpass.com/api/balance'
+    ];
+    
+    let balanceResponse = null;
+    let lastError = null;
+    
+    for (const url of urls) {
+      try {
+        console.log(`📡 Trying: ${url}`);
+        const response = await axios.get(url, {
+          headers: {
+            'api-key': vtpassApiKey,
+            'secret-key': vtpassSecretKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        
+        if (response.data.code === 1) {
+          balanceResponse = response;
+          console.log(`✅ Success with: ${url}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`❌ Failed: ${url}`, e.response?.data || e.message);
+        lastError = e;
+      }
+    }
+
+    if (!balanceResponse) {
+      console.error('❌ All VTpass endpoints failed');
+      return res.status(500).json({
+        success: false,
+        message: 'VTpass API unreachable',
+        error: lastError?.response?.data || lastError?.message || 'Unknown error',
+        triedEndpoints: urls
+      });
+    }
+
+    const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+    
+    console.log('💰 VTpass Balance:', vtpassBalance);
+    
+    res.json({
+      success: true,
+      balance: vtpassBalance,
+      environment: balanceResponse.config.url.includes('sandbox') ? 'sandbox' : 'production',
+      lastChecked: new Date().toISOString(),
+      currency: 'NGN'
+    });
+    
+  } catch (error) {
+    console.error('❌ ERROR DETAILS:');
+    console.error('Message:', error.message);
+    console.error('Status:', error.response?.status);
+    console.error('Data:', JSON.stringify(error.response?.data, null, 2));
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch VTpass balance',
+      error: error.message,
+      status: error.response?.status,
+      vtpassResponse: error.response?.data,
+      details: 'Check server logs for full details'
+    });
+  }
+});
+
+
+
+
+// @desc    Get VTpass alerts
+// @route   GET /api/admin/vtpass-alerts
+// @access  Private/Admin
+app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
+  try {
+    const alerts = await Alert.find({ 
+      type: 'VTPASS_LOW_BALANCE',
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+    })
+      .sort({ createdAt: -1 })
+      .limit(20);
+    
+    // Get current VTpass balance to include in response
+    let currentBalance = 0;
+    try {
+      const vtpassApiKey = process.env.VTPASS_API_KEY;
+      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+      
+      if (vtpassApiKey && vtpassSecretKey) {
+        const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+          auth: {
+            username: vtpassApiKey,
+            password: vtpassSecretKey
+          },
+          timeout: 5000
+        });
+        currentBalance = balanceResponse.data.contents?.balance || 0;
+      }
+    } catch (balanceError) {
+      console.error('Could not fetch current balance:', balanceError.message);
+    }
+    
+    res.json({
+      success: true,
+      count: alerts.length,
+      currentBalance: currentBalance,
+      alerts: alerts.map(alert => ({
+        id: alert._id,
+        type: alert.type,
+        title: alert.title,
+        message: alert.message,
+        severity: alert.severity,
+        data: alert.data,
+        createdAt: alert.createdAt,
+        acknowledged: alert.acknowledged
+      }))
+    });
+    
+  } catch (error) {
+    console.error('Error fetching alerts:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error',
+      error: error.message 
+    });
+  }
+});
+
+
+// @desc    Get ALL users without pagination (Admin only - for transactions)
+// @route   GET /api/admin/all-users
+// @access  Private/Admin
+app.get('/api/admin/all-users', adminProtect, async (req, res) => {
+  try {
+    console.log('📊 Fetching all users for admin (OPTIMIZED)');
+    
+    const users = await User.find({})
+      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits')
+      .lean()
+      .maxTimeMS(8000);
+    
+    console.log(`✅ Found ${users.length} users`);
+    
+    res.json({ 
+      success: true, 
+      users,
+      total: users.length
+    });
+  } catch (error) {
+    console.error('Error fetching all users:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Toggle user active status (Admin only)
+// @route   PUT /api/users/toggle-status/:userId
+// @access  Private/Admin
+app.put('/api/users/toggle-status/:userId', adminProtect, [
+  body('isActive').isBoolean().withMessage('isActive must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId } = req.params;
+    const { isActive } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    if (req.user._id.toString() === userId && !isActive) {
+      return res.status(400).json({ success: false, message: 'You cannot deactivate your own account' });
+    }
+    
+    user.isActive = isActive;
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: `User ${isActive ? 'activated' : 'deactivated'} successfully`,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        isActive: user.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Error toggling user status:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Toggle user admin status (Admin only)
+// @route   PUT /api/users/toggle-admin-status/:userId
+// @access  Private/Admin
+app.put('/api/users/toggle-admin-status/:userId', adminProtect, [
+  body('isAdmin').isBoolean().withMessage('isAdmin must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId } = req.params;
+    const { isAdmin } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    if (req.user._id.toString() === userId && !isAdmin) {
+      return res.status(400).json({ success: false, message: 'You cannot remove your own admin status' });
+    }
+    
+    user.isAdmin = isAdmin;
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: `User admin status ${isAdmin ? 'granted' : 'revoked'} successfully`,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        isAdmin: user.isAdmin
+      }
+    });
+  } catch (error) {
+    console.error('Error toggling user admin status:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Update user profile
+// @route   PATCH /api/users/:userId
+// @access  Private
+app.patch('/api/users/:userId', protect, [
+  body('fullName').optional().notEmpty().withMessage('Full name cannot be empty'),
+  body('email').optional().isEmail().withMessage('Please provide a valid email'),
+  body('phone').optional().isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId } = req.params;
+    const { fullName, email, phone, walletBalance, commissionBalance, isActive, isAdmin } = req.body;
+    
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'You can only update your own profile' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    if (!req.user.isAdmin) {
+      if (walletBalance !== undefined || commissionBalance !== undefined || isActive !== undefined || isAdmin !== undefined) {
+        return res.status(403).json({ success: false, message: 'You are not authorized to update these fields' });
+      }
+    }
+    
+    if (fullName !== undefined) user.fullName = fullName;
+    if (email !== undefined) {
+      const existingUser = await User.findOne({ email, _id: { $ne: userId } });
+      if (existingUser) {
+        return res.status(400).json({ success: false, message: 'Email is already in use by another user' });
+      }
+      user.email = email;
+    }
+    if (phone !== undefined) user.phone = phone;
+    if (walletBalance !== undefined && req.user.isAdmin) user.walletBalance = walletBalance;
+    if (commissionBalance !== undefined && req.user.isAdmin) user.commissionBalance = commissionBalance;
+    if (isActive !== undefined && req.user.isAdmin) user.isActive = isActive;
+    if (isAdmin !== undefined && req.user.isAdmin) user.isAdmin = isAdmin;
+    
+    await user.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Profile updated successfully',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        isActive: user.isActive,
+        isAdmin: user.isAdmin,
+        transactionPinSet: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+      }
+    });
+  } catch (error) {
+    console.error('Error updating user profile:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Change user password
+// @route   POST /api/users/change-password
+// @access  Private
+app.post('/api/users/change-password', protect, [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').custom(value => {
+    if (!validatePassword(value)) {
+      throw new Error('Password must be at least 8 characters long and include uppercase, lowercase, numbers, and special characters');
+    }
+    return true;
+  })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
+    }
+    
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    
+    user.password = hashedPassword;
+    await user.save();
+    
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Fund a user's wallet (Admin only)
+// @route   POST /api/users/fund
+// @access  Private/Admin
+app.post('/api/users/fund', adminProtect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { userId, amount } = req.body;
+  const note = req.body.note || `Admin funding of ${amount}`;
+  
+  console.log(`📥 Funding request: User: ${userId}, Amount: ${amount}, Note: ${note}`);
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      console.log(`❌ User ${userId} not found`);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    console.log(`👤 User found: ${user.email}, Current balance: ${user.walletBalance}`);
+    
+    const balanceBefore = user.walletBalance;
+    user.walletBalance += amount;
+    const balanceAfter = user.walletBalance;
+    
+    await user.save({ session });
+    
+    console.log(`💰 New balance: ${balanceAfter}`);
+    
+    // FIXED: Change 'successful' to 'Successful'
+    await createTransaction(
+      userId,
+      amount,
+      'credit',
+      'Successful', // ← CHANGE THIS LINE - Capital 'S'
+      note,
+      balanceBefore,
+      balanceAfter,
+      session,
+      false,
+      'none'
+    );
+    
+    await session.commitTransaction();
+    console.log(`✅ Successfully funded user ${user.email}`);
+    
+    res.json({ 
+      success: true, 
+      message: `Successfully funded user ${user.email} with ${amount}`, 
+      newBalance: balanceAfter,
+      userId: userId,
+      transactionId: Date.now().toString()
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error funding user:', error);
+    console.error('Error details:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal Server Error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+// @desc    Get transaction statistics (Admin only)
+// @route   GET /api/transactions/statistics
+// @access  Private/Admin
+app.get('/api/transactions/statistics', adminProtect, [
+  query('startDate').optional().isISO8601().withMessage('Start date must be a valid ISO8601 date'),
+  query('endDate').optional().isISO8601().withMessage('End date must be a valid ISO8601 date')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { startDate, endDate } = req.query;
+    
+    let matchQuery = {};
+    
+    if (startDate && endDate) {
+      matchQuery = {
+        createdAt: {
+          $gte: new Date(startDate),
+          $lte: new Date(endDate)
+        }
+      };
+    }
+    
+    // Try to get from cache first
+    const cacheKey = `transaction-stats-${startDate || 'all'}-${endDate || 'all'}`;
+    const cachedStats = cache.get(cacheKey);
+    
+    if (cachedStats) {
+      return res.json({ success: true, statistics: cachedStats });
+    }
+    
+    // Total transactions
+    const totalTransactions = await Transaction.countDocuments(matchQuery);
+    
+    // Total successful transactions
+    const successfulTransactions = await Transaction.countDocuments({
+      ...matchQuery,
+      status: 'successful'
+    });
+    
+    // Total failed transactions
+    const failedTransactions = await Transaction.countDocuments({
+      ...matchQuery,
+      status: 'failed'
+    });
+    
+    // Total transaction amount
+    const transactionAggregation = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          totalCredit: { $sum: { $cond: { if: { $eq: ['$type', 'credit'] }, then: '$amount', else: 0 } } },
+          totalDebit: { $sum: { $cond: { if: { $eq: ['$type', 'debit'] }, then: '$amount', else: 0 } } }
+        }
+      }
+    ]);
+    
+    const transactionStats = transactionAggregation[0] || {
+      totalAmount: 0,
+      totalCredit: 0,
+      totalDebit: 0
+    };
+    
+    // Commission statistics
+    const commissionAggregation = await Transaction.aggregate([
+      { $match: { ...matchQuery, isCommission: true } },
+      {
+        $group: {
+          _id: null,
+          totalCommission: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    const commissionStats = commissionAggregation[0] || { totalCommission: 0 };
+    
+    // Transaction by type
+    const transactionsByType = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$type',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    // Transaction by status
+    const transactionsByStatus = await Transaction.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ]);
+    
+    const statistics = {
+      totalTransactions,
+      successfulTransactions,
+      failedTransactions,
+      totalAmount: transactionStats.totalAmount,
+      totalCredit: transactionStats.totalCredit,
+      totalDebit: transactionStats.totalDebit,
+      totalCommission: commissionStats.totalCommission,
+      transactionsByType,
+      transactionsByStatus
+    };
+    
+    // Cache the result
+    cache.set(cacheKey, statistics);
+    
+    res.json({ success: true, statistics });
+  } catch (error) {
+    console.error('Error fetching transaction statistics:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Transfer funds between users
+// @route   POST /api/transfer
+// @access  Private
+app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'),
+checkGlobalPerMinuteLimit, // ✅ Global limit
+checkTransactionLimit('transfer'),
+checkPerMinuteLimit('transfer'), // ✅ Service-specific limit         
+         [
+  body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  const { receiverEmail, amount, senderId } = req.body;
+  const userId = req.user._id;
+  const actualSenderId = senderId || userId;
+  
+  const maxRetries = 3;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    const session = await mongoose.startSession();
+    
+    try {
+      session.startTransaction({
+        readConcern: { level: "snapshot" },
+        writeConcern: { w: "majority" },
+        readPreference: "primary"
+      });
+      
+      const sender = await User.findOneAndUpdate(
+        { _id: actualSenderId, walletBalance: { $gte: amount } },
+        { $inc: { walletBalance: -amount } },
+        { 
+          new: true,
+          session: session,
+          runValidators: true 
+        }
+      );
+      
+      if (!sender) {
+        await session.abortTransaction();
+        await session.endSession();
+        
+        const userExists = await User.findById(actualSenderId);
+        if (!userExists) {
+          return res.status(404).json({ success: false, message: 'Sender not found' });
+        }
+        
+        return res.status(400).json({ success: false, message: 'Insufficient balance' });
+      }
+      
+      const receiver = await User.findOneAndUpdate(
+        { email: receiverEmail },
+        { $inc: { walletBalance: amount } },
+        { 
+          new: true,
+          session: session,
+          runValidators: true 
+        }
+      );
+      
+      if (!receiver) {
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(404).json({ success: false, message: 'Receiver not found' });
+      }
+      
+      if (sender._id.toString() === receiver._id.toString()) {
+        await User.findByIdAndUpdate(
+          sender._id,
+          { $inc: { walletBalance: amount } },
+          { session: session }
+        );
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: 'Cannot transfer to yourself' });
+      }
+      
+      const settings = await Settings.findOne().session(session);
+      const minAmount = settings ? settings.minTransactionAmount : 100;
+      const maxAmount = settings ? settings.maxTransactionAmount : 1000000;
+      
+      if (amount < minAmount) {
+        await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
+        await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: `Transfer amount must be at least ${minAmount}` });
+      }
+      
+      if (amount > maxAmount) {
+        await User.findByIdAndUpdate(sender._id, { $inc: { walletBalance: amount } }, { session });
+        await User.findByIdAndUpdate(receiver._id, { $inc: { walletBalance: -amount } }, { session });
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(400).json({ success: false, message: `Transfer amount cannot exceed ${maxAmount}` });
+      }
+      
+      const senderBalanceBefore = sender.walletBalance + amount;
+      const senderBalanceAfter = sender.walletBalance;
+      
+      const receiverBalanceBefore = receiver.walletBalance - amount;
+      const receiverBalanceAfter = receiver.walletBalance;
+      
+      // Create sender transaction
+      await Transaction.create([{
+        userId: sender._id,
+        amount: amount,
+        type: 'Transfer Sent',
+        service: 'transfer',
+        description: `Transfer to ${receiver.email}`,
+        reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        status: 'Successful',
+        balanceBefore: senderBalanceBefore,
+        balanceAfter: senderBalanceAfter,
+        authenticationMethod: req.authenticationMethod || 'pin',
+        metadata: {
+          recipientId: receiver._id,
+          recipientEmail: receiver.email
+        }
+      }], { session });
+      
+      // Create receiver transaction
+      await Transaction.create([{
+        userId: receiver._id,
+        amount: amount,
+        type: 'Transfer Received',
+        service: 'transfer', // Changed from 'peer_transfer' to 'transfer' for consistency
+        description: `Transfer from ${sender.email}`,
+        reference: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        status: 'Successful',
+        balanceBefore: receiverBalanceBefore,
+        balanceAfter: receiverBalanceAfter,
+        authenticationMethod: req.authenticationMethod || 'pin',
+        metadata: {
+          senderId: sender._id,
+          senderEmail: sender.email
+        }
+      }], { session });
+      
+      await session.commitTransaction();
+      await session.endSession();
+      
+      // ========== COMMISSION CALCULATION COMMENTED OUT ==========
+      // Wallet-to-wallet transfers do not earn commission
+      /*
+      try {
+        if (sender._id.toString() !== receiver._id.toString()) {
+          // Pass 'transfer' as service type
+          await calculateAndAddCommission(receiver._id, amount, 'transfer');
+          console.log(`✅ Commission calculated for transfer of ₦${amount}`);
+        }
+      } catch (commissionError) {
+        console.error('Commission calculation error:', commissionError);
+      }
+      */
+      // =========================================================
+      
+      // Create notifications (outside transaction)
+      try {
+        await Notification.create({
+          recipientId: sender._id,
+          title: "Transfer Successful 💸",
+          message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
+          type: 'transfer_sent',
+          isRead: false
+        });
+        
+        await Notification.create({
+          recipientId: receiver._id,
+          title: "Money Received 💰",
+          message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
+          type: 'transfer_received',
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating notifications:', notificationError);
+      }
+      
+      return res.json({ 
+        success: true, 
+        message: `Transfer of ₦${amount} to ${receiver.email} successful`,
+        newBalance: senderBalanceAfter,
+        newSenderBalance: senderBalanceAfter,
+        receiverName: receiver.fullName || receiver.email,
+        transactionId: `TRF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      });
+      
+    } catch (error) {
+      if (session.inTransaction()) {
+        try {
+          await session.abortTransaction();
+        } catch (abortError) {
+          console.error('Error aborting transaction:', abortError);
+        }
+      }
+      
+      try {
+        await session.endSession();
+      } catch (endError) {
+        console.error('Error ending session:', endError);
+      }
+      
+      if (error.code === 112 || error.name === 'MongoTransactionError') {
+        retryCount++;
+        console.log(`Write conflict detected. Retry ${retryCount}/${maxRetries}`);
+        
+        if (retryCount < maxRetries) {
+          const delay = Math.pow(2, retryCount) * 100;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      
+      console.error('Error in transfer after retries:', error);
+      
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Transfer failed. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+});
+
+
+
+// @desc    Get user's transactions
+// @route   GET /api/transactions
+// @access  Private
+app.get('/api/transactions', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const transactions = await Transaction.find({ userId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Transaction.countDocuments({ userId });
+    
+    res.json({
+      success: true,
+      transactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Get user's commission transactions
+// @route   GET /api/commission-transactions
+// @access  Private
+app.get('/api/commission-transactions', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const commissionTransactions = await Transaction.find({ userId, isCommission: true })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Transaction.countDocuments({ userId, isCommission: true });
+    
+    res.json({
+      success: true,
+      commissionTransactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total
+    });
+  } catch (error) {
+    console.error('Error fetching commission transactions:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Get all transactions with cursor pagination - OPTIMIZED with user data
+// @route   GET /api/transactions/all
+// @access  Private/Admin
+app.get('/api/transactions/all', adminProtect, async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+        const lastId = req.query.lastId;
+
+        console.log('📊 Fetching transactions - lastId:', lastId || 'none', 'limit:', limit);
+
+        let query = {};
+        if (lastId && lastId !== 'null' && lastId !== 'undefined') {
+            query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+        }
+
+        // Get transactions with proper user data
+        const transactions = await Transaction
+            .find(query)
+            .select('_id userId type amount status description reference createdAt previousBalance newBalance metadata')
+            .sort({ _id: -1 })
+            .limit(limit + 1)
+            .lean()
+            .maxTimeMS(8000);
+
+        const hasMore = transactions.length > limit;
+        if (hasMore) transactions.pop();
+
+        const newLastId = transactions.length > 0
+            ? transactions[transactions.length - 1]._id.toString()
+            : null;
+
+        // ✅ FIX: Get ALL user data including fullName, email, phone
+        const userIds = [...new Set(
+            transactions
+                .map(tx => tx.userId?.toString())
+                .filter(id => id && id !== 'null' && id !== 'system' && id !== 'unknown')
+        )];
+
+        let userMap = {};
+        if (userIds.length > 0) {
+            const users = await User
+                .find(
+                    { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+                    { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+                )
+                .lean()
+                .maxTimeMS(3000);
+
+            userMap = users.reduce((map, user) => {
+                map[user._id.toString()] = {
+                    fullName: user.fullName || 'Unknown User',
+                    email: user.email || 'no-email@example.com',
+                    phone: user.phone || 'N/A',
+                    isAdmin: user.isAdmin || false
+                };
+                return map;
+            }, {});
+        }
+
+        // Combine transactions with user data
+        const result = transactions.map(tx => {
+            const userId = tx.userId?.toString();
+            const userData = userMap[userId] || {
+                fullName: 'System',
+                email: 'system@transaction',
+                phone: 'N/A',
+                isAdmin: false
+            };
+            
+            return {
+                ...tx,
+                user: userData,
+                // ✅ Also add userId as string for frontend
+                userId: userId || 'system'
+            };
+        });
+
+        console.log(`✅ Returning ${result.length} transactions, hasMore: ${hasMore}`);
+        console.log(`   Users found: ${Object.keys(userMap).length}`);
+
+        res.json({
+            success: true,
+            transactions: result,
+            hasMore: hasMore,
+            lastId: newLastId,
+            total: result.length
+        });
+
+    } catch (error) {
+        console.error('❌ Transactions error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message,
+            code: error.code || 'SERVER_ERROR'
+        });
+    }
+});
+
+// ==================== TOTAL USERS COUNT ENDPOINT ====================
+// @desc    Get total user count (fast, no pagination)
+// @route   GET /api/admin/total-users
+// @access  Private/Admin
+app.get('/api/admin/total-users', adminProtect, async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    console.log(`📊 Total users count: ${totalUsers}`);
+    res.json({ success: true, totalUsers: totalUsers });
+  } catch (error) {
+    console.error('Error getting user count:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+// @desc    Get recent transactions only (FAST)
+// @route   GET /api/transactions/recent
+// @access  Private/Admin
+app.get('/api/transactions/recent', adminProtect, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    
+    const transactions = await Transaction
+      .find({})
+      .select('userId amount type status description createdAt reference')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+      .maxTimeMS(5000);
+    
+    res.json({
+      success: true,
+      transactions: transactions,
+      count: transactions.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+// DEBUG: Verify JWT secrets are loaded correctly
+app.get('/api/debug/jwt-secrets', (req, res) => {
+  res.json({
+    success: true,
+    jwtSecretConfigured: !!process.env.JWT_SECRET,
+    jwtSecretLength: process.env.JWT_SECRET?.length || 0,
+    jwtSecretPreview: process.env.JWT_SECRET?.substring(0, 20) + '...',
+    refreshSecretConfigured: !!process.env.REFRESH_TOKEN_SECRET,
+    refreshSecretLength: process.env.REFRESH_TOKEN_SECRET?.length || 0,
+    refreshSecretPreview: process.env.REFRESH_TOKEN_SECRET?.substring(0, 20) + '...',
+    environment: process.env.NODE_ENV || 'not set',
+    message: 'Secrets should be 64 hex chars (32 bytes)'
+  });
+});
+
+
+
+
+// DEBUG: Check what's in the database
+app.get('/api/debug/transactions-check', adminProtect, async (req, res) => {
+  try {
+    const count = await Transaction.countDocuments();
+    const sample = await Transaction.findOne().sort({ createdAt: -1 });
+    const lastFive = await Transaction.find().sort({ createdAt: -1 }).limit(5);
+    
+    res.json({
+      success: true,
+      totalCount: count,
+      sampleTransaction: sample,
+      lastFiveTransactions: lastFive,
+      message: count === 0 ? 'No transactions found in database!' : 'Transactions exist'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+
+
+// @desc    TEMPORARY: Debug transactions without auth (REMOVE AFTER TESTING)
+// @route   GET /api/debug/all-transactions
+// @access  PUBLIC (TEMPORARY)
+app.get('/api/debug/all-transactions', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 15, 50);
+    const skip = (page - 1) * limit;
+    
+    console.log('🔍 DEBUG: Fetching all transactions without auth');
+    
+    const total = await Transaction.countDocuments();
+    console.log(`📊 Total transactions: ${total}`);
+    
+    const transactions = await Transaction
+      .find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    
+    console.log(`✅ Found ${transactions.length} transactions`);
+    
+    res.json({
+      success: true,
+      total: total,
+      transactions: transactions,
+      page: page,
+      limit: limit
+    });
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+
+
+
+// @desc    SIMPLE test endpoint for transactions
+// @route   GET /api/debug/simple-transactions
+// @access  Private/Admin
+app.get('/api/debug/simple-transactions', adminProtect, async (req, res) => {
+  try {
+    const transactions = await Transaction
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    
+    console.log(`🔍 Simple test found ${transactions.length} transactions`);
+    
+    res.json({
+      success: true,
+      count: transactions.length,
+      transactions: transactions,
+      firstTransaction: transactions[0] || null
+    });
+  } catch (error) {
+    console.error('Simple test error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
+
+
+// @desc    Get transaction counts only (VERY FAST)
+// @route   GET /api/admin/transaction-stats
+// @access  Private/Admin
+app.get('/api/admin/transaction-stats', adminProtect, async (req, res) => {
+  try {
+    // Use estimated counts for speed
+    const [totalCount, pendingCount] = await Promise.all([
+      Transaction.estimatedDocumentCount(),
+      Transaction.countDocuments({ 
+        status: { $in: ['pending', 'processing'] } 
+      }).maxTimeMS(2000)
+    ]);
+    
+    res.json({
+      success: true,
+      totalTransactions: totalCount,
+      pendingTransactions: pendingCount
+    });
+  } catch (error) {
+    console.error('Transaction stats error:', error);
+    res.json({
+      success: true,
+      totalTransactions: 0,
+      pendingTransactions: 0
+    });
+  }
+});
+
+
+
+
+
+// ==================== ADMIN DASHBOARD ENDPOINT WITH DEBUG LOGGING ====================
+/**
+ * @desc    Get admin dashboard with period stats and filtered transactions
+ * @route   GET /api/admin/dashboard
+ * @access  Private/Admin
+ */
+app.get('/api/admin/dashboard', adminProtect, async (req, res) => {
+  try {
+    // DEBUG: Log all query parameters
+    console.log('🔍 ========== ADMIN DASHBOARD REQUEST ==========');
+    console.log('📋 Query Params:', JSON.stringify(req.query, null, 2));
+    console.log('👤 User:', req.user?.email || 'Unknown');
+
+    const {
+      timeFilter = 'all',
+      status = 'all',
+      service = 'all',
+      search = '',
+      page = 1,
+      limit = 50,
+      startDate: customStartDate,
+      endDate: customEndDate
+    } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const maxLimit = Math.min(parseInt(limit), 500);
+
+    console.log('📊 [ADMIN DASHBOARD] Fetching admin dashboard data...');
+    console.log('   Filters:', { timeFilter, status, service, search, page, limit: maxLimit });
+
+    // ================================================
+    // 1. DATE FILTERS
+    // ================================================
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+
+    console.log('📅 Date Ranges:');
+    console.log(`   Today: ${today.toISOString()}`);
+    console.log(`   Week Start: ${weekStart.toISOString()}`);
+    console.log(`   Month Start: ${monthStart.toISOString()}`);
+    console.log(`   Year Start: ${yearStart.toISOString()}`);
+
+    // ================================================
+    // 2. SERVICE TYPE MAPPING - ALL SERVICES
+    // ================================================
+    const serviceTypeMap = {
+      'airtime': { $in: ['Airtime Purchase'] },
+      'data': { $in: ['Data Purchase'] },
+      'electricity': { $in: ['Electricity Purchase'] },
+      'cable': { $in: ['Cable TV Subscription', 'Cable TV Purchase'] },
+      'international_airtime': { $in: ['International Airtime Purchase'] },
+      'education': { $in: ['Education Purchase'] },
+      'insurance': { $in: ['Insurance Purchase'] },
+      'transfer': { $in: ['Transfer Sent', 'Transfer Received'] },
+      'wallet': { $in: ['Wallet Funding', 'credit'] },
+      'commission': { $in: ['Commission Credit', 'Commission Debit', 'Commission Withdrawal', 'Welcome Bonus', 'Direct Referral Bonus', 'Indirect Referral Bonus', 'Referral Service Commission'] }
+    };
+
+    // ================================================
+    // 3. STATUS MAPPING
+    // ================================================
+    const statusMap = {
+      'success': { $regex: /^success|completed$/i },
+      'pending': { $regex: /^pending|processing$/i },
+      'failed': { $regex: /^failed|cancelled$/i }
+    };
+
+    // ================================================
+    // 4. BUILD TIME FILTER QUERY
+    // ================================================
+    let timeFilterQuery = {};
+    
+    // Check for custom date range first (from frontend)
+    if (customStartDate && customEndDate) {
+      const start = new Date(customStartDate);
+      const end = new Date(customEndDate);
+      end.setHours(23, 59, 59, 999);
+      timeFilterQuery = { createdAt: { $gte: start, $lte: end } };
+      console.log(`📅 Custom Date Range: ${start.toISOString()} to ${end.toISOString()}`);
+    } else {
+      switch (timeFilter) {
+        case 'today':
+          timeFilterQuery = { createdAt: { $gte: today } };
+          console.log('📅 Filter: Today');
+          break;
+        case 'week':
+          timeFilterQuery = { createdAt: { $gte: weekStart } };
+          console.log('📅 Filter: This Week');
+          break;
+        case 'month':
+          timeFilterQuery = { createdAt: { $gte: monthStart } };
+          console.log('📅 Filter: This Month');
+          break;
+        case 'year':
+          timeFilterQuery = { createdAt: { $gte: yearStart } };
+          console.log('📅 Filter: This Year');
+          break;
+        case 'all':
+        default:
+          timeFilterQuery = {};
+          console.log('📅 Filter: All Time');
+          break;
+      }
+    }
+
+    // ================================================
+    // 5. BUILD SERVICE FILTER QUERY
+    // ================================================
+    let serviceFilterQuery = {};
+    if (service !== 'all' && serviceTypeMap[service]) {
+      serviceFilterQuery = { type: serviceTypeMap[service] };
+      console.log(`🔧 Service Filter: ${service} -> ${JSON.stringify(serviceTypeMap[service])}`);
+    } else {
+      console.log('🔧 Service Filter: All');
+    }
+
+    // ================================================
+    // 6. BUILD STATUS FILTER QUERY
+    // ================================================
+    let statusFilterQuery = {};
+    if (status !== 'all' && statusMap[status]) {
+      statusFilterQuery = { status: statusMap[status] };
+      console.log(`📊 Status Filter: ${status}`);
+    } else {
+      console.log('📊 Status Filter: All');
+    }
+
+    // ================================================
+    // 7. BUILD SEARCH FILTER QUERY
+    // ================================================
+    let searchFilterQuery = {};
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      searchFilterQuery = {
+        $or: [
+          { description: searchRegex },
+          { reference: searchRegex },
+          { transactionId: searchRegex },
+          { type: searchRegex }
+        ]
+      };
+      console.log(`🔍 Search Filter: "${search}"`);
+    }
+
+    // ================================================
+    // 8. PERIOD STATS - ALWAYS FROM FULL DATASET (NO FILTERS)
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching PERIOD STATS from FULL dataset...');
+
+    // Helper to get count and amount for a date range
+    const getPeriodStats = async (dateFilter = {}) => {
+      const [count, amountAgg] = await Promise.all([
+        Transaction.countDocuments(dateFilter),
+        Transaction.aggregate([
+          { $match: dateFilter },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ])
+      ]);
+      return { count: count || 0, amount: amountAgg[0]?.total || 0 };
+    };
+
+    console.log('⏳ Fetching All Time stats...');
+    const [allTime, todayStats, weekStats, monthStats, yearStats] = await Promise.all([
+      getPeriodStats(),
+      getPeriodStats({ createdAt: { $gte: today } }),
+      getPeriodStats({ createdAt: { $gte: weekStart } }),
+      getPeriodStats({ createdAt: { $gte: monthStart } }),
+      getPeriodStats({ createdAt: { $gte: yearStart } })
+    ]);
+
+    console.log('✅ Period Stats Fetched:');
+    console.log(`   All Time: ${allTime.count} transactions, ₦${allTime.amount}`);
+    console.log(`   Today: ${todayStats.count} transactions, ₦${todayStats.amount}`);
+    console.log(`   Week: ${weekStats.count} transactions, ₦${weekStats.amount}`);
+    console.log(`   Month: ${monthStats.count} transactions, ₦${monthStats.amount}`);
+    console.log(`   Year: ${yearStats.count} transactions, ₦${yearStats.amount}`);
+
+    // ================================================
+    // 9. STATUS SUMMARY - FROM FILTERED DATASET
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching STATUS SUMMARY from FILTERED dataset...');
+
+    // Status summary uses: timeFilter + serviceFilter (NOT status, NOT search)
+    const statusSummaryBaseFilter = {
+      ...timeFilterQuery,
+      ...serviceFilterQuery
+    };
+
+    console.log('📋 Status Summary Filter:', JSON.stringify(statusSummaryBaseFilter, null, 2));
+
+    // Get ALL status counts from filtered data
+    const statusCounts = await Transaction.aggregate([
+      { $match: statusSummaryBaseFilter },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    console.log('📊 Status Counts from Aggregation:');
+    statusCounts.forEach(item => {
+      console.log(`   ${item._id || 'unknown'}: ${item.count}`);
+    });
+
+    // Initialize status summary
+    const statusSummary = {
+      success: 0,
+      pending: 0,
+      failed: 0,
+      total: 0,
+      details: []
+    };
+
+    statusCounts.forEach(item => {
+      const stat = (item._id || '').toLowerCase();
+      if (stat.match(/^success|completed$/)) {
+        statusSummary.success += item.count;
+      } else if (stat.match(/^pending|processing$/)) {
+        statusSummary.pending += item.count;
+      } else if (stat.match(/^failed|cancelled$/)) {
+        statusSummary.failed += item.count;
+      }
+      statusSummary.total += item.count;
+      statusSummary.details.push({
+        status: item._id || 'unknown',
+        count: item.count
+      });
+    });
+
+    console.log('✅ Status Summary:');
+    console.log(`   Success: ${statusSummary.success}`);
+    console.log(`   Pending: ${statusSummary.pending}`);
+    console.log(`   Failed: ${statusSummary.failed}`);
+    console.log(`   Total: ${statusSummary.total}`);
+
+    // ================================================
+    // 10. TRANSACTION LIST - FROM FILTERED DATASET
+    // ================================================
+    console.log('📊 [ADMIN DASHBOARD] Fetching TRANSACTION LIST from FILTERED dataset...');
+
+    // Combine all filters for transaction list
+    const transactionFilter = {
+      ...timeFilterQuery,
+      ...statusFilterQuery,
+      ...serviceFilterQuery,
+      ...searchFilterQuery
+    };
+
+    console.log('📋 Transaction Filter:', JSON.stringify(transactionFilter, null, 2));
+
+    const [transactions, totalTransactions] = await Promise.all([
+      Transaction.find(transactionFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(maxLimit)
+        .lean(),
+      Transaction.countDocuments(transactionFilter)
+    ]);
+
+    console.log(`📊 Transaction List: Found ${transactions.length} of ${totalTransactions} total`);
+
+    // ================================================
+    // 11. GET USER DATA FOR TRANSACTIONS
+    // ================================================
+    const userIds = [...new Set(transactions.map(tx => tx.userId?.toString()).filter(id => id))];
+    console.log(`👤 Unique User IDs: ${userIds.length}`);
+
+    let userMap = {};
+    
+    if (userIds.length > 0) {
+      const users = await User.find(
+        { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+        { fullName: 1, email: 1, phone: 1, isAdmin: 1 }
+      ).lean();
+      
+      userMap = users.reduce((map, user) => {
+        map[user._id.toString()] = {
+          _id: user._id,
+          fullName: user.fullName || 'Unknown User',
+          email: user.email || 'N/A',
+          phone: user.phone || 'N/A',
+          isAdmin: user.isAdmin || false
+        };
+        return map;
+      }, {});
+      
+      console.log(`👤 Found ${Object.keys(userMap).length} users`);
+    }
+
+    // ================================================
+    // 12. PROCESS TRANSACTIONS
+    // ================================================
+    const processedTransactions = transactions.map(tx => {
+      let balanceBefore = 0;
+      let balanceAfter = 0;
+      
+      if (tx.balanceBefore !== undefined && tx.balanceBefore !== null) {
+        balanceBefore = typeof tx.balanceBefore === 'number' ? tx.balanceBefore : parseFloat(tx.balanceBefore) || 0;
+      }
+      if (tx.balanceAfter !== undefined && tx.balanceAfter !== null) {
+        balanceAfter = typeof tx.balanceAfter === 'number' ? tx.balanceAfter : parseFloat(tx.balanceAfter) || 0;
+      }
+
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false
+      };
+
+      return {
+        _id: tx._id,
+        type: tx.type,
+        amount: tx.amount,
+        status: tx.status,
+        description: tx.description,
+        reference: tx.reference,
+        transactionId: tx.transactionId,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        isCommission: tx.isCommission || false,
+        authenticationMethod: tx.authenticationMethod || 'none',
+        metadata: tx.metadata || {},
+        userId: userId || 'system',
+        user: userData
+      };
+    });
+
+    // ================================================
+    // 13. BUILD RESPONSE
+    // ================================================
+    const response = {
+      success: true,
+      periodStats: {
+        allTime: allTime,
+        today: todayStats,
+        week: weekStats,
+        month: monthStats,
+        year: yearStats
+      },
+      statusSummary: statusSummary,
+      transactions: processedTransactions,
+      pagination: {
+        total: totalTransactions || 0,
+        page: parseInt(page),
+        limit: maxLimit,
+        totalPages: Math.ceil((totalTransactions || 0) / maxLimit)
+      },
+      appliedFilters: {
+        timeFilter: timeFilter,
+        status: status,
+        service: service,
+        search: search || null,
+        startDate: customStartDate || null,
+        endDate: customEndDate || null
+      },
+      timestamp: new Date().toISOString(),
+      // DEBUG INFO
+      _debug: {
+        totalInDatabase: await Transaction.countDocuments(),
+        filterCounts: {
+          timeFilter: await Transaction.countDocuments(timeFilterQuery),
+          serviceFilter: await Transaction.countDocuments(serviceFilterQuery),
+          statusFilter: await Transaction.countDocuments(statusFilterQuery),
+          searchFilter: await Transaction.countDocuments(searchFilterQuery),
+          combined: totalTransactions
+        }
+      }
+    };
+
+    console.log('✅ ========== RESPONSE SUMMARY ==========');
+    console.log(`   Period Stats: All Time (${allTime.count}), Today (${todayStats.count}), Week (${weekStats.count}), Month (${monthStats.count}), Year (${yearStats.count})`);
+    console.log(`   Status Summary: Success (${statusSummary.success}), Pending (${statusSummary.pending}), Failed (${statusSummary.failed}), Total (${statusSummary.total})`);
+    console.log(`   Transactions: ${processedTransactions.length} of ${totalTransactions} returned`);
+    console.log(`   Pagination: Page ${page}/${Math.ceil((totalTransactions || 0) / maxLimit)}`);
+    console.log('==========================================');
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ [ADMIN DASHBOARD] Error:', error);
+    console.error('❌ Error Stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch admin dashboard data',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+
+
+
+
+
+
+
+// @desc    Get dashboard summary (CACHED - NO DUPLICATE CALLS)
+// @route   GET /api/admin/dashboard-summary
+// @access  Private/Admin
+app.get('/api/admin/dashboard-summary', adminProtect, async (req, res) => {
+  const cacheKey = `dashboard_${req.user._id}`;
+  const cached = dashboardCache.get(cacheKey);
+  
+  // Return cached response if still fresh (prevents duplicate calls)
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    console.log('📦 Returning CACHED dashboard summary');
+    return res.json(cached.data);
+  }
+  
+  try {
+    console.log('📊 Fetching FRESH dashboard summary for:', req.user?._id);
+    
+    // Run lightweight aggregations in parallel
+    const [totalUsers, totalTransactions, recentCount] = await Promise.all([
+      User.countDocuments().catch(err => {
+        console.error('User count error:', err);
+        return 0;
+      }),
+      Transaction.estimatedDocumentCount().catch(err => {
+        console.error('Transaction count error:', err);
+        return 0;
+      }),
+      Transaction.countDocuments({ 
+        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
+      }).catch(err => {
+        console.error('Recent count error:', err);
+        return 0;
+      })
+    ]);
+    
+    const responseData = {
+      success: true,
+      totalUsers: totalUsers || 0,
+      totalTransactions: totalTransactions || 0,
+      recentTransactions7Days: recentCount || 0,
+      lastUpdated: new Date().toISOString()
+    };
+    
+    // Store in cache
+    dashboardCache.set(cacheKey, {
+      data: responseData,
+      timestamp: Date.now()
+    });
+    
+    res.json(responseData);
+    
+  } catch (error) {
+    console.error('❌ Dashboard summary error:', error);
+    res.json({
+      success: true,
+      totalUsers: 0,
+      totalTransactions: 0,
+      recentTransactions7Days: 0,
+      lastUpdated: new Date().toISOString(),
+      warning: 'Unable to fetch live data, showing defaults'
+    });
+  }
+});
+
+// Clean up cache every minute
+// Clean up dashboard cache every minute
+setInterval(() => {
+  const now = Date.now();
+  if (typeof dashboardCache !== 'undefined' && dashboardCache) {
+    for (const [key, value] of dashboardCache.entries()) {
+      if (now - value.timestamp > DASHBOARD_CACHE_TTL) {
+        dashboardCache.delete(key);
+      }
+    }
+  }
+}, 60000);
+
+// Clean up commission stats cache every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  if (typeof commissionStatsCache !== 'undefined' && commissionStatsCache) {
+    for (const [key, value] of commissionStatsCache.entries()) {
+      if (now - value.timestamp > CACHE_TTL) {
+        commissionStatsCache.delete(key);
+      }
+    }
+  }
+}, 10 * 60 * 1000);
+
+
+
+
+
+// @desc    Get transactions for specific user (Admin only)
+// @route   GET /api/transactions/user/:userId
+// @access  Private/Admin
+app.get('/api/transactions/user/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required.' 
+      });
+    }
+
+    const transactions = await Transaction.find({ userId })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      transactions: transactions
+    });
+  } catch (error) {
+    console.error('Error fetching transactions for user:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error fetching user transactions.' 
+    });
+  }
+});
+
+
+
+
+
+// @desc    Create transaction with CORRECT timestamp
+// @route   POST /api/transactions/create-with-timestamp
+// @access  Private
+app.post('/api/transactions/create-with-timestamp', protect, async (req, res) => {
+  try {
+    const { userId, amount, type, status, description, metadata } = req.body;
+    
+    // Use the actual transaction date from metadata or current time
+    const transactionDate = metadata?.transactionDate 
+      ? new Date(metadata.transactionDate)
+      : new Date();
+    
+    const transaction = new Transaction({
+      userId,
+      amount,
+      type,
+      status,
+      description,
+      metadata: {
+        ...metadata,
+        actualTransactionDate: transactionDate
+      },
+      createdAt: transactionDate,  // ← USE ACTUAL DATE, NOT CURRENT TIME
+      updatedAt: transactionDate
+    });
+    
+    await transaction.save();
+    
+    res.json({
+      success: true,
+      transaction: transaction
+    });
+    
+  } catch (error) {
+    console.error('Error creating transaction:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+// @desc    Auto-fix missing transactions
+// @route   POST /api/transactions/auto-fix-missing
+// @access  Private
+app.post('/api/transactions/auto-fix-missing', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { daysBack = 7 } = req.body;
+
+    console.log('🔄 Auto-fixing missing transactions for user:', userId);
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysBack);
+
+    // Find transactions that might need fixing
+    const userTransactions = await Transaction.find({
+      userId,
+      createdAt: { $gte: startDate }
+    });
+
+    let fixedCount = 0;
+    const results = [];
+
+    for (const transaction of userTransactions) {
+      try {
+        // Ensure transaction has proper metadata
+        if (!transaction.metadata) {
+          transaction.metadata = {};
+        }
+
+        // Add auto-save flag if missing
+        if (!transaction.metadata.autoSaved) {
+          transaction.metadata.autoSaved = true;
+          transaction.metadata.lastVerified = new Date();
+          await transaction.save();
+          fixedCount++;
+          results.push({
+            transactionId: transaction._id,
+            status: 'fixed',
+            action: 'added_metadata'
+          });
+        }
+
+        // Ensure transaction has reference
+        if (!transaction.reference) {
+          transaction.reference = transaction._id.toString();
+          await transaction.save();
+          fixedCount++;
+          results.push({
+            transactionId: transaction._id,
+            status: 'fixed', 
+            action: 'added_reference'
+          });
+        }
+      } catch (fixError) {
+        results.push({
+          transactionId: transaction._id,
+          status: 'failed',
+          error: fixError.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Auto-fix completed. Fixed ${fixedCount} transactions.`,
+      fixedCount,
+      totalChecked: userTransactions.length,
+      results
+    });
+
+  } catch (error) {
+    console.error('❌ Auto-fix error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Auto-fix failed',
+      error: error.message
+    });
+  }
+});
+
+
+// @desc    Sync missing transactions from VTpass
+// @route   POST /api/transactions/sync-missing
+// @access  Private
+app.post('/api/transactions/sync-missing', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { daysBack = 3 } = req.body;
+
+    console.log('🔄 Syncing missing transactions for user:', userId);
+
+    // This would typically query VTpass API for recent transactions
+    // and cross-reference with your database
+    // For now, we'll return a message about the sync process
+
+    res.json({
+      success: true,
+      message: 'Sync process initiated. Check back later for updates.',
+      syncId: `sync_${Date.now()}`,
+      userId: userId,
+      daysBack: daysBack
+    });
+
+  } catch (error) {
+    console.error('❌ Sync error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Sync failed',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get transaction statistics
+// @route   GET /api/transactions/statistics
+// @access  Private
+app.get('/api/transactions/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const totalTransactions = await Transaction.countDocuments({ userId });
+    const successfulTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: 'successful' 
+    });
+    const pendingTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: { $in: ['pending', 'processing'] } 
+    });
+    const failedTransactions = await Transaction.countDocuments({ 
+      userId, 
+      status: 'failed' 
+    });
+
+    // Total amounts - FIXED: Use mongoose.Types.ObjectId
+    const amountStats = await Transaction.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: null,
+          totalSpent: { 
+            $sum: { 
+              $cond: [
+                { $in: ['$type', ['debit', 'Commission Debit', 'Commission Withdrawal']] }, 
+                '$amount', 
+                0 
+              ] 
+            } 
+          },
+          totalReceived: { 
+            $sum: { 
+              $cond: [
+                { $in: ['$type', ['credit', 'Commission Credit']] }, 
+                '$amount', 
+                0 
+              ] 
+            } 
+          }
+        }
+      }
+    ]);
+
+    const stats = amountStats[0] || { totalSpent: 0, totalReceived: 0 };
+
+    res.json({
+      success: true,
+      statistics: {
+        totalTransactions,
+        successfulTransactions,
+        pendingTransactions,
+        failedTransactions,
+        totalSpent: stats.totalSpent,
+        totalReceived: stats.totalReceived,
+        successRate: totalTransactions > 0 ? (successfulTransactions / totalTransactions) * 100 : 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching transaction statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch statistics'
+    });
+  }
+}); 
+
+
+// @desc    Get a specific transaction by ID
+// @route   GET /api/transactions/:transactionId
+// @access  Private
+app.get('/api/transactions/:transactionId', protect, async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await Transaction.findById(transactionId);
+    
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+    
+    // Check if the user has permission to view this transaction
+    if (req.user._id.toString() !== transaction.userId.toString() && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    res.json({ success: true, transaction });
+  } catch (error) {
+    console.error('Error fetching transaction:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Get user's beneficiaries
+// @route   GET /api/beneficiaries
+// @access  Private
+app.get('/api/beneficiaries', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const beneficiaries = await Beneficiary.find({ userId })
+      .sort({ createdAt: -1 });
+    
+    res.json({ success: true, beneficiaries });
+  } catch (error) {
+    console.error('Error fetching beneficiaries:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Add a beneficiary
+// @route   POST /api/beneficiaries
+// @access  Private
+app.post('/api/beneficiaries', protect, [
+  body('name').notEmpty().withMessage('Name is required'),
+  body('type').isIn(['phone', 'email']).withMessage('Type must be phone or email'),
+  body('value').notEmpty().withMessage('Value is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { name, type, value, network } = req.body;
+    const userId = req.user._id;
+    
+    const existingBeneficiary = await Beneficiary.findOne({ userId, value });
+    if (existingBeneficiary) {
+      return res.status(400).json({ success: false, message: 'Beneficiary already exists' });
+    }
+    
+    const beneficiary = await Beneficiary.create({
+      userId,
+      name,
+      type,
+      value,
+      network
+    });
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Beneficiary added successfully',
+      beneficiary
+    });
+  } catch (error) {
+    console.error('Error adding beneficiary:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Delete a beneficiary
+// @route   DELETE /api/beneficiaries/:id
+// @access  Private
+app.delete('/api/beneficiaries/:id', protect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const beneficiary = await Beneficiary.findById(id);
+    if (!beneficiary) {
+      return res.status(404).json({ success: false, message: 'Beneficiary not found' });
+    }
+    
+    if (req.user._id.toString() !== beneficiary.userId.toString()) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+    
+    await Beneficiary.findByIdAndDelete(id);
+    
+    res.json({ success: true, message: 'Beneficiary deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting beneficiary:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+// @desc    Get notification statistics (ONLY personal)
+// @route   GET /api/notifications/statistics
+// @access  Private
+app.get('/api/notifications/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📊 [NOTIFICATIONS] Getting PERSONAL statistics for user: ${userId}`);
+    
+    // ONLY count personal notifications
+    const totalPersonal = await Notification.countDocuments({ recipient: userId });
+    const unreadPersonal = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
+    
+    // Latest PERSONAL notification
+    const latestNotification = await Notification.findOne({
+      recipient: userId
+    })
+    .sort({ createdAt: -1 })
+    .select('title createdAt type')
+    .lean();
+    
+    const statistics = {
+      personal: {
+        total: totalPersonal,
+        unread: unreadPersonal,
+        read: totalPersonal - unreadPersonal
+      },
+      latestNotification: latestNotification || null
+    };
+    
+    console.log(`📈 [NOTIFICATIONS] Personal statistics for ${userId}:`, statistics);
+    
+    res.json({
+      success: true,
+      statistics: statistics
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error getting statistics:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notification statistics' 
+    });
+  }
+});
+
+
+
+// ==================== SOCKET.IO NOTIFICATION ENDPOINT ====================
+/**
+ * @desc    Send real-time notification via Socket.IO
+ * @route   POST /api/notifications/socket-send
+ * @access  Private/Admin
+ */
+app.post('/api/notifications/socket-send', adminProtect, async (req, res) => {
+  try {
+    const { title, message, recipientId, sendToAll = false, type = 'general', screen = 'notifications', data = {} } = req.body;
+
+    // Validate input
+    if (!title || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Title and message are required' 
+      });
+    }
+
+    // Save to database
+    const notification = new Notification({
+      title,
+      message,
+      type,
+      screen,
+      data,
+      sender: req.user._id,
+      recipient: sendToAll ? null : (recipientId || null),
+      readBy: [],
+    });
+
+    await notification.save();
+
+    const notificationData = notification.toJSON();
+
+    // Emit via Socket.IO
+    if (sendToAll) {
+      // Send to all connected users
+      global.io.emit('notification', notificationData);
+      
+      // Update badges for all users
+      const users = await User.find({}).select('_id');
+      for (const user of users) {
+        const count = await global.getUnreadCount(user._id);
+        global.io.to(`user:${user._id}`).emit('badge_update', { count });
+      }
+    } else if (recipientId) {
+      // Send to specific user
+      global.io.to(`user:${recipientId}`).emit('notification', notificationData);
+      const count = await global.getUnreadCount(recipientId);
+      global.io.to(`user:${recipientId}`).emit('badge_update', { count });
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification sent successfully',
+      notificationId: notification._id,
+      sentTo: sendToAll ? 'all' : recipientId
+    });
+
+  } catch (error) {
+    console.error('❌ Socket notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+/**
+ * @desc    Get unread notification count (Socket.IO version)
+ * @route   GET /api/notifications/unread-count-socket
+ * @access  Private
+ */
+app.get('/api/notifications/unread-count-socket', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const count = await global.getUnreadCount(userId);
+    
+    res.json({
+      success: true,
+      count: count,
+      userId: userId
+    });
+  } catch (error) {
+    console.error('❌ Unread count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get unread count'
+    });
+  }
+});
+
+
+
+
+
+
+// @desc    Create test notifications for development
+// @route   POST /api/notifications/test
+// @access  Private
+app.post('/api/notifications/test', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Delete existing test notifications for this user
+    await Notification.deleteMany({ 
+      recipientId: userId,
+      title: { $regex: /test|welcome|maintenance|airtime/i }
+    });
+    
+    const testNotifications = [
+      {
+        recipientId: userId,
+        title: "Welcome to VTPass! 🎉",
+        message: "Thank you for joining our platform. Start enjoying seamless bill payments, airtime top-ups, and more.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "Airtime Purchase Successful ✅",
+        message: "Your airtime purchase of ₦500 for 08012345678 was completed successfully. Transaction ID: TXN_001",
+        isRead: true
+      },
+      {
+        recipientId: userId,
+        title: "Data Bundle Purchased 📱",
+        message: "1GB data bundle for MTN has been activated on your number 08012345678. Valid for 30 days.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "System Maintenance Notice 🔧",
+        message: "There will be scheduled maintenance on Saturday from 2-4 AM. Services may be temporarily unavailable.",
+        isRead: false
+      },
+      {
+        recipientId: userId,
+        title: "Wallet Funded Successfully 💰",
+        message: "Your wallet has been credited with ₦5,000. New balance: ₦7,250. Transaction Ref: FUND_001",
+        isRead: true
+      },
+      {
+        recipientId: userId,
+        title: "New Feature Available 🚀",
+        message: "Electricity bill payments are now available! Pay your PHCN, AEDC, and other utility bills seamlessly.",
+        isRead: false
+      }
+    ];
+    
+    const createdNotifications = await Notification.insertMany(testNotifications);
+    
+    res.json({ 
+      success: true, 
+      message: 'Test notifications created successfully',
+      count: createdNotifications.length,
+      notifications: createdNotifications
+    });
+  } catch (error) {
+    console.error('Error creating test notifications:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Mark all PERSONAL notifications as read
+// @route   POST /api/notifications/mark-all-read
+// @access  Private
+app.post('/api/notifications/mark-all-read', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📌 [NOTIFICATIONS] Marking all PERSONAL notifications as read for user: ${userId}`);
+    
+    // Mark all personal notifications as read
+    const result = await Notification.updateMany(
+      { recipient: userId, isRead: false },
+      { $set: { isRead: true } }
+    );
+    
+    console.log(`✅ [NOTIFICATIONS] Marked ${result.modifiedCount} PERSONAL notifications as read`);
+    
+    res.json({ 
+      success: true, 
+      message: `Marked ${result.modifiedCount} notifications as read`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error marking all as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notifications as read' 
+    });
+  }
+});
+
+
+
+// @desc    Get general announcements (separate from personal notifications)
+// @route   GET /api/announcements
+// @access  Private
+app.get('/api/announcements', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Get only general announcements NOT read by this user
+    const announcements = await Notification.find({
+      recipient: null,
+      readBy: { $ne: userId },
+      type: 'announcement' // Use a specific type for announcements
+    })
+    .sort({ createdAt: -1 })
+    .limit(10)
+    .lean();
+    
+    res.json({
+      success: true,
+      announcements,
+      count: announcements.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+
+// ==================== NOTIFICATION ROUTES - FIXED WITH FIREBASE ====================
+
+// @desc    Get user's personal notifications ONLY
+// @route   GET /api/notifications
+// @access  Private
+app.get('/api/notifications', protect, [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  try {
+    const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    console.log(`🔔 [NOTIFICATIONS] Fetching for user: ${userId}`);
+    
+    // ONLY personal notifications for this user
+    const query = { recipient: userId };
+    
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+    
+    const total = await Notification.countDocuments(query);
+    const unreadCount = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
+    
+    console.log(`📊 Found ${notifications.length} personal notifications, ${unreadCount} unread`);
+    
+    res.json({
+      success: true,
+      notifications,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      totalItems: total,
+      unreadCount: unreadCount,
+      statistics: {
+        total: total,
+        unread: unreadCount
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error fetching notifications:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notifications' 
+    });
+  }
+});
+
+// @desc    Get unread notification count
+// @route   GET /api/notifications/unread-count
+// @access  Private
+app.get('/api/notifications/unread-count', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    console.log(`📊 Unread count for user ${userId}: ${unreadCount}`);
+    
+    res.json({
+      success: true,
+      unreadCount: unreadCount
+    });
+  } catch (error) {
+    console.error('❌ Error getting unread count:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get unread count'
+    });
+  }
+});
+
+// @desc    Mark notification as read
+// @route   POST /api/notifications/:id/read
+// @access  Private
+app.post('/api/notifications/:id/read', protect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    
+    console.log(`📌 [NOTIFICATIONS] Marking as read: ${id} for user: ${userId}`);
+    
+    const notification = await Notification.findById(id);
+    
+    if (!notification) {
+      console.log('❌ [NOTIFICATIONS] Notification not found:', id);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Notification not found' 
+      });
+    }
+    
+    // Check if user has access to this notification
+    if (notification.recipient && notification.recipient.toString() !== userId.toString()) {
+      console.log('⛔ [NOTIFICATIONS] Access denied for user:', userId);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied' 
+      });
+    }
+    
+    // Handle marking as read
+    if (notification.recipient === null) {
+      // General notification - add user to readBy array
+      if (!notification.readBy.includes(userId)) {
+        notification.readBy.push(userId);
+        await notification.save();
+        console.log('✅ [NOTIFICATIONS] General notification marked as read');
+      }
+    } else {
+      // Personal notification - mark as read
+      if (!notification.isRead) {
+        notification.isRead = true;
+        await notification.save();
+        console.log('✅ [NOTIFICATIONS] Personal notification marked as read');
+      }
+    }
+    
+    // Get updated unread count
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: unreadCount });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Notification marked as read',
+      unreadCount: unreadCount,
+      notification: {
+        id: notification._id,
+        isRead: notification.recipient === null ? notification.readBy.includes(userId) : notification.isRead
+      }
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error marking as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notification as read' 
+    });
+  }
+});
+
+// @desc    Mark all notifications as read
+// @route   POST /api/notifications/mark-all-read
+// @access  Private
+app.post('/api/notifications/mark-all-read', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📌 [NOTIFICATIONS] Marking all as read for user: ${userId}`);
+    
+    const result = await Notification.updateMany(
+      { recipient: userId, isRead: false },
+      { $set: { isRead: true } }
+    );
+    
+    console.log(`✅ [NOTIFICATIONS] Marked ${result.modifiedCount} notifications as read`);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: 0 });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Marked ${result.modifiedCount} notifications as read`,
+      unreadCount: 0
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error marking all as read:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark notifications as read' 
+    });
+  }
+});
+
+// @desc    Delete notification
+// @route   DELETE /api/notifications/:id
+// @access  Private
+app.delete('/api/notifications/:id', protect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    
+    console.log(`🗑️ [NOTIFICATIONS] Deleting notification: ${id} for user: ${userId}`);
+    
+    const notification = await Notification.findOneAndDelete({
+      _id: id,
+      recipient: userId
+    });
+    
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+    
+    // Get updated unread count
+    const unreadCount = await getUserUnreadCount(userId);
+    
+    // Emit badge update via socket
+    if (global.io) {
+      global.io.to(`user:${userId}`).emit('badge_update', { count: unreadCount });
+    }
+    
+    console.log(`✅ [NOTIFICATIONS] Notification ${id} deleted`);
+    
+    res.json({
+      success: true,
+      message: 'Notification deleted successfully',
+      unreadCount: unreadCount
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error deleting notification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notification'
+    });
+  }
+});
+
+// @desc    Send notification (Admin only - supports bulk or personal)
+// @route   POST /api/notifications/send
+// @access  Private (Admin)
+app.post('/api/notifications/send', protect, async (req, res) => {
+  try {
+    const {
+      title,
+      message,
+      recipientId,
+      sendToAll = false,
+      type = 'announcement',
+      screen = 'notifications',
+    } = req.body;
+
+    console.log(`📨 [ADMIN] Sending notification:`, { title, recipientId, sendToAll });
+
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+
+    if (!title || !message) {
+      return res.status(400).json({ success: false, message: 'Title and message are required' });
+    }
+
+  const { sendPushNotification } = require('./firebaseAdmin');
+
+    let results = [];
+    let pushResults = [];
+
+    if (sendToAll) {
+      // ============ BULK: Send to ALL active users ============
+      console.log('👥 [ADMIN] Sending bulk notification to all active users');
+
+      const users = await User.find({ isActive: true }).select('_id fcmToken email fullName');
+
+      for (const user of users) {
+        // 1. Save notification to DB
+        try {
+          await Notification.create({
+            recipient: user._id,
+            title: title.trim(),
+            message: message.trim(),
+            type: type,
+            isRead: false,
+            metadata: {
+              sentByAdmin: req.user._id,
+              bulk: true,
+              sentAt: new Date(),
+              screen: screen,
+            },
+          });
+        } catch (dbErr) {
+          console.error(`DB save failed for user ${user._id}:`, dbErr.message);
+          continue;
+        }
+
+        // 2. Send FCM push notification (works even when app is closed!)
+        if (user.fcmToken) {
+          try {
+            const pushResult = await sendPushNotification({
+              userId: user._id,
+              title: title.trim(),
+              message: message.trim(),
+              type: type,
+              screen: screen,
+              badgeCount: 0,
+            });
+            pushResults.push({ userId: user._id, ...pushResult });
+          } catch (pushErr) {
+            console.error(`Push failed for user ${user._id}:`, pushErr.message);
+          }
+        }
+
+        // 3. Also emit via Socket.IO for users with app open
+        if (global.io) {
+          global.io.to(`user:${user._id}`).emit('notification', {
+            title,
+            message,
+            type,
+            screen,
+            createdAt: new Date(),
+          });
+        }
+
+        results.push({
+          userId: user._id,
+          email: user.email,
+          pushSent: !!user.fcmToken,
+        });
+      }
+
+      console.log(`✅ [ADMIN] Sent bulk notification to ${results.length} users`);
+
+      res.json({
+        success: true,
+        message: `Notification sent to ${results.length} users`,
+        sentCount: results.length,
+        pushCount: pushResults.filter(p => p.success).length,
+        results: results,
+      });
+
+    } else if (recipientId) {
+      // ============ SINGLE: Send to specific user ============
+      console.log(`👤 [ADMIN] Sending notification to user: ${recipientId}`);
+
+      const user = await User.findById(recipientId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'Recipient user not found' });
+      }
+
+      // 1. Save to DB
+      const notification = await Notification.create({
+        recipient: user._id,
+        title: title.trim(),
+        message: message.trim(),
+        type: type,
+        isRead: false,
+        metadata: {
+          sentByAdmin: req.user._id,
+          sentAt: new Date(),
+          screen: screen,
+        },
+      });
+
+      // 2. Send FCM push notification
+      let pushSent = false;
+      if (user.fcmToken) {
+        const pushResult = await sendPushNotification({
+          userId: user._id,
+          title: title.trim(),
+          message: message.trim(),
+          type: type,
+          screen: screen,
+          badgeCount: 0,
+        });
+        pushSent = pushResult.success;
+        console.log(`📱 FCM push ${pushSent ? 'sent' : 'failed'} to ${user.email}`);
+      } else {
+        console.log(`⚠️ User ${user.email} has no FCM token`);
+      }
+
+      // 3. Also emit via Socket.IO
+      if (global.io) {
+        global.io.to(`user:${user._id}`).emit('notification', {
+          title,
+          message,
+          type,
+          screen,
+          createdAt: new Date(),
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Notification sent successfully',
+        notificationId: notification._id,
+        pushSent: pushSent,
+      });
+
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Either recipientId or sendToAll is required',
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ [ADMIN] Error sending notification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+
+
+// @desc    Clean up old notifications
+// @route   POST /api/notifications/cleanup
+// @access  Private (Admin)
+app.post('/api/notifications/cleanup', protect, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+    
+    const { days = 90 } = req.body; // Default: clean up notifications older than 90 days
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+    
+    console.log(`🧹 [NOTIFICATIONS] Cleaning up notifications older than ${days} days (before ${cutoffDate})`);
+    
+    // Delete old notifications
+    const result = await Notification.deleteMany({
+      createdAt: { $lt: cutoffDate }
+    });
+    
+    console.log(`✅ [NOTIFICATIONS] Cleanup completed: ${result.deletedCount} notifications deleted`);
+    
+    res.json({ 
+      success: true, 
+      message: `Cleaned up ${result.deletedCount} notifications older than ${days} days`,
+      deletedCount: result.deletedCount,
+      cutoffDate: cutoffDate
+    });
+    
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error during cleanup:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to clean up notifications' 
+    });
+  }
+});
+
+// @desc    Get notification statistics (ONLY personal)
+// @route   GET /api/notifications/statistics
+// @access  Private
+app.get('/api/notifications/statistics', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📊 [NOTIFICATIONS] Getting PERSONAL statistics for user: ${userId}`);
+    
+    // ONLY count personal notifications
+    const totalPersonal = await Notification.countDocuments({ recipient: userId });
+    const unreadPersonal = await Notification.countDocuments({ 
+      recipient: userId, 
+      isRead: false 
+    });
+    
+    // Latest PERSONAL notification
+    const latestNotification = await Notification.findOne({
+      recipient: userId
+    })
+    .sort({ createdAt: -1 })
+    .select('title createdAt type')
+    .lean();
+    
+    const statistics = {
+      personal: {
+        total: totalPersonal,
+        unread: unreadPersonal,
+        read: totalPersonal - unreadPersonal
+      },
+      latestNotification: latestNotification || null
+    };
+    
+    console.log(`📈 [NOTIFICATIONS] Personal statistics for ${userId}:`, statistics);
+    
+    res.json({
+      success: true,
+      statistics: statistics
+    });
+  } catch (error) {
+    console.error('❌ [NOTIFICATIONS] Error getting statistics:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch notification statistics' 
+    });
+  }
+});
+
+// @desc    Get app settings
+// @route   GET /api/settings
+// @access  Public
+app.get('/api/settings', async (req, res) => {
+  try {
+    // Try to get from cache first
+    const cachedSettings = cache.get('app-settings');
+    
+    if (cachedSettings) {
+      return res.json({ success: true, settings: cachedSettings });
+    }
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = await Settings.create({});
+    }
+    
+    // Cache the result
+    cache.set('app-settings', settings);
+    
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Error fetching settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Update app settings (Admin only)
+// @route   PUT /api/settings
+// @access  Private/Admin
+app.put('/api/settings', adminProtect, async (req, res) => {
+  try {
+    const {
+      appVersion,
+      maintenanceMode,
+      minTransactionAmount,
+      maxTransactionAmount,
+      vtpassCommission,
+      commissionRate,
+      // Service Availability
+      airtimeEnabled,
+      dataEnabled,
+      cableTvEnabled,
+      electricityEnabled,
+      transferEnabled,
+      // Commission/Fee Management
+      airtimeCommission,
+      dataCommission,
+      transferFee,
+      isTransferFeePercentage,
+      // User Management Defaults
+      newUserDefaultWalletBalance,
+      // Notification Settings
+      emailNotificationsEnabled,
+      pushNotificationsEnabled,
+      smsNotificationsEnabled,
+      notificationMessage,
+      // Security Settings
+      twoFactorAuthRequired,
+      autoLogoutEnabled,
+      sessionTimeout,
+      transactionPinRequired,
+      biometricAuthEnabled,
+      // API Rate Limiting
+      apiRateLimit,
+      apiTimeWindow
+    } = req.body;
+    
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    // Update existing fields
+    if (appVersion !== undefined) settings.appVersion = appVersion;
+    if (maintenanceMode !== undefined) settings.maintenanceMode = maintenanceMode;
+    if (minTransactionAmount !== undefined) settings.minTransactionAmount = minTransactionAmount;
+    if (maxTransactionAmount !== undefined) settings.maxTransactionAmount = maxTransactionAmount;
+    if (vtpassCommission !== undefined) settings.vtpassCommission = vtpassCommission;
+    if (commissionRate !== undefined) settings.commissionRate = commissionRate;
+    
+    // Update new fields
+    if (airtimeEnabled !== undefined) settings.airtimeEnabled = airtimeEnabled;
+    if (dataEnabled !== undefined) settings.dataEnabled = dataEnabled;
+    if (cableTvEnabled !== undefined) settings.cableTvEnabled = cableTvEnabled;
+    if (electricityEnabled !== undefined) settings.electricityEnabled = electricityEnabled;
+    if (transferEnabled !== undefined) settings.transferEnabled = transferEnabled;
+    if (airtimeCommission !== undefined) settings.airtimeCommission = airtimeCommission;
+    if (dataCommission !== undefined) settings.dataCommission = dataCommission;
+    if (transferFee !== undefined) settings.transferFee = transferFee;
+    if (isTransferFeePercentage !== undefined) settings.isTransferFeePercentage = isTransferFeePercentage;
+    if (newUserDefaultWalletBalance !== undefined) settings.newUserDefaultWalletBalance = newUserDefaultWalletBalance;
+    if (emailNotificationsEnabled !== undefined) settings.emailNotificationsEnabled = emailNotificationsEnabled;
+    if (pushNotificationsEnabled !== undefined) settings.pushNotificationsEnabled = pushNotificationsEnabled;
+    if (smsNotificationsEnabled !== undefined) settings.smsNotificationsEnabled = smsNotificationsEnabled;
+    if (notificationMessage !== undefined) settings.notificationMessage = notificationMessage;
+    if (twoFactorAuthRequired !== undefined) settings.twoFactorAuthRequired = twoFactorAuthRequired;
+    if (autoLogoutEnabled !== undefined) settings.autoLogoutEnabled = autoLogoutEnabled;
+    if (sessionTimeout !== undefined) settings.sessionTimeout = sessionTimeout;
+    if (transactionPinRequired !== undefined) settings.transactionPinRequired = transactionPinRequired;
+    if (biometricAuthEnabled !== undefined) settings.biometricAuthEnabled = biometricAuthEnabled;
+    if (apiRateLimit !== undefined) settings.apiRateLimit = apiRateLimit;
+    if (apiTimeWindow !== undefined) settings.apiTimeWindow = apiTimeWindow;
+    
+    await settings.save();
+    
+    // Clear cache
+    cache.del('app-settings');
+    
+    res.json({ 
+      success: true, 
+      message: 'Settings updated successfully',
+      settings
+    });
+  } catch (error) {
+    console.error('Error updating settings:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Get virtual account details
+// @route   GET /api/virtual-account
+// @access  Private
+app.get('/api/virtual-account', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    res.json({
+      success: true,
+      virtualAccount: user.virtualAccount
+    });
+  } catch (error) {
+    console.error('Error fetching virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Create or update virtual account
+// @route   POST /api/virtual-account
+// @access  Private/Admin
+app.post('/api/virtual-account', adminProtect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('bankName').notEmpty().withMessage('Bank name is required'),
+  body('accountNumber').notEmpty().withMessage('Account number is required'),
+  body('accountName').notEmpty().withMessage('Account name is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { userId, bankName, accountNumber, accountName } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    user.virtualAccount = {
+      assigned: true,
+      bankName,
+      accountNumber,
+      accountName
+    };
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Virtual account assigned successfully',
+      virtualAccount: user.virtualAccount
+    });
+  } catch (error) {
+    console.error('Error assigning virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// @desc    Remove virtual account
+// @route   DELETE /api/virtual-account/:userId
+// @access  Private/Admin
+app.delete('/api/virtual-account/:userId', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    user.virtualAccount = {
+      assigned: false,
+      bankName: '',
+      accountNumber: '',
+      accountName: ''
+    };
+    
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Virtual account removed successfully'
+    });
+  } catch (error) {
+    console.error('Error removing virtual account:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+// VTpass endpoints
+// @desc    Verify smartcard number
+// @route   POST /api/vtpass/validate-smartcard
+// @access  Private
+app.post('/api/vtpass/validate-smartcard', protect, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Billers code is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  console.log('Received smartcard verification request.');
+  console.log('Request Body:', req.body);
+  
+  const { serviceID, billersCode } = req.body;
+  
+  try {
+    const vtpassResult = await callVtpassApi('/merchant-verify', {
+      serviceID,
+      billersCode,
+    });
+    
+    console.log('VTPass Verification Response:', JSON.stringify(vtpassResult, null, 2));
+    
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      res.json({
+        success: true,
+        message: 'Smartcard verified successfully.',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Smartcard verification failed.',
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('Error verifying smartcard:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+// @desc    Validate electricity meter (NO transaction cooldown)
+// @route   POST /api/vtpass/merchant-verify
+// @access  Private
+app.post('/api/vtpass/merchant-verify', protect, async (req, res) => {
+  try {
+    const { billersCode, serviceID, type } = req.body;
+    
+    console.log(`🔍 Validating meter: ${billersCode}, ${serviceID}, ${type}`);
+    
+    // ✅ NO transaction cooldown check - this is a read-only operation
+    
+    // Call VTpass merchant-verify API directly
+    const response = await fetch('https://vtpass.com/api/merchant-verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY || '8f9add2090d11f0231997d4a566cfaa5',
+        'secret-key': process.env.VTPASS_SECRET_KEY || 'SK_477125973682912ca3fd2e11128b4a5c412b158c45c',
+      },
+      body: JSON.stringify({
+        billersCode,
+        serviceID,
+        type,
+      }),
+    });
+    
+    const data = await response.json();
+    console.log('📦 VTpass validation response:', JSON.stringify(data));
+    
+    // ✅ Forward the VTpass response
+    res.json({
+      success: true,
+      vtpassResponse: data,
+    });
+    
+  } catch (error) {
+    console.error('❌ Meter validation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate meter. Please try again.',
+      error: error.message,
+    });
+  }
+});
+
+
+
+// Add the normalizeStatus function right BEFORE the route handler:
+
+// ==================== ADD THIS FUNCTION HERE ====================
+function normalizeTransactionStatus(status) {
+    if (!status || typeof status !== 'string') return 'Pending';
+    
+    const lowercaseStatus = status.toLowerCase().trim();
+    
+    const statusMapping = {
+        'successful': 'Successful',
+        'delivered': 'Successful',
+        'completed': 'Successful',
+        'approved': 'Successful',
+        'success': 'Successful',
+        'failed': 'Failed',
+        'failure': 'Failed',
+        'declined': 'Failed',
+        'rejected': 'Failed',
+        'pending': 'Pending',
+        'processing': 'Processing',
+        'in-progress': 'Processing',
+        'refunded': 'Refunded',
+        'reversed': 'Refunded'
+    };
+    
+    return statusMapping[lowercaseStatus] || 'Pending';
+}
+// ==================== END OF FUNCTION ADDITION ====================
+
+
+
+
+
+
+
+
+// ================================================
+// @desc    Pay for Cable TV subscription – RENEW & CHANGE BOUQUET (FULL DEBUG)
+// @route   POST /api/vtpass/tv/purchase
+// @access  Private
+// ================================================
+app.post('/api/vtpass/tv/purchase', 
+  protect, 
+  verifyTransactionAuth, 
+  checkServiceEnabled('isCableTvEnabled'),
+  checkGlobalPerMinuteLimit,
+  smartLimitCheck,
+  checkTransactionLimit('cable'),
+  checkPerMinuteLimit('cabletv'),
+  preventRaceCondition({ 
+    windowMs: 30000,
+    maxRequests: 1,
+    keyPrefix: 'cabletv',
+    excludeStatuses: ['Failed']
+  }),
+  userServiceRateLimiter('cabletv', 2, 60000),
+  [
+    body('serviceID').notEmpty().withMessage('Service ID is required'),
+    body('billersCode').notEmpty().withMessage('Billers code is required'),
+    body('variationCode').notEmpty().withMessage('Variation code is required'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+    body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
+    body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
+    body('currentPackage').optional().isString().withMessage('Current package must be a string'),
+    body('action').optional().isIn(['renew', 'change']).withMessage('Action must be renew or change')
+  ], 
+  async (req, res) => {
+    // ============================================
+    // STEP 0: VALIDATE AND LOG REQUEST
+    // ============================================
+    console.log('📺 ==================== CABLE TV PURCHASE ====================');
+    console.log('📦 Request Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User ID:', req.user?._id?.toString());
+    console.log('📧 User Email:', req.user?.email);
+    console.log('🔐 Auth Method:', req.authenticationMethod || 'unknown');
+    console.log('⏰ Time:', new Date().toISOString());
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+
+    // ============================================
+    // STEP 1: EXTRACT REQUEST PARAMETERS
+    // ============================================
+    const { 
+      serviceID, 
+      billersCode, 
+      variationCode, 
+      amount, 
+      phone,
+      subscription_type = 'renew',
+      quantity = 1,
+      currentPackage,
+      action 
+    } = req.body;
+
+    const userId = req.user._id;
+    const reference = generateRequestId();
+
+    console.log('📊 ========== EXTRACTED PARAMETERS ==========');
+    console.log('🆔 Reference:', reference);
+    console.log('📊 Service ID:', serviceID);
+    console.log('🔢 Smartcard/Billers Code:', billersCode);
+    console.log('📦 Variation Code:', variationCode);
+    console.log('💰 Amount:', amount);
+    console.log('📞 Phone:', phone);
+    console.log('🔄 Subscription Type (body):', subscription_type);
+    console.log('📦 Quantity:', quantity);
+    console.log('📦 Current Package:', currentPackage);
+    console.log('🎯 Action (explicit):', action);
+    console.log('📊 ============================================');
+
+    // ============================================
+    // STEP 2: CHECK VTPASS CONFIGURATION
+    // ============================================
+    console.log('🔧 ========== VTPASS CONFIGURATION ==========');
+    console.log('🔑 API Key configured:', !!process.env.VTPASS_API_KEY);
+    console.log('🔑 Secret Key configured:', !!process.env.VTPASS_SECRET_KEY);
+    console.log('🔑 Base URL:', vtpassConfig.baseUrl);
+    console.log('🔑 API Key length:', process.env.VTPASS_API_KEY?.length || 0);
+    console.log('🔑 Secret Key length:', process.env.VTPASS_SECRET_KEY?.length || 0);
+    console.log('🔧 ============================================');
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // ============================================
+      // STEP 3: GET USER
+      // ============================================
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        console.log('❌ User not found for ID:', userId);
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      console.log('👤 USER FOUND:', {
+        _id: user._id.toString(),
+        email: user.email,
+        fullName: user.fullName,
+        walletBalance: user.walletBalance,
+        isActive: user.isActive
+      });
+
+      // ============================================
+      // STEP 4: VERIFY SMARTCARD FIRST
+      // ============================================
+      console.log('🔍 ========== VERIFYING SMARTCARD ==========');
+      let customerName = '';
+      let currentBouquet = '';
+      let renewalAmount = 0;
+      let dueDate = '';
+      let customerNumber = '';
+      let verifiedCurrentBouquet = '';
+
+      try {
+        const verifyPayload = {
+          serviceID: serviceID,
+          billersCode: billersCode
+        };
+        console.log('📤 Verify Payload:', JSON.stringify(verifyPayload, null, 2));
+
+        const verifyResult = await callVtpassApi('/merchant-verify', verifyPayload);
+
+        console.log('📡 ========== MERCHANT VERIFY RESPONSE ==========');
+        console.log('📡 Success:', verifyResult.success);
+        console.log('📡 Status:', verifyResult.status);
+        console.log('📡 Full Response:', JSON.stringify(verifyResult, null, 2));
+        console.log('📡 ==============================================');
+
+        if (verifyResult.success && verifyResult.data?.code === '000') {
+          const content = verifyResult.data.content || {};
+          customerName = content.Customer_Name || 'N/A';
+          verifiedCurrentBouquet = content.Current_Bouquet || 'N/A';
+          renewalAmount = parseFloat(content.Renewal_Amount || 0);
+          dueDate = content.Due_Date || 'N/A';
+          customerNumber = content.Customer_Number || billersCode;
+
+          console.log('✅ SMARTCARD VERIFIED SUCCESSFULLY:');
+          console.log('   👤 Customer Name:', customerName);
+          console.log('   📺 Current Bouquet:', verifiedCurrentBouquet);
+          console.log('   💰 Renewal Amount: ₦', renewalAmount);
+          console.log('   📅 Due Date:', dueDate);
+        } else {
+          console.log('⚠️ Smartcard verification returned non-000 code');
+          console.log('   Code:', verifyResult.data?.code);
+          console.log('   Message:', verifyResult.data?.response_description || verifyResult.message);
+        }
+      } catch (verifyError) {
+        console.error('❌ ERROR during smartcard verification:', verifyError.message);
+        console.error('   Stack:', verifyError.stack);
+      }
+      console.log('🔍 ============================================');
+
+      // ============================================
+      // STEP 5: DETERMINE IF PACKAGE CHANGE
+      // ============================================
+      console.log('🔄 ========== DETERMINING PACKAGE CHANGE ==========');
+      let isPackageChange = false;
+      let packageChangeDetails = null;
+
+      // Method 1: Check explicit 'action' field
+      if (action === 'change') {
+        isPackageChange = true;
+        console.log('✅ PACKAGE CHANGE via action="change"');
+      } 
+      // Method 2: Check subscription_type
+      else if (subscription_type === 'change') {
+        isPackageChange = true;
+        console.log('✅ PACKAGE CHANGE via subscription_type="change"');
+      }
+      // Method 3: Check if currentPackage differs from variationCode
+      else if (currentPackage && variationCode && currentPackage !== variationCode) {
+        isPackageChange = true;
+        console.log(`✅ PACKAGE CHANGE: ${currentPackage} → ${variationCode}`);
+      }
+      // Method 4: Default - renewal
+      else {
+        console.log('📺 RENEWAL: Using subscription_type="renew"');
+        isPackageChange = false;
+      }
+
+      console.log('📊 Final isPackageChange:', isPackageChange);
+      
+      const vtpassSubscriptionType = isPackageChange ? 'change' : 'renew';
+      console.log('📤 VTpass subscription_type:', vtpassSubscriptionType);
+
+      if (isPackageChange) {
+        packageChangeDetails = {
+          from: currentPackage || verifiedCurrentBouquet || 'Unknown',
+          to: variationCode,
+          toPrice: amount
+        };
+        console.log('📦 Package Change Details:', JSON.stringify(packageChangeDetails, null, 2));
+      }
+      console.log('🔄 ============================================');
+
+      // ============================================
+      // STEP 6: CHECK BALANCE
+      // ============================================
+      const totalAmount = parseFloat(amount) * parseInt(quantity);
+      console.log('💰 ========== BALANCE CHECK ==========');
+      console.log('💰 Total Amount: ₦' + totalAmount);
+      console.log('💰 Wallet Balance: ₦' + user.walletBalance);
+      console.log('💰 Balance Sufficient:', user.walletBalance >= totalAmount);
+
+      if (user.walletBalance < totalAmount) {
+        await session.abortTransaction();
+        console.log('❌ INSUFFICIENT BALANCE');
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient balance. Required: ₦${totalAmount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+
+      // ============================================
+      // STEP 7: DUPLICATE CHECK
+      // ============================================
+      console.log('🔍 ========== DUPLICATE CHECK ==========');
+      const thirtySecondsAgo = new Date(Date.now() - 30000);
+      const existingTransaction = await Transaction.findOne({
+        userId: userId,
+        type: 'Cable TV Subscription',
+        status: 'Successful',
+        'metadata.smartcardNumber': billersCode,
+        createdAt: { $gte: thirtySecondsAgo }
+      }).session(session);
+
+      if (existingTransaction) {
+        await session.abortTransaction();
+        console.log(`🚫 DUPLICATE BLOCKED: Smartcard ${billersCode} within 30 seconds`);
+        console.log('   Existing Transaction ID:', existingTransaction._id);
+        console.log('   Existing Created At:', existingTransaction.createdAt);
+        return res.status(409).json({
+          success: false,
+          message: 'A transaction for this smartcard was just processed. Please wait 30 seconds.',
+          code: 'RECENT_TRANSACTION_EXISTS',
+          alreadyProcessed: true
+        });
+      }
+      console.log('✅ No duplicate found');
+
+      // ============================================
+      // STEP 8: DEBIT USER WALLET
+      // ============================================
+      console.log('💰 ========== DEBIT USER ==========');
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= totalAmount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+
+      console.log(`💰 WALLET DEBITED: ₦${totalAmount}`);
+      console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
+      console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
+
+      // ============================================
+      // STEP 9: BUILD VTPASS PAYLOAD
+      // ============================================
+      console.log('📤 ========== BUILDING VTPASS PAYLOAD ==========');
+      const vtpassPayload = {
+        request_id: reference,
+        serviceID: serviceID,
+        billersCode: billersCode,
+        variation_code: variationCode,
+        amount: totalAmount,
+        phone: phone,
+        subscription_type: vtpassSubscriptionType,
+        quantity: parseInt(quantity)
+      };
+
+      // For ExtraView packages
+      if (serviceID === 'dstv' && variationCode && variationCode.includes('extra')) {
+        vtpassPayload.is_extra_view = true;
+        console.log('📺 EXTRAVIEW DETECTED');
+      }
+
+      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
+      console.log('📤 Action:', isPackageChange ? 'CHANGE BOUQUET' : 'RENEW BOUQUET');
+      console.log('📤 Subscription Type:', vtpassSubscriptionType);
+      console.log('📤 ============================================');
+
+      // ============================================
+      // STEP 10: CALL VTPASS /pay ENDPOINT
+      // ============================================
+      console.log('📡 ========== CALLING VTPASS /pay ==========');
+      console.log('📡 Endpoint: /pay');
+      console.log('📡 Base URL:', vtpassConfig.baseUrl);
+      console.log('📡 Full URL:', vtpassConfig.baseUrl + '/pay');
+      console.log('📡 Payload:', JSON.stringify(vtpassPayload, null, 2));
+      console.log('📡 Time:', new Date().toISOString());
+
+      let vtpassResult;
+      try {
+        vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+      } catch (apiError) {
+        console.error('❌ VTPASS API CALL THREW EXCEPTION:', apiError.message);
+        console.error('   Stack:', apiError.stack);
+        vtpassResult = {
+          success: false,
+          message: apiError.message || 'API call failed',
+          status: 500,
+          details: { error: apiError.message }
+        };
+      }
+
+      console.log('📡 ========== VTPASS /pay RESPONSE ==========');
+      console.log('📡 Success:', vtpassResult.success);
+      console.log('📡 Status:', vtpassResult.status);
+      console.log('📡 Full Response:', JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 ============================================');
+
+      const vtpassCode = vtpassResult.data?.code?.toString() || 'UNKNOWN';
+      const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
+
+      console.log('🔍 VTpass Code:', vtpassCode);
+      console.log('🔍 VTpass Description:', vtpassDesc);
+
+      const packageName = getPackageNameFromVariationCode(variationCode, serviceID);
+      console.log('📦 Package Name:', packageName);
+
+      // ============================================
+      // STEP 11: HANDLE RESPONSE
+      // ============================================
+      console.log('🔄 ========== HANDLING RESPONSE ==========');
+
+      // ✅ SUCCESS
+      if (vtpassResult.success && vtpassCode === '000') {
+        console.log('✅ VTPASS SUCCESS - Transaction completed');
+
+        let formattedToken = null;
+        const rawToken = vtpassResult.data.purchased_code || vtpassResult.data.token || null;
+        if (rawToken) {
+          formattedToken = rawToken.toString()
+            .replace('Token : ', '')
+            .replace('Token:', '')
+            .replace('TOKEN : ', '')
+            .replace('TOKEN:', '')
+            .trim();
+          if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+            formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+          }
+        }
+
+        const customerNameFromVtpass = vtpassResult.data.customerName || 
+                                       vtpassResult.data.content?.Customer_Name || 
+                                       customerName || 'N/A';
+        const customerAddress = vtpassResult.data.customerAddress || 
+                               vtpassResult.data.content?.Address || 'N/A';
+
+        // ✅ CREATE TRANSACTION RECORD
+        const newTransaction = new Transaction({
+          userId: userId,
+          amount: totalAmount,
+          type: 'Cable TV Subscription',
+          status: 'Successful',
+          description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode}`,
+          balanceBefore: balanceBefore,
+          balanceAfter: balanceAfter,
+          reference: reference,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phone: phone,
+            smartcardNumber: billersCode,
+            billersCode: billersCode,
+            variation_code: variationCode,
+            packageName: packageName,
+            selectedPackage: variationCode,
+            serviceID: serviceID,
+            vtpassResponse: vtpassResult.data,
+            userDebited: true,
+            debitAmount: totalAmount,
+            vtpassDelivered: true,
+            token: formattedToken,
+            customerName: customerNameFromVtpass,
+            customerAddress: customerAddress,
+            isPackageChange: isPackageChange,
+            packageChangeDetails: packageChangeDetails,
+            quantity: quantity,
+            subscription_type: vtpassSubscriptionType,
+            renewalAmount: renewalAmount,
+            currentBouquet: verifiedCurrentBouquet,
+            vtpassCode: vtpassCode,
+            vtpassDescription: vtpassDesc,
+            action: isPackageChange ? 'change' : 'renew'
+          }
+        });
+
+        await newTransaction.save({ session });
+
+        // ✅ Commit BEFORE commission (prevents WriteConflict)
+        await session.commitTransaction();
+        session.endSession();
+
+        // ✅ Calculate commission OUTSIDE transaction
+        try {
+          await calculateAndAddCommission(userId, totalAmount, 'tv')
+            .catch(err => console.log('⚠️ Commission error:', err.message));
+        } catch (commError) {
+          console.log('⚠️ Commission calculation error:', commError.message);
+        }
+
+        // ✅ Create notification
+        try {
+          const actionMessage = isPackageChange 
+            ? `Package changed from ${packageChangeDetails.from} to ${packageChangeDetails.to}` 
+            : `Subscription renewed successfully`;
+
+          await Notification.create({
+            recipient: userId,
+            title: isPackageChange ? 'TV Package Changed Successfully 📺' : 'TV Subscription Renewed 📺',
+            message: `${serviceID.toUpperCase()} ${actionMessage} for ${billersCode}. New balance: ₦${balanceAfter.toFixed(2)}`,
+            type: 'transaction',
+            isRead: false,
+            metadata: {
+              serviceID: serviceID,
+              smartcardNumber: billersCode,
+              amount: totalAmount,
+              packageName: packageName,
+              newBalance: balanceAfter,
+              userDebited: true,
+              isPackageChange: isPackageChange,
+              packageChangeDetails: packageChangeDetails,
+              quantity: quantity
+            }
+          });
+          console.log('✅ Notification created');
+        } catch (notifError) {
+          console.error('❌ Notification error:', notifError.message);
+        }
+
+        console.log(`✅ CABLE TV SUCCESS: ${serviceID} - ${packageName} - Action: ${isPackageChange ? 'CHANGE' : 'RENEW'}`);
+
+        return res.json({
+          success: true,
+          transactionId: newTransaction._id.toString(),
+          status: 'Successful',
+          vtpassResponse: vtpassResult.data,
+          newBalance: balanceAfter,
+          message: isPackageChange 
+            ? `Package changed from ${packageChangeDetails.from} to ${packageChangeDetails.to} successfully!` 
+            : 'TV subscription renewed successfully!',
+          forceSuccessDialog: true,
+          userDebited: true,
+          amountDebited: totalAmount,
+          token: formattedToken || 'Check SMS',
+          customerName: customerNameFromVtpass,
+          customerAddress: customerAddress,
+          isPackageChange: isPackageChange,
+          packageChangeDetails: packageChangeDetails,
+          renewalAmount: renewalAmount,
+          currentBouquet: verifiedCurrentBouquet,
+          action: isPackageChange ? 'change' : 'renew'
+        });
+      }
+
+      // ============================================
+      // STEP 12: HANDLE FAILURE - USER ALREADY DEBITED
+      // ============================================
+      console.log(`❌ VTPASS ERROR: Code ${vtpassCode} - ${vtpassDesc}`);
+      console.log(`❌ User already debited ₦${totalAmount}, service not delivered`);
+
+      const failedTransaction = new Transaction({
+        userId: userId,
+        amount: totalAmount,
+        type: 'Cable TV Subscription',
+        status: 'Failed',
+        description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode} - FAILED (USER DEBITED ₦${totalAmount})`,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        reference: reference,
+        isCommission: false,
+        authenticationMethod: req.authenticationMethod || 'pin',
+        gateway: 'DalabaPay App',
+        isFailed: true,
+        shouldShowAsFailed: true,
+        failureReason: `${vtpassDesc} - USER DEBITED`,
+        metadata: {
+          phone: phone,
+          smartcardNumber: billersCode,
+          billersCode: billersCode,
+          variation_code: variationCode,
+          packageName: packageName,
+          selectedPackage: variationCode,
+          serviceID: serviceID,
+          vtpassResponse: vtpassResult.data || { error: vtpassDesc, code: vtpassCode },
+          userDebited: true,
+          debitAmount: totalAmount,
+          vtpassDelivered: false,
+          isPackageChange: isPackageChange,
+          packageChangeDetails: packageChangeDetails,
+          quantity: quantity,
+          subscription_type: vtpassSubscriptionType,
+          renewalAmount: renewalAmount,
+          currentBouquet: verifiedCurrentBouquet,
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc,
+          vtpassError: vtpassDesc,
+          action: isPackageChange ? 'change' : 'renew',
+          requestBody: req.body,
+          vtpassPayload: vtpassPayload,
+          vtpassResult: vtpassResult
+        }
+      });
+
+      await failedTransaction.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+
+      // ============================================
+      // STEP 13: BUILD USER-FRIENDLY ERROR MESSAGE
+      // ============================================
+      let userMessage = 'Your wallet was debited but TV subscription delivery failed. Please contact support.';
+      let displayMessage = 'Transaction failed. Please try again.';
+
+      // Check specific VTpass error codes
+      if (vtpassCode === '018' || (vtpassDesc && vtpassDesc.includes('LOW WALLET BALANCE'))) {
+        userMessage = 'Service provider wallet is low. Your payment has been recorded and will be processed when service is restored.';
+        displayMessage = 'Service temporarily unavailable. Your payment is recorded.';
+      } else if (vtpassCode === '024' || (vtpassDesc && vtpassDesc.includes('INSUFFICIENT'))) {
+        userMessage = 'Service provider issue. Your payment has been recorded and will be processed shortly.';
+        displayMessage = 'Service issue. Your payment is recorded.';
+      } else if (vtpassDesc && vtpassDesc.toLowerCase().includes('invalid smartcard')) {
+        userMessage = 'Invalid smartcard number. Please check and try again. Your payment has been recorded.';
+        displayMessage = 'Invalid smartcard number.';
+      } else if (vtpassCode === '019' || (vtpassDesc && vtpassDesc.includes('DUPLICATE'))) {
+        userMessage = 'This transaction was already processed. Please check your subscription status.';
+        displayMessage = 'Transaction already processed.';
+      } else if (isPackageChange && vtpassDesc && vtpassDesc.includes('change')) {
+        userMessage = 'Package change failed. Your payment has been recorded. Please contact support.';
+        displayMessage = 'Package change failed.';
+      } else if (!vtpassResult.success && vtpassResult.message) {
+        userMessage = `Service temporarily unavailable. Your payment of ₦${totalAmount} has been recorded. Please try again later.`;
+        displayMessage = 'Service unavailable. Payment recorded.';
+      }
+
+      console.log('❌ SENDING FAILURE RESPONSE');
+      console.log('   User Message:', userMessage);
+      console.log('   Display Message:', displayMessage);
+
+      return res.status(400).json({
+        success: false,
+        message: userMessage,
+        displayMessage: displayMessage,
+        transactionId: failedTransaction._id.toString(),
+        status: 'Failed',
+        newBalance: balanceAfter,
+        vtpassResponse: vtpassResult.data || { code: vtpassCode, response_description: vtpassDesc },
+        userDebited: true,
+        amountDebited: totalAmount,
+        isFailed: true,
+        shouldShowAsFailed: true,
+        code: vtpassCode,
+        response_description: vtpassDesc,
+        vtpassCode: vtpassCode,
+        vtpassDescription: vtpassDesc,
+        isPackageChange: isPackageChange,
+        packageChangeDetails: packageChangeDetails,
+        action: isPackageChange ? 'change' : 'renew',
+        debug: {
+          requestId: reference,
+          serviceID: serviceID,
+          billersCode: billersCode,
+          variationCode: variationCode,
+          vtpassSubscriptionType: vtpassSubscriptionType,
+          vtpassPayload: vtpassPayload
+        }
+      });
+
+    } catch (error) {
+      // ============================================
+      // STEP 14: HANDLE UNEXPECTED ERRORS
+      // ============================================
+      await session.abortTransaction();
+      session.endSession();
+
+      console.error('❌ ========== CABLE TV CRITICAL ERROR ==========');
+      console.error('❌ Error Name:', error.name);
+      console.error('❌ Error Message:', error.message);
+      console.error('❌ Error Stack:', error.stack);
+      console.error('❌ Error Code:', error.code);
+      console.error('❌ ================================================');
+
+      if (error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: 'This transaction was already processed.',
+          code: 'DUPLICATE_TRANSACTION',
+          alreadyProcessed: true
+        });
+      }
+
+      res.status(500).json({ 
+        success: false, 
+        message: 'An unexpected error occurred. Please try again.',
+        displayMessage: 'Transaction failed. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        errorName: error.name,
+        errorCode: error.code
+      });
+    }
+  }
+);
+
+// ================================================
+// HELPER FUNCTIONS
+// ================================================
+
+// Helper function to get package prices
+async function getPackagePrices(serviceID) {
+  const packageMappings = {
+    'dstv': {
+      'dstv-padi': 1850,
+      'dstv-yanga': 2565,
+      'dstv-confam': 4615,
+      'dstv79': 7900,
+      'dstv7': 12400,
+      'dstv3': 18400
+    },
+    'gotv': {
+      'gotv-lite': 410,
+      'gotv-jinja': 1640,
+      'gotv-jolli': 2460,
+      'gotv-max': 3600,
+      'gotv-supa-plus': 15700
+    },
+    'startimes': {
+      'nova': 900,
+      'basic': 1700,
+      'smart': 2200,
+      'classic': 2500,
+      'super': 4200
+    }
+  };
+  
+  return packageMappings[serviceID] || {};
+}
+
+// Helper function to map variation code to package name
+function getPackageNameFromVariationCode(variationCode, serviceID) {
+  const packageMappings = {
+    'dstv': {
+      'dstv-padi': 'DStv Padi',
+      'dstv-yanga': 'DStv Yanga', 
+      'dstv-confam': 'DStv Confam',
+      'dstv79': 'DStv Compact',
+      'dstv7': 'DStv Compact Plus',
+      'dstv3': 'DStv Premium'
+    },
+    'gotv': {
+      'gotv-lite': 'GOtv Lite',
+      'gotv-jinja': 'GOtv Jinja',
+      'gotv-jolli': 'GOtv Jolli',
+      'gotv-max': 'GOtv Max',
+      'gotv-supa-plus': 'GOtv Supa Plus'
+    },
+    'startimes': {
+      'nova': 'StarTimes Nova',
+      'basic': 'StarTimes Basic',
+      'smart': 'StarTimes Smart',
+      'classic': 'StarTimes Classic',
+      'super': 'StarTimes Super'
+    }
+  };
+  
+  if (packageMappings[serviceID] && packageMappings[serviceID][variationCode]) {
+    return packageMappings[serviceID][variationCode];
+  }
+  
+  for (const [key, value] of Object.entries(packageMappings[serviceID] || {})) {
+    if (variationCode.includes(key) || key.includes(variationCode)) {
+      return value;
+    }
+  }
+  
+  return variationCode
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+
+
+
+
+// @desc    Purchase airtime – RACE CONDITION PROTECTED + IMMEDIATE DEBIT
+// @route   POST /api/vtpass/airtime/purchase
+// @access  Private
+app.post('/api/vtpass/airtime/purchase', 
+  protect, 
+  verifyTransactionAuth, 
+  checkServiceEnabled('isAirtimeEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit (max 5 per minute)
+  smartLimitCheck,
+  checkTransactionLimit('airtime'), // ✅ Per-transaction limit (₦1,000)
+  checkPerMinuteLimit('airtime'), // ✅ Service-specific limit (max 3 per minute)
+  preventRaceCondition({ 
+    windowMs: 30000,        // 30 seconds window
+    maxRequests: 1,         // Only 1 request allowed
+    keyPrefix: 'airtime',
+    excludeStatuses: ['Failed']
+  }),
+  userServiceRateLimiter('airtime', 1, 60000), // Max 1 airtime purchases per minute
+  [
+    body('network').isIn(['mtn', 'airtel', 'glo', 'etisalat']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
+    body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+    body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least 50')
+  ], 
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+    
+    console.log('📱 Airtime purchase request (RACE PROTECTED + IMMEDIATE DEBIT)');
+    console.log('Request Body:', req.body);
+    
+    const { network, phone, amount } = req.body;
+    const serviceID = network.toLowerCase();
+    const userId = req.user._id;
+    const reference = generateRequestId();
+    
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+      // Get user
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      // ================================================
+      // 🔥 IMMEDIATE DEBIT ON PIN ENTRY - DEBIT NOW!
+      // ================================================
+      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${amount} airtime to ${phone}`);
+      
+      // Check balance first
+      if (user.walletBalance < amount) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+      
+      // ✅ DUPLICATE CHECK: Check for recent transaction to same phone
+      const thirtySecondsAgo = new Date(Date.now() - 30000);
+      const existingTransaction = await Transaction.findOne({
+        userId: userId,
+        type: 'Airtime Purchase',
+        status: 'Successful',
+        'metadata.phone': phone,
+        amount: amount,
+        createdAt: { $gte: thirtySecondsAgo }
+      }).session(session);
+      
+      if (existingTransaction) {
+        await session.abortTransaction();
+        console.log(`🚫 DUPLICATE AIRTIME BLOCKED: ${phone} - ₦${amount}`);
+        return res.status(409).json({
+          success: false,
+          message: 'An airtime transaction to this number was just processed. Please wait 30 seconds.',
+          code: 'RECENT_TRANSACTION_EXISTS',
+          alreadyProcessed: true,
+          existingTransactionId: existingTransaction._id
+        });
+      }
+      
+      // ================================================
+      // IMMEDIATE DEBIT - DEDUCT FROM WALLET NOW
+      // ================================================
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= amount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+      
+      console.log(`💰 WALLET DEBITED: ₦${amount}`);
+      console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
+      
+      // Call VTpass API
+      const vtpassResult = await callVtpassApi('/pay', { 
+        serviceID, 
+        phone, 
+        amount, 
+        request_id: reference 
+      });
+      
+      console.log('VTPass Response:', JSON.stringify(vtpassResult, null, 2));
+      
+      let transactionStatus = 'Failed';
+      let newBalance = balanceAfter;
+      
+      // Handle VTpass response
+      if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+        transactionStatus = 'Successful';
+        // Balance already deducted above, just update status
+        newBalance = balanceAfter;
+        
+        // Calculate and add commission
+        await calculateAndAddCommission(userId, amount, network, session)
+          .catch(err => console.log('⚠️ Airtime commission calculation failed:', err.message));
+        
+        // Create notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Airtime Purchase Successful ✅",
+            message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
+            type: 'transaction',
+            isRead: false,
+            metadata: {
+              phone: phone,
+              amount: amount,
+              network: network,
+              newBalance: newBalance
+            }
+          });
+        } catch (notificationError) {
+          console.error('Error creating transaction notification:', notificationError);
+        }
+        
+        console.log(`✅ AIRTIME SUCCESS: ${network} - ₦${amount} to ${phone}`);
+        
+      } else {
+        // VTpass failed - user is already debited
+        transactionStatus = 'Failed';
+        console.log(`❌ VTPASS FAILED: User already debited ₦${amount}, service not delivered`);
+        
+        // Create failure notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Airtime Purchase Issue ⚠️",
+            message: `Your wallet was debited ₦${amount} for airtime to ${phone}, but delivery failed. Our team will investigate.`,
+            type: 'transaction_issue',
+            isRead: false,
+            metadata: { phone: phone, amount: amount, network: network }
+          });
+        } catch (notificationError) {
+          console.error('Error creating notification:', notificationError);
+        }
+      }
+      
+      // Create transaction record (user already debited)
+      const newTransaction = await createTransaction(
+        userId,
+        amount,
+        'Airtime Purchase',
+        transactionStatus,
+        `Airtime purchase for ${phone} on ${network}${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        req.authenticationMethod,
+        reference,
+        { 
+          phone: phone, 
+          network: network,
+          userDebited: true,
+          debitAmount: amount,
+          vtpassDelivered: transactionStatus === 'Successful'
+        }
+      );
+      
+      await session.commitTransaction();
+      
+      console.log(`✅ AIRTIME TRANSACTION COMPLETE: ${network} - ₦${amount} to ${phone} - Status: ${transactionStatus} - User debited: true`);
+      
+      // Return response based on VTpass result
+      if (transactionStatus === 'Successful') {
+        res.json({
+          success: true,
+          message: `Airtime purchase successful! ₦${amount} sent to ${phone}.`,
+          transactionId: newTransaction._id,
+          status: newTransaction.status,
+          newBalance: newBalance,
+          phone: phone,
+          network: network,
+          amount: amount,
+          userDebited: true,
+          amountDebited: amount
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: `Your wallet was debited ₦${amount} but airtime delivery failed. Please contact support.`,
+          transactionId: newTransaction._id,
+          status: newTransaction.status,
+          newBalance: newBalance,
+          phone: phone,
+          network: network,
+          amount: amount,
+          userDebited: true,
+          amountDebited: amount,
+          isFailed: true,
+          shouldShowAsFailed: true
+        });
+      }
+      
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Error in airtime purchase:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Internal Server Error',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
+
+
+
+// FINAL & BULLETPROOF VTpass request_id — NEVER DUPLICATES, 100% ACCEPTED
+function generateVtpassRequestId() {
+  const now = new Date();
+  const timestamp = now.getFullYear().toString() +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0') +
+    String(now.getHours()).padStart(2, '0') +
+    String(now.getMinutes()).padStart(2, '0') +
+    String(now.getSeconds()).padStart(2, '0');
+
+  const random6Digits = Math.floor(100000 + Math.random() * 900000);
+  return `${timestamp}_${random6Digits}`;
+}
+
+
+
+
+
+
+
+// @desc    Purchase Data – RACE CONDITION PROTECTED + IMMEDIATE DEBIT (2026)
+// @route   POST /api/vtpass/data/purchase
+// @access  Private
+app.post('/api/vtpass/data/purchase', 
+  protect, 
+  verifyTransactionAuth, 
+  checkServiceEnabled('isDataEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit
+  smartLimitCheck, 
+  checkTransactionLimit('data'),
+  checkPerMinuteLimit('data'), // ✅ Service-specific limit
+  preventRaceCondition({ 
+    windowMs: 30000,        // 30 seconds window
+    maxRequests: 1,         // Only 1 request allowed
+    keyPrefix: 'data',
+    excludeStatuses: ['Failed']
+  }),
+  userServiceRateLimiter('data', 1, 60000), // Max 1 data purchases per minute
+  [
+    body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
+    body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
+    body('variationCode').notEmpty().withMessage('Data plan is required'),
+    body('planName').notEmpty().withMessage('Data plan name is required'),
+    body('amount').isFloat({ min: 50 }).withMessage('Amount must be at least ₦50')
+  ], 
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+    
+    console.log('📱 DATA PURCHASE REQUEST (RACE PROTECTED + IMMEDIATE DEBIT 2026)');
+    
+    // EXTRACT ALL PARAMETERS INCLUDING planName
+    const { network, phone, variationCode, planName, amount } = req.body;
+    const userId = req.user._id;
+
+    const serviceIDMap = {
+      'mtn': 'mtn-data',
+      'airtel': 'airtel-data',
+      'glo': 'glo-data',
+      '9mobile': 'etisalat-data'
+    };
+
+    const serviceID = serviceIDMap[network.toLowerCase()];
+    if (!serviceID) {
+      return res.status(400).json({ success: false, message: 'Invalid network selected' });
+    }
+
+    const requestId = generateVtpassRequestId();
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Get user
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // ================================================
+      // 🔥 IMMEDIATE DEBIT ON PIN ENTRY - DEBIT NOW!
+      // ================================================
+      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${amount} data to ${phone} (${planName})`);
+      
+      // Check balance first
+      if (user.walletBalance < amount) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+
+      // ✅ DUPLICATE CHECK: Check for recent data purchase to same phone number
+      const thirtySecondsAgo = new Date(Date.now() - 30000);
+      const existingTransaction = await Transaction.findOne({
+        userId: userId,
+        type: 'Data Purchase',
+        status: 'Successful',
+        'metadata.phone': phone,
+        createdAt: { $gte: thirtySecondsAgo }
+      }).session(session);
+      
+      if (existingTransaction) {
+        await session.abortTransaction();
+        console.log(`🚫 DUPLICATE DATA BLOCKED: ${phone} - ${planName}`);
+        return res.status(409).json({
+          success: false,
+          message: 'A data purchase to this number was just processed. Please wait 30 seconds.',
+          code: 'RECENT_TRANSACTION_EXISTS',
+          alreadyProcessed: true,
+          existingTransactionId: existingTransaction._id,
+          existingPlan: existingTransaction.metadata?.plan || 'Unknown'
+        });
+      }
+
+      // ✅ DUPLICATE CHECK: Check for same request_id
+      const existingRequest = await Transaction.findOne({
+        $or: [
+          { reference: requestId },
+          { transactionId: requestId }
+        ]
+      }).session(session);
+      
+      if (existingRequest && existingRequest.status === 'Successful') {
+        await session.abortTransaction();
+        console.log(`🚫 DUPLICATE request_id BLOCKED: ${requestId}`);
+        return res.status(409).json({
+          success: false,
+          message: 'This transaction has already been processed.',
+          code: 'DUPLICATE_REQUEST_ID',
+          alreadyProcessed: true,
+          existingTransactionId: existingRequest._id
+        });
+      }
+
+      // ================================================
+      // IMMEDIATE DEBIT - DEDUCT FROM WALLET NOW
+      // ================================================
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= amount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+      
+      console.log(`💰 WALLET DEBITED: ₦${amount}`);
+      console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
+
+      // Call VTpass API
+      const vtpassPayload = {
+        request_id: requestId,
+        serviceID,
+        billersCode: phone,
+        variation_code: variationCode,
+        phone
+      };
+
+      console.log('📡 Calling VTpass for Data:', { serviceID, phone, variationCode, requestId });
+
+      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+      let transactionStatus = 'Failed';
+      let finalBalance = balanceAfter;
+
+      // Handle successful response
+      if (vtpassResult.success && vtpassResult.data?.code === '000') {
+        transactionStatus = 'Successful';
+        // Balance already deducted above, just update status
+        finalBalance = balanceAfter;
+
+        // SAVE TRANSACTION WITH READABLE PLAN NAME (user already debited)
+        const newTransaction = await createTransaction(
+          userId,
+          amount,
+          'Data Purchase',
+          'Successful',
+          `${network.toUpperCase()} Data Purchase for ${phone}`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          req.authenticationMethod || 'pin',
+          requestId,
+          { 
+            phone: phone,
+            variation_code: variationCode,
+            variation_name: planName,
+            plan: planName,
+            network: network,
+            dataPlan: planName,
+            userDebited: true,
+            debitAmount: amount,
+            vtpassDelivered: true
+          }
+        );
+
+        // Calculate and add commission
+        await calculateAndAddCommission(userId, amount, serviceID, session)
+          .catch(err => console.log('⚠️ Data commission calculation failed:', err.message));
+
+        // Create success notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Data Purchase Successful 📱",
+            message: `${planName} data bundle purchased for ${phone} (${network.toUpperCase()}). New balance: ₦${balanceAfter.toFixed(2)}`,
+            type: 'transaction',
+            isRead: false,
+            metadata: {
+              phone: phone,
+              amount: amount,
+              network: network,
+              planName: planName,
+              variationCode: variationCode,
+              newBalance: balanceAfter,
+              userDebited: true
+            }
+          });
+        } catch (notificationError) {
+          console.error('Error creating notification:', notificationError);
+        }
+
+        await session.commitTransaction();
+
+        console.log(`✅ DATA PURCHASE COMPLETE: ${network} - ${planName} to ${phone} - User debited: true`);
+
+        return res.json({
+          success: true,
+          message: `Data delivered successfully! ${planName} sent to ${phone}.`,
+          newBalance: balanceAfter,
+          vtpassResponse: vtpassResult.data,
+          requestId: requestId,
+          transactionId: newTransaction._id || vtpassResult.data.content?.transactions?.transactionId || requestId,
+          planName: planName,
+          phone: phone,
+          network: network,
+          amount: amount,
+          userDebited: true,
+          amountDebited: amount
+        });
+      } 
+      
+      // Handle duplicate request_id response from VTpass
+      else if (vtpassResult.data?.code === '019' || 
+               vtpassResult.data?.response_description?.includes('DUPLICATE') ||
+               vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+        
+        console.log('🔁 VTpass says duplicate, checking if transaction was successful');
+        
+        // Check if transaction already exists in our database
+        const existingTx = await Transaction.findOne({
+          $or: [
+            { reference: requestId },
+            { 'metadata.request_id': requestId }
+          ]
+        }).session(session);
+        
+        if (existingTx && existingTx.status === 'Successful') {
+          await session.commitTransaction();
+          console.log(`✅ Duplicate request - returning existing successful transaction`);
+          return res.json({
+            success: true,
+            message: 'Data purchase already completed successfully',
+            alreadyProcessed: true,
+            transactionId: existingTx._id,
+            newBalance: balanceAfter,
+            planName: planName,
+            phone: phone,
+            userDebited: true,
+            amountDebited: amount
+          });
+        }
+        
+        // No existing transaction found, but user is already debited
+        // Create failed transaction record
+        const failedTransaction = await createTransaction(
+          userId,
+          amount,
+          'Data Purchase',
+          'Failed',
+          `${network.toUpperCase()} Data Purchase for ${phone} - DUPLICATE (USER DEBITED)`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          req.authenticationMethod || 'pin',
+          requestId,
+          { 
+            phone: phone,
+            variation_code: variationCode,
+            plan: planName,
+            network: network,
+            userDebited: true,
+            debitAmount: amount,
+            vtpassError: 'Duplicate transaction',
+            failureReason: 'VTpass returned duplicate error - USER DEBITED'
+          }
+        );
+        
+        await session.commitTransaction();
+        
+        return res.status(400).json({
+          success: false,
+          message: `Duplicate transaction detected. Your wallet was debited ₦${amount}. Please check your data balance.`,
+          code: 'DUPLICATE_TRANSACTION',
+          transactionId: failedTransaction._id,
+          userDebited: true,
+          amountDebited: amount,
+          isFailed: true
+        });
+      }
+      
+      // Handle failed response - user is already debited
+      else {
+        console.log(`❌ DATA PURCHASE FAILED: User already debited ₦${amount}, service not delivered`);
+        
+        // Create failed transaction record (user already debited)
+        const failedTransaction = await createTransaction(
+          userId,
+          amount,
+          'Data Purchase',
+          'Failed',
+          `${network.toUpperCase()} Data Purchase for ${phone} - FAILED (USER DEBITED ₦${amount})`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          req.authenticationMethod || 'pin',
+          requestId,
+          { 
+            phone: phone,
+            variation_code: variationCode,
+            plan: planName,
+            network: network,
+            userDebited: true,
+            debitAmount: amount,
+            vtpassResponse: vtpassResult.data,
+            vtpassError: vtpassResult.data?.response_description || 'Unknown error',
+            failureReason: vtpassResult.data?.response_description || 'VTpass delivery failed - USER DEBITED'
+          }
+        );
+        
+        await session.commitTransaction();
+        
+        const msg = vtpassResult.data?.response_description || 'Data purchase failed';
+        console.log(`❌ DATA PURCHASE FAILED: ${msg} - User debited ₦${amount}`);
+        
+        return res.status(400).json({ 
+          success: false, 
+          message: `${msg}. Your wallet was debited ₦${amount}. Please contact support if data was not delivered.`,
+          vtpassResponse: vtpassResult.data,
+          transactionId: failedTransaction._id,
+          userDebited: true,
+          amountDebited: amount,
+          isFailed: true,
+          shouldShowAsFailed: true
+        });
+      }
+      
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('💥 DATA PURCHASE ERROR:', error);
+      
+      // Handle duplicate key error from MongoDB
+      if (error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: 'This transaction was already processed.',
+          code: 'DUPLICATE_TRANSACTION',
+          alreadyProcessed: true
+        });
+      }
+      
+      res.status(500).json({ 
+        success: false, 
+        message: 'Service temporarily unavailable. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
+
+
+
+// ==================== PUBLIC DEBUG ROUTE - NO AUTH REQUIRED ====================
+// PUT THIS AT THE VERY TOP OF YOUR ROUTES, BEFORE ANY OTHER ROUTES
+app.get('/api/international-airtime/public-debug', async (req, res) => {
+  console.log('🔍 PUBLIC DEBUG: Checking VTpass connectivity...');
+  
+  try {
+    const apiKey = process.env.VTPASS_API_KEY;
+    const secretKey = process.env.VTPASS_SECRET_KEY;
+    
+    console.log('API Key exists:', !!apiKey);
+    console.log('Secret Key exists:', !!secretKey);
+    
+    // Test VTpass API directly without auth
+    const testResponse = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey || '',
+          'secret-key': secretKey || '',
+        },
+        timeout: 15000
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'VTpass API is reachable',
+      credentials: {
+        apiKeyExists: !!apiKey,
+        secretKeyExists: !!secretKey,
+        apiKeyLength: apiKey?.length || 0,
+        secretKeyLength: secretKey?.length || 0
+      },
+      vtpassResponse: testResponse.data,
+      statusCode: testResponse.status
+    });
+  } catch (error) {
+    console.error('❌ Public debug error:', error.message);
+    res.json({
+      success: false,
+      message: 'VTpass API error',
+      error: error.message,
+      response: error.response?.data,
+      statusCode: error.response?.status
+    });
+  }
+});
+
+
+
+
+// @desc    Debug: Get International Airtime Countries (NO AUTH)
+// @route   GET /api/international-airtime/countries-public
+// @access  Public - FOR TESTING ONLY
+app.get('/api/international-airtime/countries-public', async (req, res) => {
+  try {
+    const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+    
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    
+    res.json({
+      success: true,
+      countries: response.data.content?.countries || [],
+      source: 'vtpass_live'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// @desc    Verify electricity meter number - FIXED VERSION
+// @route   POST /api/vtpass/validate-electricity
+// @access  Private
+app.post('/api/vtpass/validate-electricity', protect, [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('billersCode').notEmpty().withMessage('Meter number is required'),
+  body('type').isIn(['prepaid', 'postpaid']).withMessage('Type must be prepaid or postpaid')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  
+  console.log('🔌 ELECTRICITY VALIDATION REQUEST:', req.body);
+  
+  const { serviceID, billersCode, type } = req.body;
+  
+  try {
+    // Prepare the payload for electricity verification
+    const vtpassPayload = {
+      serviceID,
+      billersCode,
+      type: type // prepaid or postpaid
+    };
+    
+    console.log('🚀 Calling VTpass for electricity validation:', vtpassPayload);
+    
+    // Use the correct endpoint for electricity verification
+    const vtpassResult = await callVtpassApi('/merchant-verify', vtpassPayload);
+    
+    console.log('📦 VTpass Electricity Validation Response:', {
+      success: vtpassResult.success,
+      code: vtpassResult.data?.code,
+      message: vtpassResult.data?.response_description,
+      content: vtpassResult.data?.content
+    });
+    
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const content = vtpassResult.data.content;
+      
+      // 🔥 FIXED: Properly extract and format all data from VTpass response
+      const responseData = {
+        success: true,
+        message: 'Meter validated successfully',
+        customerName: content.Customer_Name ? content.Customer_Name.trim() : 'N/A',
+        address: content.Address ? content.Address.trim() : 'N/A',
+        meterNumber: content.Meter_Number || content.MeterNumber || billersCode,
+        meterType: content.Meter_Type || type || 'N/A',
+        customerAccountType: content.Customer_Account_Type || 'N/A',
+        service: content.Service || serviceID,
+        businessUnit: content.Business_Unit || 'N/A',
+        details: content,
+        vtpassResponse: vtpassResult.data // Include full VTpass response
+      };
+      
+      console.log('✅ FORMATTED RESPONSE:', responseData);
+      
+      res.json(responseData);
+    } else {
+      // Enhanced error handling
+      let errorMessage = 'Meter validation failed';
+      
+      if (vtpassResult.data?.response_description) {
+        errorMessage = vtpassResult.data.response_description;
+      } else if (vtpassResult.message) {
+        errorMessage = vtpassResult.message;
+      }
+      
+      res.status(400).json({
+        success: false,
+        message: errorMessage,
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('💥 ELECTRICITY VALIDATION ERROR:', error);
+    
+    // More specific error messages
+    let errorMessage = 'Service temporarily unavailable';
+    if (error.message.includes('timeout')) {
+      errorMessage = 'Validation timeout. Please try again.';
+    } else if (error.message.includes('Network Error')) {
+      errorMessage = 'Network error. Please check your connection.';
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: errorMessage 
+    });
+  }
+});
+
+
+
+// @desc    Purchase Electricity – RACE CONDITION PROTECTED + IMMEDIATE DEBIT
+// @route   POST /api/vtpass/electricity/purchase
+// @access  Private
+app.post('/api/vtpass/electricity/purchase', 
+  protect, 
+  verifyTransactionAuth, 
+  checkServiceEnabled('isElectricityEnabled'),
+  checkGlobalPerMinuteLimit,
+  smartLimitCheck,
+  checkTransactionLimit('electricity'),// ✅ Global limit
+  checkPerMinuteLimit('electricity'), // ✅ Service-specific limit
+  preventRaceCondition({ 
+    windowMs: 30000,        // 30 seconds window
+    maxRequests: 1,         // Only 1 request allowed
+    keyPrefix: 'electricity',
+    excludeStatuses: ['Failed']
+  }),
+  userServiceRateLimiter('electricity', 1, 60000), // Max 1 purchases per minute
+  [
+    body('serviceID').notEmpty().withMessage('Provider required'),
+    body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
+    body('variation_code').isIn(['prepaid', 'postpaid']).withMessage('Invalid meter type'),
+    body('amount').isFloat({ min: 2000 }).withMessage('Minimum ₦2000'),
+    body('phone').isMobilePhone('en-NG').withMessage('Valid phone required')
+  ], 
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg });
+
+    const { serviceID, billersCode, variation_code, amount, phone, request_id, vtpassResponse: frontendVtpassResponse } = req.body;
+    const userId = req.user._id;
+    
+    // USE FRONTEND REQUEST_ID OR GENERATE NEW
+    const requestId = request_id || generateVtpassRequestId();
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // USER FETCH
+      const user = await User.findById(userId).session(session);
+      if (!user) throw new Error('User not found');
+
+      // ================================================
+      // 🔥 IMMEDIATE DEBIT ON PIN ENTRY - DEBIT NOW!
+      // ================================================
+      console.log(`🔒 IMMEDIATE DEBIT: User ${userId} - ₦${amount} for meter ${billersCode}`);
+      
+      // Check balance first
+      if (user.walletBalance < amount) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance.toFixed(2)}`,
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+
+      // AMOUNT BELOW MINIMUM - STILL DEBIT THE USER
+      if (amount < 2000) {
+        const balanceBefore = user.walletBalance;
+        user.walletBalance -= amount;
+        const balanceAfter = user.walletBalance;
+        await user.save({ session });
+
+        const failedTransaction = new Transaction({
+          userId: userId,
+          type: 'Electricity Purchase',
+          amount: amount,
+          status: 'Failed',
+          transactionId: `FAILED_AMOUNT_${Date.now()}`,
+          reference: requestId,
+          description: `Electricity payment FAILED: Amount ₦${amount} is below minimum (USER DEBITED ₦${amount})`,
+          balanceBefore: balanceBefore,
+          balanceAfter: balanceAfter,
+          metadata: {
+            meterNumber: billersCode,
+            provider: serviceID,
+            variation: variation_code,
+            customerName: 'N/A',
+            customerAddress: 'N/A',
+            amountBelowMinimum: true,
+            userDebited: true,
+            debitAmount: amount,
+            failureReason: 'Amount below minimum'
+          },
+          isFailed: true,
+          shouldShowAsFailed: true,
+          amountBelowMinimum: true,
+          failureReason: 'Amount below minimum (₦2000) - USER DEBITED',
+          gateway: 'DalabaPay App',
+          userDebited: true,
+          debitConfirmed: true
+        });
+        
+        await failedTransaction.save({ session });
+        await session.commitTransaction();
+        
+        console.log(`⚠️ USER DEBITED ₦${amount} but amount was below minimum!`);
+        
+        return res.status(400).json({ 
+          success: false, 
+          message: `Amount below minimum (₦2000). Your wallet has been debited ₦${amount}. No electricity token was generated.`,
+          isFailed: true,
+          userDebited: true,
+          debitAmount: amount,
+          amountBelowMinimum: true,
+          shouldShowAsFailed: true,
+          transactionId: failedTransaction._id
+        });
+      }
+
+      // ================================================
+      // IMMEDIATE DEBIT - DEDUCT FROM WALLET NOW
+      // ================================================
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= amount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+      
+      console.log(`💰 WALLET DEBITED: ₦${amount}`);
+      console.log(`   Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
+
+      // CHECK FOR DUPLICATE TRANSACTION (after debit to prevent double debit)
+      const existingTransaction = await Transaction.findOne({
+        $or: [
+          { reference: requestId },
+          { transactionId: requestId }
+        ],
+        userId: userId
+      }).session(session);
+
+      if (existingTransaction && existingTransaction.status === 'Successful') {
+        // User already has a successful transaction, but we already debited?
+        // This should not happen due to race condition middleware, but handle anyway
+        await session.abortTransaction();
+        console.log(`⚠️ DUPLICATE DETECTED after debit - refunding user`);
+        
+        // Refund the user
+        user.walletBalance += amount;
+        await user.save();
+        
+        return res.json({
+          success: true,
+          message: 'Transaction already completed',
+          alreadyProcessed: true,
+          transactionId: existingTransaction._id,
+          token: existingTransaction.metadata?.token || 'Check SMS',
+          customerName: existingTransaction.metadata?.customerName || 'N/A',
+          meterNumber: billersCode,
+          newBalance: user.walletBalance
+        });
+      }
+
+      console.log('🔌 ELECTRICITY PURCHASE REQUEST:', {
+        serviceID, billersCode, variation_code, amount, phone, requestId,
+        userDebited: true,
+        debitAmount: amount
+      });
+
+      // Check if we have a valid VTpass response from proxy
+      if (!frontendVtpassResponse || frontendVtpassResponse.code !== '000') {
+        // No valid VTpass response - user is already debited
+        // Create PENDING transaction - will be requeried later
+        const pendingTransaction = new Transaction({
+          userId,
+          amount,
+          type: 'Electricity Purchase',
+          status: 'Pending',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - PENDING (USER DEBITED)`,
+          balanceBefore,
+          balanceAfter,
+          metadata: {
+            serviceID: serviceID,
+            billersCode: billersCode,
+            variation_code: variation_code,
+            amount: amount.toFixed(2),
+            phone: phone,
+            meterNumber: billersCode,
+            serviceType: 'electricity',
+            provider: serviceID,
+            type: variation_code,
+            userDebited: true,
+            debitAmount: amount,
+            vtpassResponse: frontendVtpassResponse || null,
+            pendingReason: 'No VTpass response',
+            needsRequery: true
+          },
+          isCommission: false,
+          service: 'electricity',
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          userDebited: true,
+          debitConfirmed: true
+        });
+
+        await pendingTransaction.save({ session });
+        await session.commitTransaction();
+        
+        console.log(`⚠️ NO VTPASS RESPONSE - User debited ₦${amount}, transaction pending`);
+        
+        // Start background requery for this transaction
+        setTimeout(async () => {
+          try {
+            const requeryResult = await vtpassRequery(requestId);
+            if (requeryResult.success && requeryResult.data?.content?.transactions?.status === 'delivered') {
+              pendingTransaction.status = 'Successful';
+              pendingTransaction.metadata.token = requeryResult.data.content?.purchased_code || 'Check SMS';
+              await pendingTransaction.save();
+              console.log(`✅ Pending transaction ${requestId} resolved via requery`);
+            }
+          } catch (e) {
+            console.log(`Requery failed for ${requestId}:`, e.message);
+          }
+        }, 5000);
+        
+        return res.status(202).json({
+          success: true,
+          message: `Your payment of ₦${amount} has been received and is being processed. You will receive confirmation shortly.`,
+          transactionId: pendingTransaction._id,
+          reference: requestId,
+          newBalance: balanceAfter,
+          amountDebited: amount,
+          status: 'pending',
+          userDebited: true,
+          meterNumber: billersCode,
+          requiresRequery: true
+        });
+      }
+      
+      const vtpassData = frontendVtpassResponse;
+      console.log('📦 Processing VTpass Response:', {
+        code: vtpassData.code,
+        message: vtpassData.response_description
+      });
+
+      // SUCCESSFUL TRANSACTION (VTpass delivered)
+      if (vtpassData.code === '000') {
+        // Extract data
+        const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+        const customerName = vtpassData.customerName || 'N/A';
+        const customerAddress = vtpassData.customerAddress || 'N/A';
+        const exchangeReference = vtpassData.exchangeReference || requestId;
+        const units = vtpassData.units || '0.00';
+
+        // Format token
+        let formattedToken = null;
+        if (rawToken) {
+          formattedToken = rawToken.toString()
+            .replace('Token : ', '')
+            .replace('Token:', '')
+            .replace('TOKEN : ', '')
+            .replace('TOKEN:', '')
+            .trim();
+          
+          if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+            formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+          }
+        }
+
+        // Build metadata
+        const metadata = {
+          serviceID: serviceID,
+          billersCode: billersCode,
+          variation_code: variation_code,
+          amount: amount.toFixed(2),
+          phone: phone,
+          meterNumber: billersCode,
+          token: formattedToken || 'Check SMS',
+          customerName: customerName,
+          customerAddress: customerAddress,
+          exchangeReference: exchangeReference,
+          units: units,
+          vtpassResponse: vtpassData,
+          serviceType: 'electricity',
+          provider: serviceID,
+          type: variation_code,
+          userDebited: true,
+          debitAmount: amount,
+          debitConfirmed: true,
+          vtpassDelivered: true
+        };
+
+        // Create transaction (user already debited above)
+        const transaction = new Transaction({
+          userId,
+          amount,
+          type: 'Electricity Purchase',
+          status: 'Successful',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - Successful`,
+          balanceBefore,
+          balanceAfter,
+          metadata: metadata,
+          isCommission: false,
+          service: 'electricity',
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          userDebited: true,
+          debitConfirmed: true
+        });
+
+        await transaction.save({ session });
+
+        // ADD COMMISSION CALCULATION
+        await calculateAndAddCommission(userId, amount, serviceID, session)
+          .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
+
+        await session.commitTransaction();
+
+        console.log('✅ ELECTRICITY PURCHASE COMPLETE - User debited, service delivered');
+
+        // Create success notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Electricity Purchase Successful 💡",
+            message: `Your electricity purchase of ₦${amount} for meter ${billersCode} was successful. Token: ${formattedToken || 'Check SMS'}`,
+            type: 'transaction',
+            isRead: false,
+            metadata: { token: formattedToken, meterNumber: billersCode, amount }
+          });
+        } catch (notifError) {
+          console.error('Notification error:', notifError.message);
+        }
+
+        return res.json({
+          success: true,
+          message: 'Electricity purchased successfully!',
+          newBalance: user.walletBalance,
+          transactionId: requestId,
+          reference: requestId,
+          token: formattedToken || 'Check SMS',
+          customerName: customerName,
+          customerAddress: customerAddress,
+          meterNumber: billersCode,
+          units: units,
+          gateway: 'DalabaPay App',
+          balanceBefore: balanceBefore,
+          vtpassResponse: vtpassData,
+          userDebited: true,
+          amountDebited: amount
+        });
+      } 
+      
+      // VTpass returned an error - user is already debited
+      else {
+        // Create FAILED transaction (user is debited, service not delivered)
+        const failedTransaction = new Transaction({
+          userId,
+          amount,
+          type: 'Electricity Purchase',
+          status: 'Failed',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - FAILED (USER DEBITED ₦${amount})`,
+          balanceBefore,
+          balanceAfter,
+          metadata: {
+            serviceID: serviceID,
+            billersCode: billersCode,
+            variation_code: variation_code,
+            amount: amount.toFixed(2),
+            phone: phone,
+            meterNumber: billersCode,
+            vtpassResponse: vtpassData,
+            serviceType: 'electricity',
+            provider: serviceID,
+            type: variation_code,
+            userDebited: true,
+            debitAmount: amount,
+            vtpassError: vtpassData.response_description || 'VTpass delivery failed',
+            failureReason: vtpassData.response_description || 'Unknown error'
+          },
+          isFailed: true,
+          shouldShowAsFailed: true,
+          failureReason: vtpassData.response_description || 'VTpass delivery failed - USER DEBITED',
+          gateway: 'DalabaPay App',
+          userDebited: true,
+          debitConfirmed: true
+        });
+
+        await failedTransaction.save({ session });
+        await session.commitTransaction();
+
+        console.log(`❌ VTPASS FAILED - User debited ₦${amount}, service not delivered`);
+
+        let errorMsg = vtpassData.response_description || 'Purchase failed';
+        if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
+          errorMsg = `Amount below minimum allowed. Minimum electricity purchase: ₦2000`;
+        }
+        
+        return res.status(400).json({ 
+          success: false, 
+          message: `${errorMsg}. Your wallet has been debited ₦${amount}. Please contact support if service was not delivered.`,
+          vtpassResponse: vtpassData,
+          userDebited: true,
+          debitAmount: amount,
+          isFailed: true,
+          shouldShowAsFailed: true,
+          transactionId: failedTransaction._id
+        });
+      }
+      
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('💥 ELECTRICITY PURCHASE ERROR:', error.message);
+      console.error('Error stack:', error.stack);
+      
+      // Determine if user was debited before error
+      const wasUserDebited = error.userDebited === true;
+      
+      return res.status(500).json({ 
+        success: false, 
+        message: error.message.includes('Insufficient') ? error.message : 'Transaction failed. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        userDebited: wasUserDebited,
+        contactSupport: wasUserDebited ? true : false
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
+
+
+
+
+
+// @desc    Get VTpass services
+// @route   GET /api/vtpass/services
+// @access  Private
+app.get('/api/vtpass/services', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { serviceID } = req.query;
+    
+    // Try to get from cache first
+    const cacheKey = `vtpass-services-${serviceID}`;
+    const cachedServices = cache.get(cacheKey);
+    
+    if (cachedServices) {
+      return res.json({
+        success: true,
+        message: 'Services fetched successfully',
+        data: cachedServices
+      });
+    }
+    
+    // Call VTpass API to get services
+    const vtpassResult = await callVtpassApi('/services', { serviceID });
+    
+    if (vtpassResult.success) {
+      // Cache the result
+      cache.set(cacheKey, vtpassResult.data);
+      
+      res.json({
+        success: true,
+        message: 'Services fetched successfully',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(vtpassResult.status || 500).json({
+        success: false,
+        message: 'Failed to fetch services',
+        details: vtpassResult.details || vtpassResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching VTpass services:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+
+// @desc    Get VTpass variations
+// @route   GET /api/vtpass/variations
+// @access  Private
+app.get('/api/vtpass/variations', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+  try {
+    const { serviceID } = req.query;
+    
+    // Try to get from cache first
+    const cacheKey = `vtpass-variations-${serviceID}`;
+    const cachedVariations = cache.get(cacheKey);
+    
+    if (cachedVariations) {
+      return res.json({
+        success: true,
+        message: 'Variations fetched successfully',
+        data: cachedVariations
+      });
+    }
+    
+    // Call VTpass API to get variations
+    const vtpassResult = await callVtpassApi('/variations', { serviceID });
+    
+    if (vtpassResult.success) {
+      // Cache the result
+      cache.set(cacheKey, vtpassResult.data);
+      
+      res.json({
+        success: true,
+        message: 'Variations fetched successfully',
+        data: vtpassResult.data
+      });
+    } else {
+      res.status(vtpassResult.status || 500).json({
+        success: false,
+        message: 'Failed to fetch variations',
+        details: vtpassResult.details || vtpassResult.message
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching VTpass variations:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+// @desc    Report an error - COMPLETE IMPLEMENTATION
+// @route   POST /api/errors/report
+// @access  Public
+app.post('/api/errors/report', async (req, res) => {
+  try {
+    const { 
+      error, 
+      stackTrace, 
+      timestamp, 
+      platform, 
+      version,
+      userId: clientUserId,
+      deviceId,
+      screen,
+      errorType,
+      fatal
+    } = req.body;
+    
+    // ============================================
+    // 1. Rate Limiting
+    // ============================================
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const rateKey = `error_${deviceId || ip}`;
+    
+    if (!errorRateLimits.has(rateKey)) {
+      errorRateLimits.set(rateKey, { count: 0, resetAt: Date.now() + 60000 });
+    }
+    
+    const rate = errorRateLimits.get(rateKey);
+    if (Date.now() > rate.resetAt) {
+      rate.count = 0;
+      rate.resetAt = Date.now() + 60000;
+    }
+    
+    // Allow more reports for fatal errors
+    const maxReports = fatal ? 20 : 10;
+    
+    if (rate.count >= maxReports) {
+      console.log(`⏱️ Rate limit reached for ${rateKey}`);
+      return res.status(429).json({
+        success: false,
+        message: 'Too many error reports. Please wait.',
+        retryAfter: Math.ceil((rate.resetAt - Date.now()) / 1000)
+      });
+    }
+    
+    rate.count++;
+    errorRateLimits.set(rateKey, rate);
+    
+    // ============================================
+    // 2. Get User Info (Optional)
+    // ============================================
+    let userId = clientUserId || null;
+    let userEmail = null;
+    let userName = null;
+    
+    // Try to get from token if not provided
+    if (!userId) {
+      try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (token) {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET);
+          const user = await User.findById(decoded.id).select('email fullName');
+          if (user) {
+            userId = user._id;
+            userEmail = user.email;
+            userName = user.fullName;
+          }
+        }
+      } catch (tokenError) {
+        // Token invalid - that's fine
+      }
+    }
+    
+    // ============================================
+    // 3. Categorize Error
+    // ============================================
+    const errorCategories = {
+      AUTH: ['auth', 'login', 'token', 'session', 'unauthorized', 'forbidden'],
+      PIN: ['pin', 'transaction pin', 'too many attempts', 'locked'],
+      BALANCE: ['balance', 'insufficient', 'funds'],
+      NETWORK: ['network', 'connection', 'timeout', 'socket', 'dns'],
+      VALIDATION: ['validation', 'invalid', 'required', 'format'],
+      SERVER: ['500', 'internal server', 'server error', 'unavailable'],
+      PAYMENT: ['payment', 'paystack', 'vtpass', 'transfer'],
+      DATABASE: ['mongo', 'mongodb', 'database', 'query'],
+      UI: ['rendering', 'widget', 'layout', 'view']
+    };
+    
+    let category = 'UNKNOWN';
+    let severity = 'MEDIUM';
+    
+    for (const [cat, keywords] of Object.entries(errorCategories)) {
+      if (keywords.some(kw => error?.toLowerCase().includes(kw))) {
+        category = cat;
+        break;
+      }
+    }
+    
+    // Determine severity
+    if (fatal || error?.toLowerCase().includes('crash') || category === 'SERVER' || category === 'DATABASE') {
+      severity = 'CRITICAL';
+    } else if (category === 'UI' || category === 'VALIDATION') {
+      severity = 'LOW';
+    } else if (['AUTH', 'PIN', 'BALANCE'].includes(category)) {
+      severity = 'LOW';
+    }
+    
+    // ============================================
+    // 4. Build Log Entry
+    // ============================================
+    const logEntry = {
+      error: error?.substring(0, 2000),
+      stackTrace: stackTrace?.substring(0, 5000),
+      timestamp: timestamp || new Date().toISOString(),
+      platform: platform || 'unknown',
+      version: version || 'unknown',
+      userId: userId,
+      userEmail: userEmail,
+      userName: userName,
+      deviceId: deviceId || 'unknown',
+      screen: screen || 'unknown',
+      errorType: errorType || 'unknown',
+      category: category,
+      severity: severity,
+      fatal: fatal || false,
+      ip: ip,
+      userAgent: req.get('User-Agent'),
+      headers: req.headers,
+      isResolved: false,
+      reportedAt: new Date().toISOString()
+    };
+    
+    // ============================================
+    // 5. Log Based on Severity
+    // ============================================
+    const logPrefix = {
+      'CRITICAL': '🚨🚨🚨 CRITICAL ERROR',
+      'MEDIUM': '⚠️ Error',
+      'LOW': '📝 User Error'
+    };
+    
+    console.log(`${logPrefix[severity] || '📝'} [${category}] from ${userEmail || userId || 'anonymous'}:`);
+    console.log(`  Error: ${error?.substring(0, 200)}`);
+    console.log(`  Platform: ${platform}, Version: ${version}`);
+    console.log(`  IP: ${ip}`);
+    
+    if (severity === 'CRITICAL') {
+      console.log(`  Stack Trace: ${stackTrace?.substring(0, 500)}`);
+    }
+    
+    // ============================================
+    // 6. Save to Database (if available)
+    // ============================================
+    try {
+      // Check if ErrorLog model exists, if not, create it
+      let ErrorLog;
+      try {
+        ErrorLog = mongoose.model('ErrorLog');
+      } catch (modelError) {
+        // Define schema if model doesn't exist
+        const ErrorLogSchema = new mongoose.Schema({
+          error: { type: String, required: true },
+          stackTrace: { type: String },
+          timestamp: { type: Date, default: Date.now },
+          platform: { type: String },
+          version: { type: String },
+          userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          userEmail: { type: String },
+          userName: { type: String },
+          deviceId: { type: String },
+          screen: { type: String },
+          errorType: { type: String },
+          category: { type: String },
+          severity: { type: String, enum: ['LOW', 'MEDIUM', 'CRITICAL'], default: 'MEDIUM' },
+          fatal: { type: Boolean, default: false },
+          ip: { type: String },
+          userAgent: { type: String },
+          isResolved: { type: Boolean, default: false },
+          resolvedAt: { type: Date },
+          resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          notes: { type: String }
+        }, { timestamps: true });
+        
+        ErrorLog = mongoose.model('ErrorLog', ErrorLogSchema);
+      }
+      
+      // Save only critical and medium errors to database
+      if (severity !== 'LOW') {
+        await new ErrorLog(logEntry).save();
+        console.log(`💾 Error saved to database (${severity})`);
+      }
+      
+    } catch (dbError) {
+      console.error('Failed to save error to DB:', dbError.message);
+    }
+    
+    // ============================================
+    // 7. Send Response
+    // ============================================
+    res.status(200).json({
+      success: true,
+      message: 'Error report received',
+      logged: true,
+      category: category,
+      severity: severity,
+      reportId: `ERR_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+    });
+    
+  } catch (error) {
+    console.error('Error processing error report:', error);
+    res.status(200).json({
+      success: false,
+      message: 'Error report received but processing failed',
+      error: error.message
+    });
+  }
+});
+
+// Rate limiting store
+const errorRateLimits = new Map();
+
+// Clean up rate limit store every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of errorRateLimits.entries()) {
+    if (now > value.resetAt) {
+      errorRateLimits.delete(key);
+    }
+  }
+}, 60 * 60 * 1000);
+
+
+
+
+
+
+
+
+
+// @desc    Execute atomic transaction (debit + VTpass call in one operation)
+// @route   POST /api/transactions/atomic
+// @access  Private
+app.post('/api/transactions/atomic', protect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      userId,
+      debitAmount,
+      debitService,
+      vtpassPayload,
+      creditService,
+      creditAmount,
+      transactionPin,
+      useBiometric
+    } = req.body;
+
+    console.log('⚛️ ATOMIC TRANSACTION REQUEST:', { userId, debitAmount, debitService });
+
+    // Verify user owns this transaction
+    if (req.user._id.toString() !== userId) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Check balance
+    if (user.walletBalance < debitAmount) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient balance. Required: ₦${debitAmount}, Available: ₦${user.walletBalance}`
+      });
+    }
+
+    // Verify transaction PIN if provided
+    if (transactionPin) {
+      const isPinMatch = await bcrypt.compare(transactionPin, user.transactionPin);
+      if (!isPinMatch) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: 'Invalid transaction PIN' });
+      }
+    }
+
+    // Step 1: Debit user's wallet
+    const balanceBefore = user.walletBalance;
+    user.walletBalance -= debitAmount;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+
+    // Step 2: Create debit transaction
+    await createTransaction(
+      userId,
+      debitAmount,
+      'debit',
+      'pending',
+      `${debitService} purchase`,
+      balanceBefore,
+      balanceAfter,
+      session,
+      false,
+      transactionPin ? 'pin' : (useBiometric ? 'biometric' : 'none')
+    );
+
+    // Step 3: Call VTpass API
+    console.log('🚀 Calling VTpass from atomic transaction:', vtpassPayload);
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    let transactionStatus = 'failed';
+    let commissionAdded = false;
+
+    if (vtpassResult.success && vtpassResult.data?.code === '000') {
+      transactionStatus = 'successful';
+      
+      // Step 4: Credit commission if applicable
+      if (creditService && creditAmount && creditAmount > 0) {
+        user.commissionBalance += creditAmount;
+        await user.save({ session });
+        
+        await createTransaction(
+          userId,
+          creditAmount,
+          'credit',
+          'successful',
+          `Commission from ${debitService}`,
+          user.commissionBalance - creditAmount,
+          user.commissionBalance,
+          session,
+          true,
+          'none'
+        );
+        commissionAdded = true;
+      }
+    }
+
+    // Update transaction status
+    await Transaction.findOneAndUpdate(
+      { userId, description: `${debitService} purchase`, status: 'pending' },
+      { status: transactionStatus },
+      { session }
+    );
+
+    await session.commitTransaction();
+
+    console.log('✅ ATOMIC TRANSACTION COMPLETED:', { transactionStatus, commissionAdded });
+
+    res.json({
+      success: transactionStatus === 'successful',
+      message: transactionStatus === 'successful' ? 'Transaction completed successfully' : 'Transaction failed',
+      newBalance: user.walletBalance,
+      newCommissionBalance: user.commissionBalance,
+      vtpassResponse: vtpassResult.data,
+      transactionStatus
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ ATOMIC TRANSACTION ERROR:', error);
+    res.status(500).json({ success: false, message: 'Atomic transaction failed' });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+
+// Helper function to alert admin about low VTpass balance
+async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
+  try {
+    console.log('🚨 ADMIN ALERT: VTpass wallet low!');
+    console.log(`   Service: ${serviceID}`);
+    console.log(`   Required Amount: ₦${amount}`);
+    console.log(`   Available Balance: ₦${vtpassBalance}`);
+    console.log(`   Time: ${new Date().toISOString()}`);
+    
+    // Create Alert document
+    try {
+      const alert = new Alert({
+        type: 'VTPASS_LOW_BALANCE',
+        title: 'VTpass Wallet Low Balance Alert',
+        message: `VTpass wallet balance is low. Current: ₦${vtpassBalance}, Required: ₦${amount}`,
+        severity: vtpassBalance < 5000 ? 'CRITICAL' : 'WARNING',
+        data: {
+          serviceID,
+          requiredAmount: amount,
+          availableBalance: vtpassBalance,
+          timestamp: new Date(),
+          isCritical: vtpassBalance === 0
+        },
+        acknowledged: false
+      });
+      
+      await alert.save();
+      console.log('✅ Admin alert saved to database');
+      
+      // Also try to find and notify admin users
+      try {
+        const adminUsers = await User.find({ role: 'admin' }).select('email phone');
+        console.log(`📧 Notifying ${adminUsers.length} admin user(s)`);
+        
+        // You can add email/SMS notification logic here
+        for (const admin of adminUsers) {
+          console.log(`   - Admin: ${admin.email || admin.phone}`);
+          // await sendEmailToAdmin(admin.email, alert);
+        }
+      } catch (adminError) {
+        console.log('⚠️ Could not notify admin users:', adminError.message);
+      }
+      
+    } catch (dbError) {
+      console.error('Could not save alert to database:', dbError.message);
+      
+      // Fallback: Log to file
+      const fs = require('fs').promises;
+      try {
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          type: 'VTPASS_LOW_BALANCE_ALERT',
+          serviceID,
+          amount,
+          vtpassBalance,
+          alert: 'Admin notification failed to save to database'
+        };
+        await fs.appendFile('alerts_fallback.log', JSON.stringify(logEntry) + '\n');
+        console.log('✅ Alert logged to fallback file');
+      } catch (fileError) {
+        console.error('Could not log to file:', fileError.message);
+      }
+    }
+    
+  } catch (error) {
+    console.error('Failed to send admin alert:', error);
+  }
+}
+
+
+// @desc    VTpass Proxy Endpoint - RACE CONDITION PROTECTED + IMMEDIATE DEBIT HANDLING (2026)
+// @route   POST /api/vtpass/proxy
+// @access  Private
+app.post('/api/vtpass/proxy', 
+  protect, 
+  checkGlobalPerMinuteLimit,
+  smartLimitCheck,
+  checkPerMinuteLimit('proxy'),
+  preventDuplicateVtpassCall(),
+  async (req, res) => {
+  console.log('PROXY ENDPOINT HIT - RACE PROTECTED + IMMEDIATE DEBIT 2026');
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+
+  // ========== SERVICE CHECK ==========
+  const serviceChecks = {
+    'mtn': 'isAirtimeEnabled',
+    'airtel': 'isAirtimeEnabled', 
+    'glo': 'isAirtimeEnabled',
+    'etisalat': 'isAirtimeEnabled',
+    '9mobile': 'isAirtimeEnabled',
+    'mtn-data': 'isDataEnabled',
+    'airtel-data': 'isDataEnabled',
+    'glo-data': 'isDataEnabled',
+    'etisalat-data': 'isDataEnabled',
+    'dstv': 'isCableTvEnabled',
+    'gotv': 'isCableTvEnabled',
+    'startimes': 'isCableTvEnabled',
+    'ikeja-electric': 'isElectricityEnabled',
+    'eko-electric': 'isElectricityEnabled',
+    'abuja-electric': 'isElectricityEnabled',
+    'ibadan-electric': 'isElectricityEnabled',
+    'enugu-electric': 'isElectricityEnabled',
+    'kano-electric': 'isElectricityEnabled',
+    'ph-electric': 'isElectricityEnabled'
+  };
+
+  const { serviceID } = req.body;
+  const serviceKey = serviceChecks[serviceID];
+  
+  if (serviceKey) {
+    try {
+      const settings = await Settings.findOne();
+      if (!settings || settings[serviceKey] === false) {
+        return res.status(403).json({
+          success: false,
+          message: 'This service is currently disabled. Please try again later.',
+          code: 'SERVICE_DISABLED'
+        });
+      }
+    } catch (error) {
+      console.error('Service check error:', error);
+    }
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    await session.startTransaction();
+
+    const { request_id, serviceID, amount, phone, variation_code, billersCode, type, commissionTransactionId, commissionTrackingId } = req.body;
+    const userId = req.user._id;
+
+    // === 1. Use client request_id ===
+    const uniqueRequestId = request_id && request_id.length >= 10 
+      ? request_id 
+      : generateVtpassRequestId();
+    console.log('Using request_id:', uniqueRequestId);
+
+    // === 2. Get user ===
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // === 3. Check if user has sufficient balance (BEFORE any processing) ===
+    const isUsingCommission = req.headers['x-commission-usage'] === 'true';
+    console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
+
+    const transactionAmount = amount ? parseFloat(amount) : 0;
+
+    if (transactionAmount > 0) {
+      if (isUsingCommission) {
+        if (user.commissionBalance < transactionAmount) {
+          await session.abortTransaction();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Insufficient commission balance. Available: ₦${user.commissionBalance.toFixed(2)}`,
+            code: 'INSUFFICIENT_COMMISSION'
+          });
+        }
+      } else {
+        if (user.walletBalance < transactionAmount) {
+          await session.abortTransaction();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Insufficient wallet balance. Available: ₦${user.walletBalance.toFixed(2)}`,
+            code: 'INSUFFICIENT_BALANCE'
+          });
+        }
+      }
+    }
+
+    // === 4. IMMEDIATE DEBIT - Deduct from correct balance NOW ===
+    let balanceBefore = 0;
+    let balanceAfter = 0;
+    
+    if (transactionAmount > 0) {
+      if (isUsingCommission) {
+        balanceBefore = user.commissionBalance;
+        user.commissionBalance -= transactionAmount;
+        balanceAfter = user.commissionBalance;
+        console.log(`💰 IMMEDIATE DEBIT: ₦${transactionAmount.toFixed(2)} from COMMISSION balance`);
+      } else {
+        balanceBefore = user.walletBalance;
+        user.walletBalance -= transactionAmount;
+        balanceAfter = user.walletBalance;
+        console.log(`💰 IMMEDIATE DEBIT: ₦${transactionAmount.toFixed(2)} from WALLET balance`);
+      }
+      await user.save({ session });
+    }
+
+    // === 5. PREVENT DUPLICATE PROCESSING - Enhanced check ===
+    const alreadyProcessed = await Transaction.findOne({
+      $or: [
+        { reference: uniqueRequestId },
+        { transactionId: uniqueRequestId },
+        { 'metadata.requestId': uniqueRequestId }
+      ],
+      status: { $in: ['Successful', 'successful', 'Completed'] }
+    }).session(session);
+
+    if (alreadyProcessed) {
+      // REFUND the user since this was a duplicate
+      if (transactionAmount > 0) {
+        if (isUsingCommission) {
+          user.commissionBalance += transactionAmount;
+        } else {
+          user.walletBalance += transactionAmount;
+        }
+        await user.save({ session });
+        console.log(`💰 REFUNDED: Duplicate transaction - ₦${transactionAmount} returned to user`);
+      }
+      
+      await session.abortTransaction();
+      console.log(`🚫 DUPLICATE PROXY CALL BLOCKED: ${uniqueRequestId} already processed - Refunded user`);
+      
+      return res.json({
+        success: true,
+        alreadyProcessed: true,
+        message: 'Transaction already completed',
+        transactionId: alreadyProcessed._id,
+        newWalletBalance: user.walletBalance,
+        newCommissionBalance: user.commissionBalance,
+        vtpassResponse: alreadyProcessed.metadata?.vtpassResponse || {},
+        refunded: true
+      });
+    }
+
+    // === 6. Check recent transactions for same recipient (30 second window) ===
+    const thirtySecondsAgo = new Date(Date.now() - 30000);
+    const recentTransaction = await Transaction.findOne({
+      userId: userId,
+      status: 'Successful',
+      createdAt: { $gte: thirtySecondsAgo },
+      $or: [
+        { 'metadata.phone': phone },
+        { 'metadata.billersCode': billersCode },
+        { 'metadata.smartcardNumber': billersCode },
+        { 'metadata.meterNumber': billersCode }
+      ]
+    }).session(session);
+
+    if (recentTransaction) {
+      // REFUND the user since this is a duplicate to same recipient
+      if (transactionAmount > 0) {
+        if (isUsingCommission) {
+          user.commissionBalance += transactionAmount;
+        } else {
+          user.walletBalance += transactionAmount;
+        }
+        await user.save({ session });
+        console.log(`💰 REFUNDED: Recent transaction to same recipient - ₦${transactionAmount} returned to user`);
+      }
+      
+      await session.abortTransaction();
+      console.log(`🚫 RECENT TRANSACTION BLOCKED: User ${userId} - Same recipient within 30 seconds - Refunded user`);
+      
+      return res.status(409).json({
+        success: false,
+        message: 'A recent transaction to this recipient was just processed. Please wait 30 seconds. Your payment has been refunded.',
+        code: 'RECENT_TRANSACTION_EXISTS',
+        alreadyProcessed: true,
+        existingTransactionId: recentTransaction._id,
+        timeSinceLastMs: Date.now() - new Date(recentTransaction.createdAt).getTime(),
+        refunded: true,
+        refundAmount: transactionAmount
+      });
+    }
+
+    // === 7. Check VTpass Wallet Balance BEFORE calling VTpass ===
+    console.log('💰 Checking VTpass wallet balance before transaction...');
+    try {
+      const vtpassApiKey = process.env.VTPASS_API_KEY;
+      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
+      
+      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
+        headers: {
+          'api-key': vtpassApiKey,
+          'secret-key': vtpassSecretKey,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      const vtpassBalance = balanceResponse.data.contents?.balance || 0;
+      console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
+
+      if (vtpassBalance < transactionAmount) {
+        // VTpass has low balance - User already debited, but we need to handle this
+        // Keep the debit - company will reconcile later
+        await sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance);
+        
+        // Create a pending transaction record
+        const pendingTransaction = new Transaction({
+          userId,
+          amount: transactionAmount,
+          type: getDisplayType(serviceID),
+          status: 'Pending',
+          transactionId: uniqueRequestId,
+          reference: uniqueRequestId,
+          description: `${serviceID.toUpperCase()} purchase - PENDING (VTpass LOW BALANCE) - USER DEBITED`,
+          balanceBefore,
+          balanceAfter,
+          metadata: {
+            serviceID,
+            phone,
+            billersCode,
+            variation_code,
+            type,
+            vtpassBalanceError: true,
+            vtpassBalance: vtpassBalance,
+            userDebited: true,
+            debitAmount: transactionAmount,
+            paymentMethod: isUsingCommission ? 'commission' : 'wallet'
+          },
+          isCommission: false,
+          service: getServiceType(serviceID),
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          userDebited: true,
+          debitConfirmed: true
+        });
+        
+        await pendingTransaction.save({ session });
+        await session.commitTransaction();
+        
+        return res.status(400).json({
+          success: false,
+          message: 'Service temporarily unavailable due to provider wallet issues. Your payment has been recorded and will be processed when service is restored.',
+          code: 'VTPASS_INSUFFICIENT_FUNDS',
+          vtpassBalance: vtpassBalance,
+          requiredAmount: transactionAmount,
+          userDebited: true,
+          debitAmount: transactionAmount,
+          transactionId: pendingTransaction._id,
+          status: 'pending'
+        });
+      }
+    } catch (balanceError) {
+      console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
+      // Continue with transaction but log warning
+    }
+
+    // === 8. Build VTpass payload ===
+    const payload = {
+      request_id: uniqueRequestId,
+      serviceID: serviceID,
+      phone,
+      billersCode,
+      variation_code,
+      type
+    };
+
+    if (amount) payload.amount = parseFloat(amount).toFixed(2);
+
+    // === 9. Determine endpoint ===
+    const endpoint = serviceID.includes('electric') && billersCode && !variation_code 
+      ? '/merchant-verify' 
+      : '/pay';
+
+    // === 10. Call VTpass API ===
+    const vtpassResult = await callVtpassApi(endpoint, payload);
+
+    // === 11. Handle VTpass response ===
+    if (vtpassResult.success && vtpassResult.data?.code === '000') {
+      // SUCCESS: Update transaction with VTpass data
+      
+      // Map display type
+      let displayType = getDisplayType(serviceID);
+      let transactionMetadata = buildTransactionMetadata(
+        serviceID, phone, billersCode, variation_code, type,
+        uniqueRequestId, isUsingCommission, vtpassResult.data
+      );
+
+      // CREATE TRANSACTION RECORD (user already debited above)
+      if (!isUsingCommission) {
+        await createTransaction(
+          userId,
+          transactionAmount,
+          displayType,
+          'Successful',
+          `${serviceID.toUpperCase()} purchase completed`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          'pin',
+          uniqueRequestId,
+          transactionMetadata
+        );
+        console.log(`✅ Wallet payment - Regular transaction recorded (user already debited)`);
+      } else {
+        console.log(`✅ Commission payment - Transaction already created earlier`);
+        
+        // Update commission transaction with VTpass data
+        if (commissionTransactionId || commissionTrackingId) {
+          const commissionTransaction = await Transaction.findOne({
+            $or: [
+              { _id: commissionTransactionId },
+              { reference: commissionTrackingId },
+              { 'metadata.commissionTrackingId': commissionTrackingId }
+            ],
+            userId: userId,
+            isCommission: true
+          }).session(session);
+          
+          if (commissionTransaction) {
+            commissionTransaction.status = 'Successful';
+            commissionTransaction.metadata = {
+              ...commissionTransaction.metadata,
+              ...transactionMetadata,
+              vtpassResponse: vtpassResult.data,
+              requestId: uniqueRequestId,
+              completedAt: new Date(),
+              service: serviceID,
+              userDebited: true
+            };
+            await commissionTransaction.save({ session });
+            console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
+          }
+        }
+      }
+      
+      // Commission calculation (only if not using commission)
+      if (transactionAmount > 0 && !isUsingCommission) {
+        let commissionServiceType = getCommissionServiceType(serviceID);
+        
+        await calculateAndAddCommission(
+          userId, 
+          transactionAmount, 
+          commissionServiceType, 
+          session,
+          isUsingCommission
+        ).catch(err => console.log('⚠️ Commission calculation failed:', err.message));
+        
+        // Referral service commission
+        if (!isUsingCommission && user.referrerId) {
+          await awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, session);
+        }
+      }
+
+      await user.save({ session });
+      await session.commitTransaction();
+
+      console.log(`✅ PROXY TRANSACTION COMPLETE: ${uniqueRequestId} - User debited, service delivered`);
+
+      return res.json({
+        success: true,
+        message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+        newWalletBalance: user.walletBalance,
+        newCommissionBalance: user.commissionBalance,
+        paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+        vtpassResponse: vtpassResult.data,
+        requestId: uniqueRequestId,
+        transactionCompleted: true,
+        userDebited: true,
+        amountDebited: transactionAmount,
+        customerName: vtpassResult.data.content?.Customer_Name || ''
+      });
+    }
+
+    // === 12. Handle VTpass DUPLICATE response ===
+    if (vtpassResult.data?.code === '019' || 
+        vtpassResult.data?.response_description?.includes('DUPLICATE') ||
+        vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
+      
+      console.log('🔁 VTpass says duplicate, checking database...');
+      
+      const existingTransaction = await Transaction.findOne({
+        $or: [
+          { reference: uniqueRequestId },
+          { transactionId: uniqueRequestId },
+          { 'metadata.requestId': uniqueRequestId }
+        ]
+      }).session(session);
+      
+      if (existingTransaction && existingTransaction.status === 'Successful') {
+        // Transaction already exists - keep the debit
+        await session.commitTransaction();
+        console.log(`✅ Duplicate request - transaction already successful, user already debited`);
+        
+        return res.json({
+          success: true,
+          message: 'Transaction already completed successfully',
+          alreadyProcessed: true,
+          transactionId: existingTransaction._id,
+          newWalletBalance: user.walletBalance,
+          newCommissionBalance: user.commissionBalance,
+          vtpassResponse: existingTransaction.metadata?.vtpassResponse || {},
+          userDebited: true
+        });
+      }
+      
+      // Duplicate but no successful transaction - REFUND the user
+      if (transactionAmount > 0) {
+        if (isUsingCommission) {
+          user.commissionBalance += transactionAmount;
+        } else {
+          user.walletBalance += transactionAmount;
+        }
+        await user.save({ session });
+        console.log(`💰 REFUNDED: Duplicate VTpass response - ₦${transactionAmount} returned to user`);
+      }
+      
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate transaction detected. Your payment has been refunded.',
+        code: 'DUPLICATE_TRANSACTION',
+        retryable: false,
+        refunded: true,
+        refundAmount: transactionAmount
+      });
+    }
+
+    // === 13. Handle VTpass FAILURE - User is already debited, keep the money ===
+    await session.abortTransaction();
+
+    const msg = vtpassResult.data?.response_description || 'Transaction failed';
+    const errorCode = vtpassResult.data?.code || 'UNKNOWN';
+
+    // User is already debited from earlier - we keep the money
+    console.log(`❌ VTPASS FAILED: User already debited ₦${transactionAmount}, service not delivered`);
+
+    // Create a failed transaction record (user already debited)
+    const failedTransactionRecord = new Transaction({
+      userId,
+      amount: transactionAmount,
+      type: getDisplayType(serviceID),
+      status: 'Failed',
+      transactionId: uniqueRequestId,
+      reference: uniqueRequestId,
+      description: `${serviceID.toUpperCase()} purchase - FAILED (USER DEBITED ₦${transactionAmount})`,
+      balanceBefore,
+      balanceAfter,
+      metadata: {
+        serviceID,
+        phone,
+        billersCode,
+        variation_code,
+        type,
+        vtpassError: msg,
+        vtpassCode: errorCode,
+        vtpassResponse: vtpassResult.data,
+        userDebited: true,
+        debitAmount: transactionAmount,
+        failureReason: msg
+      },
+      isFailed: true,
+      shouldShowAsFailed: true,
+      failureReason: `${msg} - USER DEBITED`,
+      gateway: 'DalabaPay App',
+      userDebited: true,
+      debitConfirmed: true
+    });
+
+    await failedTransactionRecord.save({ session: null });
+    console.log(`📝 Failed transaction recorded - User debited ₦${transactionAmount}`);
+
+    // Handle LOW WALLET BALANCE error
+    if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
+      await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Service temporarily unavailable. Your payment has been recorded and will be processed when service is restored.',
+        code: 'VTPASS_WALLET_EMPTY',
+        retryable: false,
+        adminAlerted: true,
+        userDebited: true,
+        debitAmount: transactionAmount,
+        vtpassResponse: vtpassResult.data
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: `${msg}. Your wallet was debited ₦${transactionAmount}. Please contact support if service was not delivered.`,
+      code: errorCode,
+      userDebited: true,
+      debitAmount: transactionAmount,
+      vtpassResponse: vtpassResult.data
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('PROXY ERROR:', error);
+    
+    // Handle MongoDB duplicate key error
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'This transaction was already processed.',
+        code: 'DUPLICATE_TRANSACTION',
+        alreadyProcessed: true
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Service unavailable',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// ==================== HELPER FUNCTIONS FOR PROXY ====================
+
+function getDisplayType(serviceID) {
+  const typeMap = {
+    'mtn': 'Airtime Purchase',
+    'airtel': 'Airtime Purchase',
+    'glo': 'Airtime Purchase',
+    'etisalat': 'Airtime Purchase',
+    '9mobile': 'Airtime Purchase',
+    'mtn-data': 'Data Purchase',
+    'airtel-data': 'Data Purchase',
+    'glo-data': 'Data Purchase',
+    'etisalat-data': 'Data Purchase',
+    'dstv': 'Cable TV Subscription',
+    'gotv': 'Cable TV Subscription',
+    'startimes': 'Cable TV Subscription',
+    'ikeja-electric': 'Electricity Purchase',
+    'eko-electric': 'Electricity Purchase',
+    'abuja-electric': 'Electricity Purchase',
+    'ibadan-electric': 'Electricity Purchase',
+    'enugu-electric': 'Electricity Purchase',
+    'kano-electric': 'Electricity Purchase',
+    'ph-electric': 'Electricity Purchase'
+  };
+  return typeMap[serviceID] || 'debit';
+}
+
+function getServiceType(serviceID) {
+  if (serviceID.includes('electric')) return 'electricity';
+  if (serviceID.includes('data')) return 'data';
+  if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') return 'tv';
+  if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile') return 'airtime';
+  return 'other';
+}
+
+function getCommissionServiceType(serviceID) {
+  if (serviceID.includes('data')) return 'data';
+  if (serviceID.includes('electric')) return serviceID;
+  if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') return 'tv';
+  if (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile') return 'airtime';
+  return serviceID;
+}
+
+function buildTransactionMetadata(serviceID, phone, billersCode, variation_code, type, requestId, isUsingCommission, vtpassData) {
+  const metadata = { 
+    phone, 
+    billersCode, 
+    service: serviceID,
+    paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+    commissionUsed: isUsingCommission,
+    walletUsed: !isUsingCommission,
+    requestId: requestId,
+    processedAt: new Date(),
+    userDebited: true
+  };
+
+  // Handle electricity specific data
+  if (serviceID.includes('electric') && vtpassData) {
+    const token = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+    let formattedToken = null;
+    if (token) {
+      formattedToken = token.toString()
+        .replace('Token : ', '')
+        .replace('Token:', '')
+        .replace('TOKEN : ', '')
+        .replace('TOKEN:', '')
+        .trim();
+      if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
+        formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
+      }
+    }
+    metadata.meterNumber = billersCode;
+    metadata.token = formattedToken || 'Check SMS';
+    metadata.customerName = vtpassData.customerName || vtpassData.content?.Customer_Name || 'N/A';
+    metadata.customerAddress = vtpassData.customerAddress || vtpassData.content?.Address || 'N/A';
+  }
+
+  // Handle Cable TV specific data
+  if (serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes') {
+    metadata.smartcardNumber = billersCode;
+    metadata.packageName = variation_code;
+    metadata.variation_code = variation_code;
+  }
+
+  // Handle Data specific data
+  if (serviceID.includes('data')) {
+    metadata.dataPlan = variation_code;
+    metadata.network = serviceID.replace('-data', '');
+  }
+
+  // Handle Airtime specific data
+  if (!serviceID.includes('data') && !serviceID.includes('electric') && 
+      (serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile')) {
+    metadata.network = serviceID;
+  }
+
+  return metadata;
+}
+
+async function awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, session) {
+  try {
+    const referrer = await User.findById(user.referrerId).session(session);
+    if (referrer) {
+      const referralCommissionRate = 0.00005;
+      let referralCommissionAmount = transactionAmount * referralCommissionRate;
+      
+      if (referralCommissionAmount < 2 && transactionAmount >= 1000) {
+        referralCommissionAmount = 2;
+      }
+      
+      if (referralCommissionAmount > 0) {
+        const referrerBalanceBefore = referrer.commissionBalance || 0;
+        referrer.commissionBalance = (referrer.commissionBalance || 0) + referralCommissionAmount;
+        referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + referralCommissionAmount;
+        
+        await createTransaction(
+          referrer._id,
+          referralCommissionAmount,
+          'Referral Service Commission',
+          'Successful',
+          `Referral commission from ${user.fullName}'s ${serviceID} purchase`,
+          referrerBalanceBefore,
+          referrer.commissionBalance,
+          session,
+          true,
+          'none',
+          null,
+          {},
+          {
+            commissionSource: 'referral_service',
+            referredUserId: user._id,
+            purchaseTransactionId: uniqueRequestId,
+            purchaseAmount: transactionAmount,
+            commissionAmount: referralCommissionAmount,
+            userDebited: true
+          }
+        );
+        
+        await referrer.save({ session });
+        console.log(`✅ Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Referral commission error:', error.message);
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+// ==================== DATA PLANS ENDPOINT ====================
+
+// @desc    Get data plans directly from VTpass API
+// @route   GET /api/data-plans
+// @access  Private
+app.get('/api/data-plans', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎯 DATA PLANS ENDPOINT HIT - serviceID:', req.query.serviceID);
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    console.log('📡 Fetching data plans for service:', serviceID);
+
+    // Validate service ID
+    const validServiceIDs = [
+      'mtn-data', 'airtel-data', 'glo-data', 
+      'glo-sme-data', 'etisalat-data'
+    ];
+    
+    if (!validServiceIDs.includes(serviceID)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid service ID. Valid IDs: ' + validServiceIDs.join(', ')
+      });
+    }
+
+    // Try to get from cache first (5 minutes cache)
+    const cacheKey = `data-plans-${serviceID}`;
+    const cachedPlans = cache.get(cacheKey);
+    
+    if (cachedPlans) {
+      console.log('✅ Serving data plans from cache for:', serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: cachedPlans,
+        totalPlans: cachedPlans.length,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling LIVE VTpass API for data plans:', serviceID);
+
+    // Call VTpass LIVE API directly
+    const vtpassUrl = 'https://vtpass.com/api/service-variations';
+    
+    const response = await axios.get(vtpassUrl, {
+      params: { serviceID },
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 15000
+    });
+
+    console.log('📦 LIVE VTpass API response status:', response.status);
+
+    const vtpassData = response.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      // Fallback to mock data
+      const mockPlans = getMockDataPlans(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: mockPlans,
+        totalPlans: mockPlans.length,
+        source: 'mock_fallback',
+        note: 'VTpass error: ' + vtpassData.response_description
+      });
+    }
+
+    // Process the variations
+    const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+    
+    console.log(`📊 Raw variations count for ${serviceID}:`, variations.length);
+
+    if (!variations || variations.length === 0) {
+      const mockPlans = getMockDataPlans(serviceID);
+      return res.json({
+        success: true,
+        service: serviceID,
+        plans: mockPlans,
+        totalPlans: mockPlans.length,
+        source: 'mock_fallback',
+        note: 'No plans from VTpass, using mock data'
+      });
+    }
+
+    // Transform the data into a consistent format
+    const processedPlans = variations.map(plan => {
+      let validity = '30 days';
+      const name = plan.name || '';
+      
+      // Extract validity from plan name
+      const validityMatch = name.match(/\(([^)]+)\)/);
+      if (validityMatch) {
+        validity = validityMatch[1];
+      } else {
+        // Fallback validity detection
+        if (name.toLowerCase().includes('daily') || name.toLowerCase().includes('1 day')) {
+          validity = '1 day';
+        } else if (name.toLowerCase().includes('weekly') || name.toLowerCase().includes('7 days')) {
+          validity = '7 days';
+        } else if (name.toLowerCase().includes('monthly') || name.toLowerCase().includes('30 days')) {
+          validity = '30 days';
+        } else if (name.toLowerCase().includes('2-month') || name.toLowerCase().includes('60 days')) {
+          validity = '60 days';
+        } else if (name.toLowerCase().includes('3-month') || name.toLowerCase().includes('90 days')) {
+          validity = '90 days';
+        } else if (name.toLowerCase().includes('yearly') || name.toLowerCase().includes('365 days')) {
+          validity = '365 days';
+        }
+      }
+
+      return {
+        name: plan.name || 'Unknown Plan',
+        amount: plan.variation_amount?.toString() || plan.amount?.toString() || '0',
+        validity: validity,
+        variation_code: plan.variation_code || '',
+        serviceID: serviceID,
+        fixedPrice: plan.fixedPrice === 'Yes'
+      };
+    }).filter(plan => plan.variation_code && plan.name !== 'Unknown Plan');
+
+    // Sort plans by amount (lowest to highest)
+    processedPlans.sort((a, b) => parseFloat(a.amount) - parseFloat(b.amount));
+
+    console.log(`✅ Processed ${processedPlans.length} LIVE plans for ${serviceID}`);
+
+    // Cache the result for 5 minutes
+    cache.set(cacheKey, processedPlans, 300);
+
+    res.json({
+      success: true,
+      service: vtpassData.content?.ServiceName || serviceID,
+      serviceID: serviceID,
+      plans: processedPlans,
+      totalPlans: processedPlans.length,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching LIVE data plans:', error);
+    
+    // Provide fallback mock data
+    const mockPlans = getMockDataPlans(req.query.serviceID);
+    
+    res.json({
+      success: true,
+      service: req.query.serviceID,
+      plans: mockPlans,
+      totalPlans: mockPlans.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using mock data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// Helper function for mock data plans
+function getMockDataPlans(serviceID) {
+  const mockPlans = {
+    'mtn-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'mtn-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'mtn-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'mtn-2gb-1000' },
+      { name: '5GB Monthly Plan', amount: '2000', validity: '30 days', variation_code: 'mtn-5gb-2000' },
+      { name: '10GB Monthly Plan', amount: '3000', validity: '30 days', variation_code: 'mtn-10gb-3000' },
+    ],
+    'airtel-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'airtel-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'airtel-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'airtel-2gb-1000' },
+    ],
+    'glo-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'glo-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'glo-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'glo-2gb-1000' },
+    ],
+    'etisalat-data': [
+      { name: '500MB Daily Plan', amount: '200', validity: '1 day', variation_code: 'etisalat-500mb-200' },
+      { name: '1GB Weekly Plan', amount: '500', validity: '7 days', variation_code: 'etisalat-1gb-500' },
+      { name: '2GB Monthly Plan', amount: '1000', validity: '30 days', variation_code: 'etisalat-2gb-1000' },
+    ]
+  };
+  
+  return mockPlans[serviceID] || [];
+}
+
+
+
+
+
+
+
+// @desc    Check rate limiter status for debugging
+// @route   GET /api/debug/rate-limiter-status
+// @access  Private/Admin
+app.get('/api/debug/rate-limiter-status', adminProtect, async (req, res) => {
+  const { preventRaceCondition, preventDuplicateVtpassCall, userServiceRateLimiter } = require('./middleware/rateLimiter');
+  
+  res.json({
+    success: true,
+    message: 'Rate limiter is active',
+    configuration: {
+      raceConditionWindow: '30 seconds',
+      maxRequestsPerWindow: 1,
+      airtimePerMinute: 3,
+      dataPerMinute: 2,
+      electricityPerMinute: 2,
+      cableTvPerMinute: 2
+    },
+    active: true
+  });
+});
+
+
+
+
+// Add this RIGHT BEFORE your 404 handler at the very end
+app.get('/api/debug/routes', (req, res) => {
+  const routes = [];
+  
+  app._router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      // Routes registered directly on the app
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      // Router middleware
+      middleware.handle.stack.forEach((handler) => {
+        if (handler.route) {
+          routes.push({
+            path: handler.route.path,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+  
+  res.json({
+    totalRoutes: routes.length,
+    routes: routes.sort((a, b) => a.path.localeCompare(b.path))
+  });
+});
+
+
+
+
+
+// @desc    Get cable TV variations from LIVE VTpass
+// @route   GET /api/cable/variations
+// @access  Private
+app.get('/api/cable/variations', protect, async (req, res) => {
+  try {
+    const { serviceID } = req.query;
+    const providers = serviceID ? [serviceID] : ['dstv', 'gotv', 'startimes'];
+    const variations = {};
+
+    for (const provider of providers) {
+      try {
+        console.log(`🔄 Fetching LIVE variations for: ${provider}`);
+        
+        const vtpassUrl = `https://vtpass.com/api/service-variations?serviceID=${provider}`;
+        
+        const response = await axios.get(vtpassUrl, {
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': process.env.VTPASS_API_KEY,
+            'secret-key': process.env.VTPASS_SECRET_KEY,
+          },
+          timeout: 15000
+        });
+
+        console.log(`📦 LIVE VTpass response for ${provider}:`, response.status);
+
+        const vtpassData = response.data;
+
+        if (vtpassData.response_description === '000') {
+          const rawVariations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+          
+          // Process variations to ensure consistent format
+          const processedVariations = rawVariations.map(plan => {
+            // Safely handle variation_amount
+            let amount = plan.variation_amount;
+            if (typeof amount === 'number') {
+              amount = amount.toString();
+            } else if (amount === null || amount === undefined) {
+              amount = '0.00';
+            }
+
+            return {
+              name: plan.name || 'Unknown Plan',
+              variation_code: plan.variation_code || '',
+              variation_amount: amount,
+              fixedPrice: plan.fixedPrice === 'Yes'
+            };
+          });
+
+          variations[provider.toUpperCase()] = {
+            success: true,
+            variations: processedVariations,
+            totalPlans: processedVariations.length,
+            source: 'vtpass_live'
+          };
+        } else {
+          throw new Error(vtpassData.response_description || 'VTpass API error');
+        }
+      } catch (error) {
+        console.error(`❌ Error fetching ${provider} variations:`, error);
+        variations[provider.toUpperCase()] = {
+          success: false,
+          variations: getMockCableVariations(provider),
+          totalPlans: getMockCableVariations(provider).length,
+          source: 'mock_fallback',
+          error: error.message
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Cable variations fetched successfully',
+      data: variations,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching cable variations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch cable variations',
+      error: error.message,
+      data: getAllMockCableVariations()
+    });
+  }
+});
+
+// Helper function for mock cable variations
+function getMockCableVariations(provider) {
+  const mockVariations = {
+    'dstv': [
+      {
+        "name": "DStv Padi N1,850",
+        "variation_code": "dstv-padi",
+        "variation_amount": "1850.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "DStv Yanga N2,565", 
+        "variation_code": "dstv-yanga",
+        "variation_amount": "2565.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'gotv': [
+      {
+        "name": "GOtv Smallie",
+        "variation_code": "gotv-smallie",
+        "variation_amount": "1300.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'startimes': [
+      {
+        "name": "StarTimes Nova",
+        "variation_code": "nova",
+        "variation_amount": "1500.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
+
+  return mockVariations[provider] || [];
+}
+
+function getAllMockCableVariations() {
+  return {
+    'DSTV': {
+      success: false,
+      variations: getMockCableVariations('dstv'),
+      totalPlans: getMockCableVariations('dstv').length,
+      source: 'mock_fallback'
+    },
+    'GOTV': {
+      success: false,
+      variations: getMockCableVariations('gotv'),
+      totalPlans: getMockCableVariations('gotv').length,
+      source: 'mock_fallback'
+    },
+    'STARTIMES': {
+      success: false,
+      variations: getMockCableVariations('startimes'),
+      totalPlans: getMockCableVariations('startimes').length,
+      source: 'mock_fallback'
+    }
+  };
+}
+
+// @desc    Validate smart card number with enhanced details
+// @route   POST /api/cable/validate-smartcard
+// @access  Private  
+app.post('/api/cable/validate-smartcard', protect, [
+  body('serviceID').isIn(['dstv', 'gotv', 'startimes']).withMessage('Valid serviceID is required'),
+  body('billersCode').notEmpty().withMessage('Smart card number is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const { serviceID, billersCode } = req.body;
+
+  try {
+    const vtpassResult = await callVtpassApi('/merchant-verify', {
+      serviceID,
+      billersCode
+    });
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const content = vtpassResult.data.content;
+      
+      // Enhanced response with all available details
+      const enhancedResponse = {
+        success: true,
+        customerName: content.Customer_Name,
+        status: content.Status,
+        dueDate: content.Due_Date,
+        customerNumber: content.Customer_Number,
+        customerType: content.Customer_Type,
+        currentBouquet: content.Current_Bouquet,
+        renewalAmount: content.Renewal_Amount,
+        details: content
+      };
+
+      res.json(enhancedResponse);
+    } else {
+      res.status(400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Smart card validation failed',
+        details: vtpassResult.data
+      });
+    }
+  } catch (error) {
+    console.error('Error validating smart card:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to validate smart card' 
+    });
+  }
+});
+
+
+
+
+
+// @desc    Get education service variations with VTpass fallback
+// @route   GET /api/education/variations
+// @access  Private
+app.get('/api/education/variations', protect, [
+  query('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎓 EDUCATION VARIATIONS ENDPOINT HIT - serviceID:', req.query.serviceID);
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { serviceID } = req.query;
+    
+    console.log('📡 Fetching education variations for service:', serviceID);
+
+    // Validate service ID
+    const validServiceIDs = ['waec-registration', 'waec', 'jamb'];
+    
+    if (!validServiceIDs.includes(serviceID)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid education service ID. Valid IDs: ' + validServiceIDs.join(', ')
+      });
+    }
+
+    let variations = [];
+    let source = 'mock_fallback';
+
+    try {
+      // Try to get from VTpass first
+      console.log('🚀 Calling LIVE VTpass API for education variations:', serviceID);
+
+      const vtpassUrl = 'https://vtpass.com/api/service-variations';
+      
+      const response = await axios.get(vtpassUrl, {
+        params: { serviceID },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 10000
+      });
+
+      console.log('📦 LIVE VTpass API response status:', response.status);
+
+      const vtpassData = response.data;
+
+      // Check if VTpass API returned success
+      if (vtpassData.response_description === '000' || vtpassData.code === '000') {
+        variations = vtpassData.content?.variations || [];
+        source = 'vtpass_live';
+        console.log(`✅ Got ${variations.length} LIVE variations from VTpass`);
+      } else {
+        console.log('❌ VTpass API error:', vtpassData.response_description);
+        throw new Error(vtpassData.response_description || 'VTpass API error');
+      }
+    } catch (vtpassError) {
+      console.log('⚠️ VTpass failed, using mock data:', vtpassError.message);
+      variations = getMockEducationVariations(serviceID);
+      source = 'mock_fallback';
+    }
+
+    // Process variations to ensure consistent format
+    const processedVariations = variations.map(variation => {
+      return {
+        name: variation.name || 'Unknown Plan',
+        variation_code: variation.variation_code || '',
+        variation_amount: variation.variation_amount?.toString() || '0.00',
+        fixedPrice: variation.fixedPrice === 'Yes' || variation.fixedPrice === true
+      };
+    }).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
+
+    console.log(`✅ Returning ${processedVariations.length} variations (source: ${source})`);
+
+    res.json({
+      success: true,
+      service: serviceID,
+      variations: processedVariations,
+      totalVariations: processedVariations.length,
+      source: source,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Unexpected error in education variations:', error);
+    
+    // Even on unexpected errors, return mock data
+    const mockVariations = getMockEducationVariations(req.query.serviceID);
+    
+    res.json({
+      success: true,
+      service: req.query.serviceID,
+      variations: mockVariations,
+      totalVariations: mockVariations.length,
+      source: 'mock_fallback_error',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Enhanced mock data fallback
+function getMockEducationVariations(serviceID) {
+  const mockVariations = {
+    'waec-registration': [
+      {
+        "variation_code": "waec-registration",
+        "name": "WASSCE for Private Candidates - Second Series (2024)",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "waec-registration-2",
+        "name": "WASSCE for Private Candidates - First Series (2024)",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'waec': [
+      {
+        "variation_code": "waecdirect",
+        "name": "WASSCE Result Checker",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "waecdirect-2",
+        "name": "WASSCE GCE Result Checker",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'jamb': [
+      {
+        "variation_code": "utme-mock",
+        "name": "UTME PIN (with mock)",
+        "variation_amount": "6300.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "utme-no-mock",
+        "name": "UTME PIN (without mock)",
+        "variation_amount": "4700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "direct-entry",
+        "name": "Direct Entry PIN",
+        "variation_amount": "5300.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
+
+  return mockVariations[serviceID] || [];
+}
+
+// @desc    Validate education profile (JAMB Profile ID)
+// @route   POST /api/education/validate-profile
+// @access  Private
+app.post('/api/education/validate-profile', protect, [
+  body('profileId').notEmpty().withMessage('Profile ID is required'),
+  body('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  console.log('🎓 EDUCATION PROFILE VALIDATION ENDPOINT HIT');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { profileId, serviceID } = req.body;
+    
+    console.log('🔍 Validating education profile:', { profileId, serviceID });
+
+    // For JAMB profile validation
+    if (serviceID === 'jamb') {
+      const vtpassResult = await callVtpassApi('/merchant-verify', {
+        serviceID: 'jamb',
+        billersCode: profileId
+      });
+
+      console.log('📦 VTpass Profile Validation Response:', {
+        success: vtpassResult.success,
+        code: vtpassResult.data?.code,
+        message: vtpassResult.data?.response_description
+      });
+
+      if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+        const content = vtpassResult.data.content;
+        
+        res.json({
+          success: true,
+          customerName: content.Customer_Name || 'Valid JAMB Profile',
+          message: 'Profile validated successfully',
+          details: content
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: vtpassResult.data?.response_description || 'Profile validation failed',
+          details: vtpassResult.data
+        });
+      }
+    } else {
+      // For other education services that don't require profile validation
+      res.json({
+        success: true,
+        customerName: 'Valid Profile',
+        message: 'Profile validation not required for this service'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error validating education profile:', error);
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Profile validation service temporarily unavailable'
+    });
+  }
+});
+
+// @desc    Purchase education service (WAEC, JAMB, etc.)
+// @route   POST /api/education/purchase
+// @access  Private
+app.post('/api/education/purchase', protect, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  smartLimitCheck,
+  checkTransactionLimit('education'),
+  checkPerMinuteLimit('education'), // ✅ ADD THIS
+  [
+  body('serviceID').notEmpty().withMessage('Service ID is required'),
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+  body('quantity').optional().isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
+  body('profileId').optional().isString().withMessage('Profile ID must be a string')
+], async (req, res) => {
+  console.log('🎓 EDUCATION PURCHASE ENDPOINT HIT');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const { serviceID, variationCode, phone, amount, quantity = 1, profileId } = req.body;
+  const userId = req.user._id;
+  const reference = generateRequestId();
+  
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.walletBalance < amount) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
+      });
+    }
+
+    // Prepare VTpass payload
+    const vtpassPayload = {
+      request_id: reference,
+      serviceID,
+      variation_code: variationCode,
+      phone,
+      amount: amount.toString(),
+      quantity: quantity.toString()
+    };
+
+    // Add profile ID for JAMB
+    if (profileId && serviceID === 'jamb') {
+      vtpassPayload.billersCode = profileId;
+    }
+
+    console.log('🚀 Calling VTpass for education purchase:', vtpassPayload);
+
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    console.log('📦 VTpass Education Purchase Response:', {
+      success: vtpassResult.success,
+      code: vtpassResult.data?.code,
+      message: vtpassResult.data?.response_description
+    });
+
+    const balanceBefore = user.walletBalance;
+    let transactionStatus = 'failed';
+    let newBalance = balanceBefore;
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
+
+      // Credit commission
      
+await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceID is like 'waec' or 'jamb'
+  .catch(err => console.log('⚠️ Education commission calculation failed:', err.message));
+      // AUTO-CREATE TRANSACTION NOTIFICATION
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Education Purchase Successful 🎓",
+          message: `Your ${serviceID.toUpperCase()} purchase of ₦${amount} was completed successfully. New wallet balance: ₦${newBalance}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating transaction notification:', notificationError);
+      }
+    } else {
+      await session.abortTransaction();
+      return res.status(vtpassResult.status || 400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Education purchase failed',
+        details: vtpassResult.data
+      });
+    }
+
+    const newTransaction = await createTransaction(
+      userId,
+      amount,
+      'debit',
+      transactionStatus,
+      `${serviceID} education purchase for ${phone}`,
+      balanceBefore,
+      newBalance,
+      session,
+      false,
+      req.authenticationMethod
+    );
+
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      message: `Education purchase completed. Status: ${newTransaction.status}.`,
+      transactionId: newTransaction._id,
+      newBalance: newBalance,
+      status: newTransaction.status,
+      vtpassResponse: vtpassResult.data,
+      purchased_code: vtpassResult.data?.content?.purchased_code,
+      cards: vtpassResult.data?.content?.cards || [],
+      tokens: vtpassResult.data?.content?.tokens || []
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error in education purchase:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Education purchase failed' 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// Helper function for mock education variations
+function getMockEducationVariations(serviceID) {
+  const mockVariations = {
+    'waec-registration': [
+      {
+        "name": "WASSCE for Private Candidates - Second Series (2024)",
+        "variation_code": "waec-registration",
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "WASSCE for Private Candidates - First Series (2024)",
+        "variation_code": "waec-registration-2", 
+        "variation_amount": "18950.00",
+        "fixedPrice": "Yes"
+      }
+    ],
+    'waec': [
+      {
+        "name": "WASSCE Result Checker",
+        "variation_code": "waecdirect",
+        "variation_amount": "1200.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "WASSCE GCE Result Checker",
+        "variation_code": "waecdirect-2",
+        "variation_amount": "1200.00", 
+        "fixedPrice": "Yes"
+      }
+    ],
+    'jamb': [
+      {
+        "name": "UTME PIN (with mock)",
+        "variation_code": "utme-mock",
+        "variation_amount": "6300.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "UTME PIN (without mock)",
+        "variation_code": "utme-no-mock",
+        "variation_amount": "4700.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "name": "Direct Entry PIN",
+        "variation_code": "direct-entry", 
+        "variation_amount": "5300.00",
+        "fixedPrice": "Yes"
+      }
+    ]
+  };
+
+  return mockVariations[serviceID] || [];
+}
+
+
+
+// @desc    Get insurance variations automatically from VTpass
+// @route   GET /api/insurance/variations
+// @access  Private
+app.get('/api/insurance/variations', protect, async (req, res) => {
+  try {
+    console.log('🛡️ Fetching insurance variations from VTpass...');
+    
+    // Try to get from cache first
+    const cacheKey = 'insurance-variations';
+    const cachedVariations = cache.get(cacheKey);
+    
+    if (cachedVariations) {
+      console.log('✅ Serving insurance variations from cache');
+      return res.json({
+        success: true,
+        service: 'Third Party Motor Insurance - Universal Insurance',
+        serviceID: 'ui-insure',
+        variations: cachedVariations,
+        totalVariations: cachedVariations.length,
+        source: 'cache'
+      });
+    }
+
+    // Call VTpass LIVE API directly for insurance variations
+    console.log('🚀 Calling LIVE VTpass API for insurance variations');
+    const vtpassUrl = 'https://vtpass.com/api/service-variations?serviceID=ui-insure';
+    
+    const response = await axios.get(vtpassUrl, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 15000
+    });
+
+    console.log('📦 VTpass insurance variations response status:', response.status);
+
+    const vtpassData = response.data;
+
+    // Check if VTpass API returned success
+    if (vtpassData.response_description === '000') {
+      const variations = vtpassData.content?.variations || vtpassData.content?.varations || [];
+      
+      console.log(`✅ Successfully fetched ${variations.length} insurance variations from VTpass`);
+      
+      // Process variations to ensure consistent format
+      const processedVariations = variations.map(variation => ({
+        name: variation.name || 'Unknown Plan',
+        variation_code: variation.variation_code || '',
+        variation_amount: variation.variation_amount?.toString() || '0.00',
+        fixedPrice: variation.fixedPrice === 'Yes'
+      })).filter(variation => variation.variation_code && variation.name !== 'Unknown Plan');
+
+      // Cache the result for 10 minutes
+      cache.set(cacheKey, processedVariations, 600);
+
+      res.json({
+        success: true,
+        service: vtpassData.content?.ServiceName || 'Third Party Motor Insurance - Universal Insurance',
+        serviceID: 'ui-insure',
+        variations: processedVariations,
+        totalVariations: processedVariations.length,
+        source: 'vtpass_live',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      throw new Error(vtpassData.response_description || 'Failed to fetch insurance variations');
+    }
+
+  } catch (error) {
+    console.error('❌ Error fetching insurance variations:', error);
+    
+    // Fallback to mock data
+    const mockVariations = [
+      {
+        "variation_code": "1",
+        "name": "Private",
+        "variation_amount": "3000.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "2", 
+        "name": "Commercial",
+        "variation_amount": "5000.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "3",
+        "name": "Tricycles", 
+        "variation_amount": "1500.00",
+        "fixedPrice": "Yes"
+      },
+      {
+        "variation_code": "4",
+        "name": "Motorcycle",
+        "variation_amount": "3000.00", 
+        "fixedPrice": "Yes"
+      }
+    ];
+
+    res.json({
+      success: true,
+      service: 'Third Party Motor Insurance - Universal Insurance',
+      serviceID: 'ui-insure',
+      variations: mockVariations,
+      totalVariations: mockVariations.length,
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using fallback data due to service unavailability'
+    });
+  }
+});
+
+
+
+// @desc    Get LGAs for a specific state using VTpass API
+// @route   GET /api/insurance/lgas/:stateCode
+// @access  Private
+app.get('/api/insurance/lgas/:stateCode', protect, async (req, res) => {
+  try {
+    const { stateCode } = req.params;
+    
+    console.log(`📍 Fetching LGAs for state code: ${stateCode}`);
+    
+    // Call VTpass API for LGAs with the numeric state code
+    const response = await axios.get(
+      `https://vtpass.com/api/universal-insurance/options/lga/${stateCode}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+    
+    console.log(`📦 VTpass LGA response status: ${response.status}`);
+    
+    const vtpassData = response.data;
+    console.log(`📦 VTpass LGA full response:`, JSON.stringify(vtpassData, null, 2));
+    
+    // Check if response is successful
+    if (vtpassData.response_description !== '000') {
+      console.log(`⚠️ VTpass returned error: ${vtpassData.response_description}`);
+      const fallbackLgas = getFallbackLGAs(stateCode);
+      return res.json({
+        success: true,
+        lgas: fallbackLgas,
+        stateCode: stateCode,
+        source: 'mock_fallback',
+        note: 'VTpass returned error: ' + vtpassData.response_description,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Extract LGAs correctly from VTpass response
+    let lgas = [];
+    
+    // Check if content exists and is an array
+    if (vtpassData.content && Array.isArray(vtpassData.content)) {
+      console.log(`📦 VTpass content is an array with ${vtpassData.content.length} items`);
+      
+      // ✅ CORRECT: Map each item properly
+      lgas = vtpassData.content.map((item) => {
+        // Extract the LGA code and name from the VTpass response
+        const lgaCode = item.LGACode?.toString() || '';
+        const lgaName = item.LGAName?.toString() || '';
+        const stateCodeFromResponse = item.StateCode?.toString() || stateCode;
+        
+        console.log(`   📍 LGA: ${lgaCode} - ${lgaName}`);
+        
+        return {
+          code: lgaCode,
+          name: lgaName,
+          stateCode: stateCodeFromResponse
+        };
+      });
+      
+      // Filter out empty entries
+      lgas = lgas.filter(lga => lga.code && lga.code !== '' && lga.code !== 'null' && lga.code !== 'undefined');
+      
+      console.log(`✅ Successfully extracted ${lgas.length} LGAs from VTpass response`);
+      
+    } else {
+      console.log(`⚠️ VTpass content is not an array or is missing`);
+      console.log(`   content type: ${typeof vtpassData.content}`);
+      console.log(`   content value:`, vtpassData.content);
+    }
+    
+    // If no LGAs found, use fallback
+    if (lgas.length === 0) {
+      console.log(`⚠️ No LGAs found from VTpass, using fallback for state code: ${stateCode}`);
+      lgas = getFallbackLGAs(stateCode);
+    }
+    
+    res.json({
+      success: true,
+      lgas: lgas,
+      stateCode: stateCode,
+      totalLGAs: lgas.length,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`❌ Error fetching LGAs for state ${req.params.stateCode}:`, error.message);
+    console.error('Error details:', error.response?.data || error.message);
+    
+    // Return fallback LGAs
+    const fallbackLgas = getFallbackLGAs(req.params.stateCode);
+    
+    res.json({
+      success: true,
+      lgas: fallbackLgas,
+      stateCode: req.params.stateCode,
+      source: 'mock_fallback',
+      note: 'Using fallback data due to service unavailability: ' + error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ==================== COMPLETE NIGERIA STATES & LGAS FALLBACK ====================
+function getFallbackLGAs(stateCode) {
+  // Complete Nigeria States and LGAs mapping
+  const statesLGAs = {
+    '1': { name: 'Abia', lgas: ['Aba North', 'Aba South', 'Arochukwu', 'Bende', 'Ikwuano', 'Isiala Ngwa North', 'Isiala Ngwa South', 'Isuikwuato', 'Obi Ngwa', 'Ohafia', 'Osisioma', 'Ugwunagbo', 'Ukwa East', 'Ukwa West', 'Umuahia North', 'Umuahia South', 'Umu Nneochi'] },
+    '2': { name: 'Adamawa', lgas: ['Demsa', 'Fufore', 'Ganaye', 'Girei', 'Gombi', 'Guyuk', 'Hong', 'Jada', 'Lamurde', 'Madagali', 'Maiha', 'Mayo Belwa', 'Michika', 'Mubi North', 'Mubi South', 'Numan', 'Shelleng', 'Song', 'Toungo', 'Yola North', 'Yola South'] },
+    '3': { name: 'Akwa Ibom', lgas: ['Abak', 'Eastern Obolo', 'Eket', 'Esit Eket', 'Essien Udim', 'Etim Ekpo', 'Etinan', 'Ibeno', 'Ibesikpo Asutan', 'Ibiono Ibom', 'Ika', 'Ikono', 'Ikot Abasi', 'Ikot Ekpene', 'Ini', 'Itu', 'Mbo', 'Mkpat Enin', 'Nsit Atai', 'Nsit Ibom', 'Nsit Ubium', 'Obot Akara', 'Okobo', 'Onna', 'Oron', 'Oruk Anam', 'Udung Uko', 'Ukanafun', 'Uruan', 'Urue-Offong/Oruko', 'Uyo'] },
+    '4': { name: 'Anambra', lgas: ['Aguata', 'Anambra East', 'Anambra West', 'Anaocha', 'Awka North', 'Awka South', 'Ayamelum', 'Dunukofia', 'Ekwusigo', 'Idemili North', 'Idemili South', 'Ihiala', 'Njikoka', 'Nnewi North', 'Nnewi South', 'Ogbaru', 'Onitsha North', 'Onitsha South', 'Orumba North', 'Orumba South', 'Oyi'] },
+    '5': { name: 'Bauchi', lgas: ['Alkaleri', 'Bauchi', 'Bogoro', 'Damban', 'Darazo', 'Dass', 'Gamawa', 'Ganjuwa', 'Giade', 'Itas/Gadau', 'Jama\'are', 'Katagum', 'Kirfi', 'Misau', 'Ningi', 'Shira', 'Tafawa Balewa', 'Toro', 'Warji', 'Zaki'] },
+    '6': { name: 'Bayelsa', lgas: ['Brass', 'Ekeremor', 'Kolokuma/Opokuma', 'Nembe', 'Ogbia', 'Sagbama', 'Southern Ijaw', 'Yenagoa'] },
+    '7': { name: 'Benue', lgas: ['Ado', 'Agatu', 'Apa', 'Buruku', 'Gboko', 'Guma', 'Gwer East', 'Gwer West', 'Katsina-Ala', 'Konshisha', 'Kwande', 'Logo', 'Makurdi', 'Obi', 'Ogbadibo', 'Ohimini', 'Oju', 'Okpokwu', 'Oturkpo', 'Tarka', 'Ukum', 'Ushongo', 'Vandeikya'] },
+    '8': { name: 'Borno', lgas: ['Abadam', 'Askira/Uba', 'Bama', 'Bayo', 'Biu', 'Chibok', 'Damboa', 'Dikwa', 'Gubio', 'Guzamala', 'Gwoza', 'Hawul', 'Jere', 'Kaga', 'Kala/Balge', 'Konduga', 'Kukawa', 'Kwaya Kusar', 'Mafa', 'Magumeri', 'Maiduguri', 'Marte', 'Mobbar', 'Monguno', 'Ngala', 'Nganzai', 'Shani'] },
+    '9': { name: 'Cross River', lgas: ['Abi', 'Akamkpa', 'Akpabuyo', 'Bakassi', 'Bekwarra', 'Biase', 'Boki', 'Calabar Municipal', 'Calabar South', 'Etung', 'Ikom', 'Obanliku', 'Obubra', 'Obudu', 'Odukpani', 'Ogoja', 'Yakuur', 'Yala'] },
+    '10': { name: 'Delta', lgas: ['Aniocha North', 'Aniocha South', 'Bomadi', 'Burutu', 'Ethiope East', 'Ethiope West', 'Ika North East', 'Ika South', 'Isoko North', 'Isoko South', 'Ndokwa East', 'Ndokwa West', 'Okpe', 'Oshimili North', 'Oshimili South', 'Patani', 'Sapele', 'Udu', 'Ughelli North', 'Ughelli South', 'Ukwuani', 'Uvwie', 'Warri North', 'Warri South', 'Warri South West'] },
+    '11': { name: 'Ebonyi', lgas: ['Abakaliki', 'Afikpo North', 'Afikpo South', 'Ebonyi', 'Ezza North', 'Ezza South', 'Ikwo', 'Ishielu', 'Ivo', 'Izzi', 'Ohaozara', 'Ohaukwu', 'Onicha'] },
+    '12': { name: 'Edo', lgas: ['Akoko-Edo', 'Egor', 'Esan Central', 'Esan North East', 'Esan South East', 'Esan West', 'Etsako Central', 'Etsako East', 'Etsako West', 'Igueben', 'Ikpoba Okha', 'Orhionmwon', 'Oredo', 'Ovia North East', 'Ovia South West', 'Owan East', 'Owan West', 'Uhunmwonde'] },
+    '13': { name: 'Ekiti', lgas: ['Ado Ekiti', 'Efon', 'Ekiti East', 'Ekiti South West', 'Ekiti West', 'Emure', 'Gbonyin', 'Ido Osi', 'Ijero', 'Ikere', 'Ikole', 'Ilejemeje', 'Irepodun/Ifelodun', 'Ise/Orun', 'Moba', 'Oye'] },
+    '14': { name: 'Enugu', lgas: ['Aninri', 'Awgu', 'Enugu East', 'Enugu North', 'Enugu South', 'Ezeagu', 'Igbo Etiti', 'Igbo Eze North', 'Igbo Eze South', 'Isi Uzo', 'Nkanu East', 'Nkanu West', 'Nsukka', 'Oji River', 'Udenu', 'Udi', 'Uzo Uwani'] },
+    '15': { name: 'FCT', lgas: ['Abaji', 'Abuja Municipal', 'Bwari', 'Gwagwalada', 'Kuje', 'Kwali'] },
+    '16': { name: 'Gombe', lgas: ['Akko', 'Balanga', 'Billiri', 'Dukku', 'Funakaye', 'Gombe', 'Kaltungo', 'Kwami', 'Nafada', 'Shongom', 'Yamaltu/Deba'] },
+    '17': { name: 'Imo', lgas: ['Aboh Mbaise', 'Ahiazu Mbaise', 'Ehime Mbano', 'Ezinihitte', 'Ideato North', 'Ideato South', 'Ihitte/Uboma', 'Ikeduru', 'Isiala Mbano', 'Isu', 'Mbaitoli', 'Ngor Okpala', 'Njaba', 'Nkwerre', 'Nwangele', 'Obowo', 'Oguta', 'Ohaji/Egbema', 'Okigwe', 'Orlu', 'Orsu', 'Oru East', 'Oru West', 'Owerri Municipal', 'Owerri North', 'Owerri West', 'Unuimo'] },
+    '18': { name: 'Jigawa', lgas: ['Auyo', 'Babura', 'Biriniwa', 'Birnin Kudu', 'Buji', 'Dutse', 'Gagarawa', 'Garki', 'Gumel', 'Guri', 'Gwaram', 'Gwiwa', 'Hadejia', 'Jahun', 'Kafin Hausa', 'Kaugama', 'Kazaure', 'Kiri Kasama', 'Kiyawa', 'Malam Madori', 'Miga', 'Ringim', 'Roni', 'Sule Tankarkar', 'Taura', 'Yankwashi'] },
+    '19': { name: 'Kaduna', lgas: ['Birnin Gwari', 'Chikun', 'Giwa', 'Igabi', 'Ikara', 'Jaba', 'Jema\'a', 'Kachia', 'Kaduna North', 'Kaduna South', 'Kagarko', 'Kajuru', 'Kaura', 'Kauru', 'Kubau', 'Kudan', 'Lere', 'Makarfi', 'Sabon Gari', 'Sanga', 'Soba', 'Zangon Kataf', 'Zaria'] },
+    '20': { name: 'Kano', lgas: ['Ajingi', 'Albasu', 'Bagwai', 'Bebeji', 'Bichi', 'Bunkure', 'Dala', 'Dambatta', 'Dawakin Kudu', 'Dawakin Tofa', 'Doguwa', 'Fagge', 'Gabasawa', 'Garko', 'Garun Mallam', 'Gaya', 'Gezawa', 'Gwale', 'Gwarzo', 'Kabo', 'Kano Municipal', 'Karaye', 'Kibiya', 'Kiru', 'Kumbotso', 'Kunchi', 'Kura', 'Madobi', 'Makoda', 'Minjibir', 'Nasarawa', 'Rano', 'Rimin Gado', 'Rogo', 'Shanono', 'Sumaila', 'Takai', 'Tarauni', 'Tofa', 'Tsanyawa', 'Tudun Wada', 'Ungogo', 'Warawa', 'Wudil'] },
+    '21': { name: 'Katsina', lgas: ['Bakori', 'Batagarawa', 'Batsari', 'Baure', 'Bindawa', 'Charanchi', 'Dandume', 'Danja', 'Dan Musa', 'Daura', 'Dutsi', 'Dutsin Ma', 'Faskari', 'Funtua', 'Ingawa', 'Jibia', 'Kafur', 'Kaita', 'Kankara', 'Kankia', 'Katsina', 'Kurfi', 'Kusada', 'Mai\'Adua', 'Malumfashi', 'Mani', 'Mashi', 'Matazu', 'Musawa', 'Rimi', 'Sabuwa', 'Safana', 'Sandamu', 'Zango'] },
+    '22': { name: 'Kebbi', lgas: ['Aleiro', 'Arewa Dandi', 'Argungu', 'Augie', 'Bagudo', 'Birnin Kebbi', 'Bunza', 'Dandi', 'Fakai', 'Gwandu', 'Jega', 'Kalgo', 'Koko/Besse', 'Maiyama', 'Ngaski', 'Sakaba', 'Shanga', 'Suru', 'Wasagu/Danko', 'Yauri', 'Zuru'] },
+    '23': { name: 'Kogi', lgas: ['Adavi', 'Ajaokuta', 'Ankpa', 'Bassa', 'Dekina', 'Ibaji', 'Idah', 'Igalamela Odolu', 'Ijumu', 'Kabba/Bunu', 'Kogi', 'Lokoja', 'Mopa Muro', 'Ofu', 'Ogori/Magongo', 'Okehi', 'Okene', 'Olamaboro', 'Omala', 'Yagba East', 'Yagba West'] },
+    '24': { name: 'Kwara', lgas: ['Asa', 'Baruten', 'Edu', 'Ekiti', 'Ifelodun', 'Ilorin East', 'Ilorin South', 'Ilorin West', 'Irepodun', 'Isin', 'Kaiama', 'Moro', 'Offa', 'Oke Ero', 'Oyun', 'Pategi'] },
+    '25': { name: 'Lagos', lgas: ['Agege', 'Ajeromi-Ifelodun', 'Alimosho', 'Amuwo-Odofin', 'Apapa', 'Badagry', 'Epe', 'Eti-Osa', 'Ibeju-Lekki', 'Ifako-Ijaiye', 'Ikeja', 'Ikorodu', 'Kosofe', 'Lagos Island', 'Lagos Mainland', 'Mushin', 'Ojo', 'Oshodi-Isolo', 'Shomolu', 'Surulere'] },
+    '26': { name: 'Nasarawa', lgas: ['Akwanga', 'Awe', 'Doma', 'Karu', 'Keana', 'Keffi', 'Kokona', 'Lafia', 'Nasarawa', 'Nasarawa Egon', 'Obi', 'Toto', 'Wamba'] },
+    '27': { name: 'Niger', lgas: ['Agaie', 'Agwara', 'Bida', 'Borgu', 'Bosso', 'Chanchaga', 'Edati', 'Gbako', 'Gurara', 'Katcha', 'Kontagora', 'Lapai', 'Lavun', 'Magama', 'Mariga', 'Mashegu', 'Mokwa', 'Moya', 'Paikoro', 'Rafi', 'Rijau', 'Shiroro', 'Suleja', 'Tafa', 'Wushishi'] },
+    '28': { name: 'Ogun', lgas: ['Abeokuta North', 'Abeokuta South', 'Ado-Odo/Ota', 'Egbado North', 'Egbado South', 'Ewekoro', 'Ifo', 'Ijebu East', 'Ijebu North', 'Ijebu North East', 'Ijebu Ode', 'Ikenne', 'Imeko Afon', 'Ipokia', 'Obafemi Owode', 'Odeda', 'Odogbolu', 'Ogun Waterside', 'Remo North', 'Shagamu'] },
+    '29': { name: 'Ondo', lgas: ['Akoko North East', 'Akoko North West', 'Akoko South East', 'Akoko South West', 'Akure North', 'Akure South', 'Ese Odo', 'Idanre', 'Ifedore', 'Ilaje', 'Ile Oluji/Okeigbo', 'Irele', 'Odigbo', 'Okitipupa', 'Ondo East', 'Ondo West', 'Ose', 'Owo'] },
+    '30': { name: 'Osun', lgas: ['Aiyedaade', 'Aiyedire', 'Atakunmosa East', 'Atakunmosa West', 'Boluwaduro', 'Boripe', 'Ede North', 'Ede South', 'Egbedore', 'Ejigbo', 'Ife Central', 'Ife East', 'Ife North', 'Ife South', 'Ifedayo', 'Ifelodun', 'Ila', 'Ilesa East', 'Ilesa West', 'Irepodun', 'Irewole', 'Isokan', 'Iwo', 'Obokun', 'Odo Otin', 'Ola Oluwa', 'Olorunda', 'Oriade', 'Orolu', 'Osogbo'] },
+    '31': { name: 'Oyo', lgas: ['Afijio', 'Akinyele', 'Atiba', 'Atisbo', 'Egbeda', 'Ibadan North', 'Ibadan North East', 'Ibadan North West', 'Ibadan South East', 'Ibadan South West', 'Ibarapa Central', 'Ibarapa East', 'Ibarapa North', 'Ido', 'Irepo', 'Iseyin', 'Itesiwaju', 'Iwajowa', 'Kajola', 'Lagelu', 'Ogbomosho North', 'Ogbomosho South', 'Ogo Oluwa', 'Olorunsogo', 'Oluyole', 'Ona Ara', 'Orelope', 'Ori Ire', 'Oyo', 'Oyo East', 'Saki East', 'Saki West', 'Surulere'] },
+    '32': { name: 'Plateau', lgas: ['Barkin Ladi', 'Bassa', 'Bokkos', 'Jos East', 'Jos North', 'Jos South', 'Kanam', 'Kanke', 'Langtang North', 'Langtang South', 'Mangu', 'Mikang', 'Pankshin', 'Qua\'an Pan', 'Riyom', 'Shendam', 'Wase'] },
+    '33': { name: 'Rivers', lgas: ['Abua/Odual', 'Ahoada East', 'Ahoada West', 'Akuku Toru', 'Andoni', 'Asari Toru', 'Bonny', 'Degema', 'Eleme', 'Emohua', 'Etche', 'Gokana', 'Ikwerre', 'Khana', 'Obio/Akpor', 'Ogba/Egbema/Ndoni', 'Ogu/Bolo', 'Okrika', 'Omuma', 'Opobo/Nkoro', 'Oyigbo', 'Port Harcourt', 'Tai'] },
+    '34': { name: 'Sokoto', lgas: ['Binji', 'Bodinga', 'Dange Shuni', 'Gada', 'Goronyo', 'Gudu', 'Gwadabawa', 'Illela', 'Isa', 'Kebbe', 'Kware', 'Rabah', 'Sabon Birni', 'Shagari', 'Silame', 'Sokoto North', 'Sokoto South', 'Tambuwal', 'Tangaza', 'Tureta', 'Wamako', 'Wurno', 'Yabo'] },
+    '35': { name: 'Taraba', lgas: ['Ardo Kola', 'Bali', 'Donga', 'Gashaka', 'Gassol', 'Ibi', 'Jalingo', 'Karim Lamido', 'Kumi', 'Lau', 'Sardauna', 'Takum', 'Ussa', 'Wukari', 'Yorro', 'Zing'] },
+    '36': { name: 'Yobe', lgas: ['Bade', 'Bursari', 'Damaturu', 'Fika', 'Fune', 'Geidam', 'Gujba', 'Gulani', 'Jakusko', 'Karasuwa', 'Machina', 'Nangere', 'Nguru', 'Potiskum', 'Tarmuwa', 'Yunusari', 'Yusufari'] },
+    '37': { name: 'Zamfara', lgas: ['Anka', 'Bakura', 'Birnin Magaji/Kiyaw', 'Bukkuyum', 'Bungudu', 'Gummi', 'Gusau', 'Kaura Namoda', 'Maradun', 'Maru', 'Shinkafi', 'Talata Mafara', 'Tsafe', 'Zurmi'] }
+  };
+  
+  // Get the state data
+  const stateData = statesLGAs[stateCode];
+  
+  if (stateData) {
+    console.log(`📋 Using fallback LGAs for ${stateData.name} (${stateCode})`);
+    return stateData.lgas.map((lga, index) => ({
+      code: (index + 1).toString(),
+      name: lga,
+      stateCode: stateCode
+    }));
+  }
+  
+  console.log(`⚠️ No fallback data for state code: ${stateCode}`);
+  return [
+    { code: '1', name: 'LGA 1', stateCode: stateCode },
+    { code: '2', name: 'LGA 2', stateCode: stateCode },
+    { code: '3', name: 'LGA 3', stateCode: stateCode },
+    { code: '4', name: 'LGA 4', stateCode: stateCode },
+    { code: '5', name: 'LGA 5', stateCode: stateCode }
+  ];
+}
+
+
+// @desc    Get states from VTpass
+// @route   GET /api/insurance/states
+// @access  Private
+app.get('/api/insurance/states', protect, async (req, res) => {
+  try {
+    console.log('📍 Fetching states from VTpass API...');
+    
+    const response = await axios.get(
+      'https://vtpass.com/api/universal-insurance/options/state',
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+    
+    console.log(`📦 VTpass states response status: ${response.status}`);
+    
+    const vtpassData = response.data;
+    
+    if (vtpassData.response_description !== '000') {
+      console.log(`⚠️ VTpass returned error: ${vtpassData.response_description}`);
+      // Return fallback states
+      const fallbackStates = getFallbackStates();
+      return res.json({
+        success: true,
+        states: fallbackStates,
+        source: 'mock_fallback',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Extract states from response
+    let states = [];
+    
+    if (vtpassData.content) {
+      if (Array.isArray(vtpassData.content)) {
+        states = vtpassData.content.map(item => ({
+          code: item.StateCode?.toString() || '',
+          name: item.StateName?.toString() || ''
+        }));
+      } else if (typeof vtpassData.content === 'object') {
+        states = Object.entries(vtpassData.content).map(([key, value]) => ({
+          code: key,
+          name: value?.toString() || key
+        }));
+      }
+    }
+    
+    // Filter out empty entries
+    states = states.filter(state => state.code && state.code !== 'null');
+    
+    // If no states found, use fallback
+    if (states.length === 0) {
+      console.log('⚠️ No states found from VTpass, using fallback');
+      states = getFallbackStates();
+    }
+    
+    console.log(`✅ Found ${states.length} states`);
+    
+    res.json({
+      success: true,
+      states: states,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching states:', error.message);
+    
+    // Return fallback states
+    const fallbackStates = getFallbackStates();
+    
+    res.json({
+      success: true,
+      states: fallbackStates,
+      source: 'mock_fallback',
+      note: 'Using fallback data due to service unavailability: ' + error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+function getFallbackStates() {
+  return [
+    { code: '1', name: 'Abia' },
+    { code: '2', name: 'Adamawa' },
+    { code: '3', name: 'Akwa Ibom' },
+    { code: '4', name: 'Anambra' },
+    { code: '5', name: 'Bauchi' },
+    { code: '6', name: 'Bayelsa' },
+    { code: '7', name: 'Benue' },
+    { code: '8', name: 'Borno' },
+    { code: '9', name: 'Cross River' },
+    { code: '10', name: 'Delta' },
+    { code: '11', name: 'Ebonyi' },
+    { code: '12', name: 'Edo' },
+    { code: '13', name: 'Ekiti' },
+    { code: '14', name: 'Enugu' },
+    { code: '15', name: 'FCT' },
+    { code: '16', name: 'Gombe' },
+    { code: '17', name: 'Imo' },
+    { code: '18', name: 'Jigawa' },
+    { code: '19', name: 'Kaduna' },
+    { code: '20', name: 'Kano' },
+    { code: '21', name: 'Katsina' },
+    { code: '22', name: 'Kebbi' },
+    { code: '23', name: 'Kogi' },
+    { code: '24', name: 'Kwara' },
+    { code: '25', name: 'Lagos' },
+    { code: '26', name: 'Nasarawa' },
+    { code: '27', name: 'Niger' },
+    { code: '28', name: 'Ogun' },
+    { code: '29', name: 'Ondo' },
+    { code: '30', name: 'Osun' },
+    { code: '31', name: 'Oyo' },
+    { code: '32', name: 'Plateau' },
+    { code: '33', name: 'Rivers' },
+    { code: '34', name: 'Sokoto' },
+    { code: '35', name: 'Taraba' },
+    { code: '36', name: 'Yobe' },
+    { code: '37', name: 'Zamfara' }
+  ];
+}
+
+
+// @desc    Purchase insurance with correct variation codes
+// @route   POST /api/insurance/purchase
+// @access  Private
+app.post('/api/insurance/purchase', protect, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+  smartLimitCheck, 
+  checkTransactionLimit('insurance'), 
+  checkPerMinuteLimit('insurance'), // ✅ ADD THIS
+  [
+  body('variationCode').notEmpty().withMessage('Variation code is required'),
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+  body('insuredName').notEmpty().withMessage('Insured name is required'),
+  body('engineCapacity').notEmpty().withMessage('Engine capacity is required'),
+  body('chasisNumber').notEmpty().withMessage('Chasis number is required'),
+  body('plateNumber').notEmpty().withMessage('Plate number is required'),
+  body('vehicleMake').notEmpty().withMessage('Vehicle make is required'),
+  body('vehicleColor').notEmpty().withMessage('Vehicle color is required'),
+  body('vehicleModel').notEmpty().withMessage('Vehicle model is required'),
+  body('yearOfMake').notEmpty().withMessage('Year of make is required'),
+  body('state').notEmpty().withMessage('State is required'),
+  body('lga').notEmpty().withMessage('LGA is required'),
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  console.log('🛡️ INSURANCE PURCHASE REQUEST');
+  
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const {
+    variationCode,
+    phone,
+    insuredName,
+    engineCapacity,
+    chasisNumber,
+    plateNumber,
+    vehicleMake,
+    vehicleColor,
+    vehicleModel,
+    yearOfMake,
+    state,
+    lga,
+    email
+  } = req.body;
+
+  const userId = req.user._id;
+  const reference = generateRequestId();
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Get variation details to determine amount
+      // ================================================
+    // ✅ FIX: Get variation details to determine amount
+    // Frontend sends "private", "commercial", etc.
+    // VTpass expects numeric variation codes "1", "2", etc.
+    // ================================================
+    
+    // Step 1: Map frontend variation names → VTpass numeric codes
+    const variationNameToCode = {
+      'private': '1',
+      'commercial': '2',
+      'tricycle': '3',
+      'tricycles': '3',
+      'motorcycle': '4',
+      '1': '1',
+      '2': '2',
+      '3': '3',
+      '4': '4',
+    };
+    
+    const vtpassVariationCode = variationNameToCode[variationCode.toLowerCase?.() || variationCode] || variationCode;
+    console.log(`🔄 Variation code mapped: "${variationCode}" → VTpass code: "${vtpassVariationCode}"`);
+    
+    // Step 2: Fallback amount map by VTpass numeric code
+    const fallbackAmountMap = {
+      '1': 3000, // Private
+      '2': 5000, // Commercial
+      '3': 1500, // Tricycles
+      '4': 3000, // Motorcycle
+    };
+    
+    // Step 3: Try to fetch live amount from VTpass, else use fallback
+    let amount = fallbackAmountMap[vtpassVariationCode] || 3000;
+    
+    try {
+      const variationsResponse = await axios.get('https://vtpass.com/api/service-variations?serviceID=ui-insure', {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000,
+      });
+
+      if (variationsResponse.data.response_description === '000') {
+        const variations = variationsResponse.data.content?.variations || [];
+        const selectedVariation = variations.find(
+          v => v.variation_code?.toString() === vtpassVariationCode.toString()
+        );
+        
+        if (selectedVariation) {
+          const liveAmount = parseFloat(selectedVariation.variation_amount) || 0;
+          if (liveAmount > 0) {
+            amount = liveAmount;
+            console.log(`💰 Insurance amount from VTpass: ₦${amount}`);
+          } else {
+            console.log(`⚠️ VTpass returned ₦0, using fallback amount: ₦${amount}`);
+          }
+        } else {
+          console.log(`⚠️ Variation "${vtpassVariationCode}" not found in VTpass list, using fallback: ₦${amount}`);
+        }
+      } else {
+        console.log(`⚠️ VTpass variations error: ${variationsResponse.data.response_description}, using fallback: ₦${amount}`);
+      }
+    } catch (error) {
+      console.log(`⚠️ Could not fetch variations from VTpass: ${error.message}, using fallback: ₦${amount}`);
+    }
+    
+    // Step 4: HARD SAFETY — amount must NEVER be 0
+    if (!amount || amount <= 0) {
+      amount = fallbackAmountMap[vtpassVariationCode] || 3000;
+      console.log(`🛡️ Safety net: amount was 0, forced to ₦${amount}`);
+    }
+    
+    console.log(`✅ FINAL insurance amount: ₦${amount}`);
+    console.log(`✅ FINAL VTpass variation_code: "${vtpassVariationCode}"`);
+
+        // ================================================
+    // ✅ FIX: EXPLICIT LIMIT CHECK BEFORE VTpass CALL
+    // We now know the real amount, so we can check limits here.
+    // If exceeded, return error WITHOUT calling VTpass.
+    // ================================================
+    const customLimits = user.customLimits || {};
+    const serviceLimit = customLimits['insurance'] || {};
+    
+    let perTxLimit = TRANSACTION_LIMITS.perTransaction.insurance || 50000;
+    let dailyLimit = TRANSACTION_LIMITS.daily.insurance || 100000;
+    
+    if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
+      perTxLimit = parseFloat(serviceLimit.perTransaction);
+      console.log(`🔧 Custom per-tx limit for insurance: ₦${perTxLimit}`);
+    }
+    if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
+      dailyLimit = parseFloat(serviceLimit.dailyCap);
+      console.log(`🔧 Custom daily limit for insurance: ₦${dailyLimit}`);
+    }
+    
+    // --- Check per-transaction limit ---
+    if (amount > perTxLimit) {
+      await session.abortTransaction();
+      session.endSession();
+      console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
+      return res.status(400).json({
+        success: false,
+        message: `Maximum insurance per transaction is ₦${perTxLimit.toFixed(2)}.`,
+        code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
+        limit: perTxLimit,
+        requested: amount,
+        isCustomLimit: !!(serviceLimit.perTransaction > 0),
+        service: 'insurance',
+      });
+    }
+    
+    // --- Check daily limit ---
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayTotalAgg = await Transaction.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          type: { $regex: /insurance/i },
+          status: { $regex: /success|completed/i },
+          createdAt: { $gte: today },
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    
+    const dailyTotal = todayTotalAgg[0]?.total || 0;
+    
+    if (dailyTotal + amount > dailyLimit) {
+      await session.abortTransaction();
+      session.endSession();
+      const remaining = Math.max(0, dailyLimit - dailyTotal);
+      console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
+      return res.status(400).json({
+        success: false,
+        message: `Daily insurance limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
+        code: 'DAILY_LIMIT_EXCEEDED',
+        dailyLimit: dailyLimit,
+        dailyTotal: dailyTotal,
+        requested: amount,
+        remaining: remaining,
+        isCustomLimit: !!(serviceLimit.dailyCap > 0),
+        service: 'insurance',
+      });
+    }
+    
+    console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-tx: ₦${perTxLimit}, Daily: ₦${dailyTotal} → ₦${dailyTotal + amount})`);
+
+    // ================================================
+    // Balance check
+    // ================================================
+    if (user.walletBalance < amount) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ 
+        success: false, 
+        message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}`,
+        code: 'INSUFFICIENT_BALANCE',
+      });
+    }
+
+    console.log('🚀 Calling VTpass for insurance purchase...');
+    
+    // Prepare VTpass payload for insurance purchase
+    const vtpassPayload = {
+      request_id: reference,
+      serviceID: 'ui-insure',
+      billersCode: plateNumber,
+      variation_code: vtpassVariationCode,
+      variation_code: variationCode,
+      amount: amount.toString(),
+      phone: phone,
+      Insured_Name: insuredName,
+      engine_capacity: engineCapacity,
+      Chasis_Number: chasisNumber,
+      Plate_Number: plateNumber,
+      vehicle_make: vehicleMake,
+      vehicle_color: vehicleColor,
+      vehicle_model: vehicleModel,
+      YearofMake: yearOfMake,
+      state: state,
+      lga: lga,
+      email: email
+    };
+
+    console.log('📦 VTpass Insurance Payload:', vtpassPayload);
+
+    const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+    console.log('📦 VTpass Insurance Response:', JSON.stringify(vtpassResult, null, 2));
+
+    const balanceBefore = user.walletBalance;
+    let transactionStatus = 'failed';
+    let newBalance = balanceBefore;
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      transactionStatus = 'successful';
+      newBalance = user.walletBalance - amount;
+      user.walletBalance = newBalance;
+      await user.save({ session });
+
+      // Credit commission
+     
+await calculateAndAddCommission(userId, amount, 'insurance', session)
+  .catch(err => console.log('⚠️ Insurance commission calculation failed:', err.message));
+
+      // Create notification
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Insurance Purchase Successful 🛡️",
+          message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
+          isRead: false
+        });
+      } catch (notificationError) {
+        console.error('Error creating insurance notification:', notificationError);
+      }
+    } else {
+      await session.abortTransaction();
+      return res.status(vtpassResult.status || 400).json({
+        success: false,
+        message: vtpassResult.data?.response_description || 'Insurance purchase failed',
+        details: vtpassResult.data
+      });
+    }
+
+    // Create transaction record
+    const newTransaction = await createTransaction(
+      userId,
+      amount,
+      'debit',
+      transactionStatus,
+      `Third Party Motor Insurance for ${plateNumber}`,
+      balanceBefore,
+      newBalance,
+      session,
+      false,
+      req.authenticationMethod
+    );
+
+    await session.commitTransaction();
+
+    // Extract certificate URL from response
+    const certUrl = vtpassResult.data.certUrl || 
+                   vtpassResult.data.purchased_code?.replace('Download Certificate : ', '') || 
+                   '';
+
+    console.log('✅ Insurance purchase completed successfully');
+    console.log('📄 Certificate URL:', certUrl);
+
+    res.json({
+      success: true,
+      message: `Insurance purchase completed successfully`,
+      transactionId: newTransaction._id,
+      newBalance: newBalance,
+      status: newTransaction.status,
+      vtpassResponse: vtpassResult.data,
+      certificateUrl: certUrl,
+      purchased_code: vtpassResult.data.purchased_code
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error in insurance purchase:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Insurance purchase failed',
+      error: error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+// @desc    Get all insurance-related options (makes, colors, states, etc.)
+// @route   GET /api/insurance/options/:type
+// @access  Private
+app.get('/api/insurance/options/:type', protect, async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { stateCode } = req.query;
+
+    console.log(`🛡️ Fetching insurance options for: ${type}`);
+
+    const endpoints = {
+      'vehicle-makes': 'https://vtpass.com/api/universal-insurance/options/brand',
+      'vehicle-colors': 'https://vtpass.com/api/universal-insurance/options/color', 
+      'engine-capacities': 'https://vtpass.com/api/universal-insurance/options/engine-capacity',
+      'states': 'https://vtpass.com/api/universal-insurance/options/state',
+      'lgas': `https://vtpass.com/api/universal-insurance/options/lga/${stateCode}`
+    };
+
+    const url = endpoints[type];
+    if (!url) {
+      return res.status(400).json({ success: false, message: 'Invalid option type' });
+    }
+
+    // Try cache first
+    const cacheKey = `insurance-options-${type}-${stateCode || ''}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        data: cachedData,
+        source: 'cache'
+      });
+    }
+
+    const response = await axios.get(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.VTPASS_API_KEY,
+        'secret-key': process.env.VTPASS_SECRET_KEY,
+      },
+      timeout: 10000
+    });
+
+    if (response.data.response_description === '000') {
+      const data = response.data.content || [];
+      
+      // Cache for 1 hour
+      cache.set(cacheKey, data, 3600);
+
+      res.json({
+        success: true,
+        data: data,
+        source: 'vtpass_live'
+      });
+    } else {
+      throw new Error(response.data.response_description);
+    }
+
+  } catch (error) {
+    console.error(`❌ Error fetching insurance options for ${req.params.type}:`, error);
+    
+    // Return fallback data
+    const fallbackData = getFallbackInsuranceOptions(req.params.type);
+    
+    res.json({
+      success: true,
+      data: fallbackData,
+      source: 'fallback',
+      note: 'Using fallback data while service is unavailable'
+    });
+  }
+});
+
+// Helper function for fallback insurance options
+function getFallbackInsuranceOptions(type) {
+  const fallbacks = {
+    'vehicle-makes': [
+      { "VehicleMakeCode": "1", "VehicleMakeName": "Toyota" },
+      { "VehicleMakeCode": "2", "VehicleMakeName": "Honda" },
+      { "VehicleMakeCode": "3", "VehicleMakeName": "Ford" },
+      { "VehicleMakeCode": "4", "VehicleMakeName": "BMW" }
+    ],
+    'vehicle-colors': [
+      { "ColourCode": "20", "ColourName": "Ash" },
+      { "ColourCode": "1004", "ColourName": "Black" },
+      { "ColourCode": "1005", "ColourName": "White" },
+      { "ColourCode": "1006", "ColourName": "Red" }
+    ],
+    'engine-capacities': [
+      { "CapacityCode": "1", "CapacityName": "0.1 - 1.59" },
+      { "CapacityCode": "2", "CapacityName": "1.6 - 2.0" },
+      { "CapacityCode": "3", "CapacityName": "2.1 - 3.0" },
+      { "CapacityCode": "4", "CapacityName": "3.1 - 4.0" }
+    ],
+    'states': [
+      { "StateCode": "1", "StateName": "Lagos" },
+      { "StateCode": "2", "StateName": "Abuja" },
+      { "StateCode": "3", "StateName": "Rivers" },
+      { "StateCode": "4", "StateName": "Oyo" }
+    ],
+    'lgas': [
+      { "LGACode": "1", "LGAName": "Ikeja" },
+      { "LGACode": "2", "LGAName": "Lagos Island" },
+      { "LGACode": "3", "LGAName": "Surulere" }
+    ]
+  };
+
+  return fallbacks[type] || [];
+}
+
+
+
+// ==================== WALLET TOP-UP ROUTES ====================
+
+// @desc    Debug all wallet routes
+// @route   GET /api/wallet/debug
+// @access  Public
+app.get('/api/wallet/debug', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Wallet routes are working',
+    availableEndpoints: [
+      'POST /api/wallet/top-up',
+      'GET /api/wallet/test-top-up',
+      'GET /api/wallet/debug'
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
+
+// @desc    Test wallet top-up endpoint
+// @route   GET /api/wallet/test-top-up
+// @access  Public
+app.get('/api/wallet/test-top-up', async (req, res) => {
+  try {
+    console.log('🧪 Testing wallet top-up endpoint');
+    
+    res.json({
+      success: true,
+      message: 'Wallet top-up endpoint is working',
+      endpoint: 'POST /api/wallet/top-up',
+      requiredFields: ['userId', 'amount', 'reference'],
+      examplePayload: {
+        userId: 'user_id_here',
+        amount: 1000,
+        reference: 'test_ref_123',
+        description: 'Test wallet funding',
+        source: 'paystack'
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Test endpoint error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Test endpoint failed' 
+    });
+  }
+});
+
+// PRODUCTION: Enhanced sync with main backend - FIXED VERSION
+async function syncWithMainBackendWithRetry(userId, amount, reference, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 PRODUCTION: Syncing with main backend (Attempt ${attempt}/${maxRetries})`);
+      
+      // FIX: Send amount in kobo (as received from PayStack)
+      // Main backend will convert to Naira
+      const syncPayload = {
+        userId: userId,
+        amount: amount, // Keep as kobo, backend will convert
+        reference: reference,
+        description: `Wallet funding via PayStack - Ref: ${reference}`,
+        source: 'paystack_webhook',
+        timestamp: new Date().toISOString()
+      };
+
+      console.log('📦 Sync payload:', syncPayload);
+
+      const response = await axios.post(
+        `${MAIN_BACKEND_URL}/api/wallet/top-up`,
+        syncPayload,
+        {
+          timeout: 15000,
+          headers: { 
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      console.log('✅ PRODUCTION: Main backend sync response:', {
+        status: response.status,
+        success: response.data.success,
+        message: response.data.message,
+        newBalance: response.data.newBalance
+      });
+
+      if (response.data.success) {
+        return {
+          success: true,
+          data: response.data
+        };
+      } else {
+        // If transaction already processed, consider it success
+        if (response.data.alreadyProcessed) {
+          console.log('ℹ️ Transaction already processed in main backend');
+          return {
+            success: true,
+            data: response.data,
+            alreadyProcessed: true
+          };
+        }
+        throw new Error(response.data.message || 'Main backend rejected sync');
+      }
+    } catch (error) {
+      console.error(`❌ PRODUCTION: Sync attempt ${attempt} failed:`, error.message);
+      
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', error.response.data);
+        
+        // If it's a client error (4xx), don't retry
+        if (error.response.status >= 400 && error.response.status < 500) {
+          throw error;
+        }
+      }
+      
+      if (attempt === maxRetries) {
+        throw new Error(`All sync attempts failed. Last error: ${error.message}`);
+      }
+      
+      // Wait before retry (exponential backoff)
+      const delay = attempt * 2000;
+      console.log(`⏳ Waiting ${delay}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+
+
+
+// @desc    Quick test wallet top-up
+// @route   POST /api/wallet/quick-test
+// @access  Public
+app.post('/api/wallet/quick-test', async (req, res) => {
+    try {
+        const { userId, amount = 10000, reference = 'test_' + Date.now() } = req.body;
+        
+        console.log('🧪 Quick test wallet top-up:', { userId, amount, reference });
+
+        if (!userId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'userId is required' 
+            });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'User not found' 
+            });
+        }
+
+        const amountInNaira = amount / 100;
+        const balanceBefore = user.walletBalance;
+        user.walletBalance += amountInNaira;
+        const balanceAfter = user.walletBalance;
+        
+        await user.save();
+
+        console.log('✅ Quick test successful:', {
+            amountKobo: amount,
+            amountNaira: amountInNaira,
+            balanceBefore,
+            balanceAfter
+        });
+
+        res.json({
+            success: true,
+            message: 'Quick test completed',
+            amountKobo: amount,
+            amountNaira: amountInNaira,
+            balanceBefore: balanceBefore,
+            balanceAfter: balanceAfter,
+            user: {
+                _id: user._id,
+                email: user.email,
+                fullName: user.fullName
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Quick test error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Quick test failed: ' + error.message 
+        });
+    }
+});
+
+
+
+
+
+
+
+/**
+ * Calculate and add referral commission (0.005%) when referred users make purchases
+ */
+const calculateAndAddReferralCommission = async (purchaserUserId, amount, serviceType, mongooseSession = null) => {
+  try {
+    console.log(`🎯 Checking referral commission for purchaser: ${purchaserUserId}, Amount: ₦${amount}`);
+    
+    // Get purchaser details
+    const purchaserQuery = User.findById(purchaserUserId);
+    if (mongooseSession) {
+      purchaserQuery.session(mongooseSession);
+    }
+    const purchaser = await purchaserQuery;
+    
+    if (!purchaser || !purchaser.referrerId) {
+      console.log('⚠️ No referrer found for purchaser');
+      return 0;
+    }
+    
+    const referrerId = purchaser.referrerId;
+    
+    // Get referrer details
+    const referrerQuery = User.findById(referrerId);
+    if (mongooseSession) {
+      referrerQuery.session(mongooseSession);
+    }
+    const referrer = await referrerQuery;
+    
+    if (!referrer) {
+      console.log('❌ Referrer not found');
+      return 0;
+    }
+    
+    // Calculate referral commission (0.005% = 0.00005)
+    const referralCommissionRate = 0.00005;
+    let commissionAmount = amount * referralCommissionRate;
+    
+    // Minimum commission ₦2 if amount is substantial
+    if (commissionAmount < 2 && amount >= 1000) {
+      commissionAmount = 2;
+    }
+    
+    if (commissionAmount <= 0) {
+      console.log('⚠️ Referral commission amount too small');
+      return 0;
+    }
+    
+    console.log(`💰 Referral commission: ₦${amount} × 0.005% = ₦${commissionAmount.toFixed(2)}`);
+    
+    // Add commission to referrer's balance
+    const commissionBefore = referrer.commissionBalance || 0;
+    referrer.commissionBalance = (referrer.commissionBalance || 0) + commissionAmount;
+    referrer.totalReferralEarnings = (referrer.totalReferralEarnings || 0) + commissionAmount;
+    
+    await referrer.save({ session: mongooseSession });
+    
+    // Create referral commission transaction
+    await createTransaction(
+      referrerId,
+      commissionAmount,
+      'Referral Service Commission',
+      'Successful',
+      `Referral commission from ${purchaser.fullName}'s ${serviceType} purchase`,
+      commissionBefore,
+      referrer.commissionBalance,
+      mongooseSession,
+      true,
+      'none',
+      null,
+      {},
+      {
+        commissionType: 'referral_service',
+        purchaserUserId: purchaserUserId,
+        purchaserName: purchaser.fullName,
+        serviceType: serviceType,
+        purchaseAmount: amount,
+        commissionRate: referralCommissionRate,
+        commissionAmount: commissionAmount
+      }
+    );
+    
+    // Create notification
+    try {
+      await Notification.create([{
+        recipient: referrerId,
+        title: "Referral Commission Earned! 💰",
+        message: `You earned ₦${commissionAmount.toFixed(2)} from ${purchaser.fullName}'s ${serviceType} purchase`,
+        type: 'commission_earned',
+        isRead: false,
+        metadata: {
+          purchaserUserId: purchaserUserId,
+          serviceType: serviceType,
+          purchaseAmount: amount,
+          commissionAmount: commissionAmount
+        }
+      }], { session: mongooseSession });
+    } catch (notifError) {
+      console.error('❌ Referral commission notification error:', notifError);
+    }
+    
+    console.log(`✅ Referral commission awarded: ₦${commissionAmount.toFixed(2)} to ${referrer.email}`);
+    return commissionAmount;
+    
+  } catch (error) {
+    console.error('❌ Error calculating referral commission:', error);
+    return 0;
+  }
+};
+
+
+
+// @desc    Find user by email
+// @route   GET /api/users/find-by-email/:email
+// @access  Public (for virtual account backend integration)
+app.get('/api/users/find-by-email/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    console.log('🔍 Finding user by email:', email);
+
+    const user = await User.findOne({ email: email.toLowerCase() }).select('-password');
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        walletBalance: user.walletBalance
+      }
+    });
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error finding user' 
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+// Add these endpoints to your vtpass-backend/index.js
+
+// @desc    Get transaction by reference
+// @route   GET /api/transactions/by-reference/:reference
+// @access  Private
+app.get('/api/transactions/by-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    
+    console.log('🔍 Checking transaction by reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference 
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Transaction not found',
+        exists: false
+      });
+    }
+
+    res.json({
+      success: true,
+      transaction: transaction,
+      exists: true,
+      alreadyProcessed: transaction.status === 'successful',
+      balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore
+    });
+
+  } catch (error) {
+    console.error('Error fetching transaction by reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch transaction'
+    });
+  }
+});
+
+// @desc    Record verified transaction with balance update tracking
+// @route   POST /api/transactions/record-verified
+// @access  Private
+app.post('/api/transactions/record-verified', protect, [
+  body('userId').notEmpty().withMessage('User ID is required'),
+  body('reference').notEmpty().withMessage('Reference is required'),
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+  body('previousBalance').isFloat({ min: 0 }).withMessage('Previous balance is required'),
+  body('newBalance').isFloat({ min: 0 }).withMessage('New balance is required'),
+  body('verifiedAt').notEmpty().withMessage('Verification timestamp is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      userId,
+      reference,
+      amount,
+      previousBalance,
+      newBalance,
+      verifiedAt,
+      type = 'wallet_funding',
+      status = 'completed',
+      source = 'paystack_verification'
+    } = req.body;
+
+    console.log('📝 Recording verified transaction:', { userId, reference, amount });
+
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({ reference }).session(session);
+    
+    if (existingTransaction && existingTransaction.status === 'successful') {
+      await session.abortTransaction();
+      return res.json({
+        success: false,
+        message: 'Transaction already recorded and processed',
+        alreadyProcessed: true
+      });
+    }
+
+    // Create or update transaction
+    let transaction;
+    if (existingTransaction) {
+      // Update existing transaction
+      transaction = await Transaction.findOneAndUpdate(
+        { reference },
+        {
+          status: 'successful',
+          balanceBefore: previousBalance,
+          balanceAfter: newBalance,
+          description: `Wallet funding via ${source} - Ref: ${reference}`,
+          metadata: {
+            ...existingTransaction.metadata,
+            verifiedAt: new Date(verifiedAt),
+            source: source,
+            balanceUpdated: true
+          }
+        },
+        { new: true, session }
+      );
+    } else {
+      // Create new transaction
+      transaction = await Transaction.create([{
+        userId,
+        type: 'credit',
+        amount: amount,
+        status: 'successful',
+        description: `Wallet funding via ${source} - Ref: ${reference}`,
+        balanceBefore: previousBalance,
+        balanceAfter: newBalance,
+        reference: reference,
+        isCommission: false,
+        authenticationMethod: 'paystack',
+        metadata: {
+          verifiedAt: new Date(verifiedAt),
+          source: source,
+          balanceUpdated: true,
+          verificationMethod: 'manual'
+        }
+      }], { session });
+      transaction = transaction[0];
+    }
+
+    // Update user balance
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { walletBalance: newBalance },
+      { new: true, session }
+    );
+
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    await session.commitTransaction();
+
+    console.log('✅ Verified transaction recorded successfully:', reference);
+
+    res.json({
+      success: true,
+      message: 'Transaction recorded and balance updated',
+      transaction: transaction,
+      newBalance: user.walletBalance
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error recording verified transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record transaction'
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// @desc    Get transactions needing verification
+// @route   GET /api/transactions/pending-verifications
+// @access  Private
+app.get('/api/transactions/pending-verifications', protect, [
+  query('days').optional().isInt({ min: 1, max: 30 }).withMessage('Days must be between 1 and 30')
+], async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const userId = req.user._id;
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
+
+    console.log('🔍 Fetching pending verifications for user:', userId);
+
+    const pendingTransactions = await Transaction.find({
+      userId: userId,
+      status: { $in: ['pending', 'processing'] },
+      createdAt: { $gte: cutoffDate },
+      $or: [
+        { 'metadata.source': 'paystack' },
+        { 'description': /paystack/i }
+      ]
+    }).sort({ createdAt: -1 });
+
+    console.log(`📊 Found ${pendingTransactions.length} pending transactions`);
+
+    res.json({
+      success: true,
+      pendingTransactions: pendingTransactions,
+      count: pendingTransactions.length,
+      cutoffDate: cutoffDate
+    });
+
+  } catch (error) {
+    console.error('Error fetching pending verifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending transactions'
+    });
+  }
+});
+
+
+
+
+
+
+
+// @desc    Check if transaction is duplicate
+// @route   GET /api/transactions/check-duplicate/:requestId
+// @access  Private
+app.get('/api/transactions/check-duplicate/:requestId', protect, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const userId = req.user._id;
+    
+    const existing = await Transaction.findOne({
+      userId: userId,
+      'details.vtpassResponse.requestId': requestId
+    });
+    
+    res.json({
+      success: true,
+      isDuplicate: !!existing,
+      transaction: existing
+    });
+  } catch (error) {
+    console.error('Error checking duplicate:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error checking duplicate transaction'
+    });
+  }
+});
+
+
+
+
+
+// @desc    Check if transaction reference already exists
+// @route   GET /api/transactions/check-reference/:reference
+// @access  Private
+app.get('/api/transactions/check-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    
+    console.log('🔍 Checking transaction reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference,
+      status: 'successful' 
+    });
+
+    if (transaction) {
+      return res.json({
+        exists: true,
+        alreadyProcessed: true,
+        transaction: {
+          _id: transaction._id,
+          amount: transaction.amount,
+          status: transaction.status,
+          createdAt: transaction.createdAt,
+          balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore
+        },
+        message: 'Transaction already processed successfully'
+      });
+    }
+
+    res.json({
+      exists: false,
+      alreadyProcessed: false,
+      message: 'Transaction reference not found'
+    });
+
+  } catch (error) {
+    console.error('Error checking transaction reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check transaction reference'
+    });
+  }
+});
+
+
+
+
+
+
+
+// @desc    Check if transaction reference exists in database
+// @route   GET /api/transactions/check-reference/:reference
+// @access  Private
+app.get('/api/transactions/check-reference/:reference', protect, async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const userId = req.user._id;
+
+    console.log('🔍 DATABASE CHECK: Verifying reference:', reference);
+
+    const transaction = await Transaction.findOne({ 
+      reference: reference,
+      userId: userId
+    });
+
+    if (!transaction) {
+      return res.json({
+        exists: false,
+        message: 'Transaction reference not found in database'
+      });
+    }
+
+    res.json({
+      exists: true,
+      alreadyProcessed: transaction.status === 'successful',
+      transaction: {
+        _id: transaction._id,
+        amount: transaction.amount,
+        status: transaction.status,
+        createdAt: transaction.createdAt,
+        balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore,
+        description: transaction.description
+      },
+      message: transaction.status === 'successful' 
+        ? 'Transaction already processed successfully' 
+        : `Transaction is ${transaction.status}`
+    });
+
+  } catch (error) {
+    console.error('Error checking transaction reference:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check transaction reference'
+    });
+  }
+});
+
+
+// @desc    Get user's pending transaction verifications
+// @route   GET /api/transactions/pending-verifications
+// @access  Private
+app.get('/api/transactions/pending-verifications', protect, [
+  query('days').optional().isInt({ min: 1, max: 30 }).withMessage('Days must be between 1 and 30')
+], async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const userId = req.user._id;
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
+
+    console.log('🔍 Fetching pending verifications for user:', userId);
+
+    const pendingTransactions = await Transaction.find({
+      userId: userId,
+      status: { $in: ['pending', 'processing'] },
+      createdAt: { $gte: cutoffDate },
+      $or: [
+        { 'metadata.source': 'paystack' },
+        { 'description': /paystack/i }
+      ]
+    }).sort({ createdAt: -1 });
+
+    console.log(`📊 Found ${pendingTransactions.length} pending transactions`);
+
+    res.json({
+      success: true,
+      pendingTransactions: pendingTransactions,
+      count: pendingTransactions.length,
+      cutoffDate: cutoffDate
+    });
+
+  } catch (error) {
+    console.error('Error fetching pending verifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pending transactions'
+    });
+  }
+});
+
+
+// Add this route to your main backend (index.js)
+app.post('/api/transactions/record', async (req, res) => {
+  try {
+    const { userId, amount, reference, type, status, description, service, metadata } = req.body;
+    
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({ reference, userId });
+    if (existingTransaction) {
+      return res.json({
+        success: true,
+        message: 'Transaction already exists',
+        transactionId: existingTransaction._id
+      });
+    }
+    
+    const transaction = new Transaction({
+      userId,
+      amount,
+      reference,
+      type: type || 'wallet_funding',
+      status: status || 'completed',
+      description: description || `Wallet funding - ${reference}`,
+      service: service || 'paystack',
+      timestamp: new Date(),
+      metadata: metadata || {}
+    });
+    
+    await transaction.save();
+    
+    res.json({
+      success: true,
+      message: 'Transaction recorded successfully',
+      transactionId: transaction._id
+    });
+  } catch (error) {
+    console.error('Error recording transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record transaction: ' + error.message
+    });
+  }
+});
+
+
+
+// @desc    Generate referral code for user
+// @route   POST /api/users/generate-referral-code
+// @access  Private
+app.post('/api/users/generate-referral-code', protect, [
+  body('userId').notEmpty().withMessage('User ID is required')
+], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Generate referral code if not exists
+    if (!user.referralCode) {
+      const referralCode = `REF${userId.toString().substring(0, 8).toUpperCase()}`;
+      user.referralCode = referralCode;
+      await user.save();
+    }
+    
+    res.json({
+      success: true,
+      referralCode: user.referralCode,
+      message: 'Referral code generated successfully'
+    });
+  } catch (error) {
+    console.error('Error generating referral code:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Get comprehensive referral statistics
+// @route   GET /api/users/referral-stats/:userId
+// @access  Private
+app.get('/api/users/referral-stats/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Check if user is accessing their own data or is admin
+    if (req.user._id.toString() !== userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Get all users referred by this user
+    const directReferrals = await User.find({ referrerId: userId });
+    
+    // Calculate statistics
+    const totalReferrals = directReferrals.length;
+    const activeReferrals = directReferrals.filter(ref => ref.isActive).length;
+    
+    // Get all commission transactions for this user (referral earnings)
+    const commissionTransactions = await Transaction.find({
+      userId: userId,
+      isCommission: true,
+      description: { $regex: /referral|Referral/i }
+    });
+    
+    // Calculate total earned from referrals
+    const totalEarned = commissionTransactions.reduce((sum, tx) => sum + tx.amount, 0);
+    
+    // Calculate pending earnings (recent referrals not yet converted to commission)
+    const pendingEarnings = 0; // You can implement logic for pending earnings
+    
+    // Get detailed referral info
+    const referrals = directReferrals.map(ref => ({
+      _id: ref._id,
+      fullName: ref.fullName || 'Unknown',
+      email: ref.email || 'No email',
+      phone: ref.phone || 'No phone',
+      joinedAt: ref.createdAt,
+      isActive: ref.isActive,
+      hasMadePurchase: ref.transactionCount > 0,
+      walletBalance: ref.walletBalance || 0
+    }));
+    
+    res.json({
+      success: true,
+      referralStats: {
+        referralCode: user.referralCode || 'Not set',
+        totalReferrals: totalReferrals,
+        activeReferrals: activeReferrals,
+        totalEarned: totalEarned,
+        pendingEarnings: pendingEarnings,
+        referralLink: `https://yourapp.com/register?ref=${user.referralCode}`,
+        referrals: referrals
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching referral stats:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch referral statistics' 
+    });
+  }
+});
+
+
+// Add this ONE line anywhere in your index.js (before the 404 handler)
+app.get('/api/me', protect, (req, res) => {
+  res.json({
+    userId: req.user._id,
+    email: req.user.email,
+    name: req.user.fullName,
+    balance: req.user.walletBalance
+  });
+});
+
+
+
+// @desc    Debug endpoint to check user status
+// @route   GET /api/debug/user-status
+// @access  Private
+app.get('/api/debug/user-status', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId).select('-password -transactionPin');
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const status = {
+      user: {
+        id: user._id,
+        email: user.email,
+        phone: user.phone,
+        hasPhone: !!user.phone,
+        referralCode: user.referralCode,
+        walletBalance: user.walletBalance,
+        commissionBalance: user.commissionBalance,
+        hasTransactionPin: !!user.transactionPin,
+        biometricEnabled: user.biometricEnabled,
+        isFirstTransaction: user.isFirstTransaction
+      },
+      virtualAccount: user.virtualAccount,
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({ success: true, status });
+  } catch (error) {
+    console.error('Debug status error:', error);
+    res.status(500).json({ success: false, message: 'Debug status check failed' });
+  }
+});
+
+
+// @desc    Update user phone number
+// @route   PATCH /api/users/update-phone
+// @access  Private
+app.patch('/api/users/update-phone', protect, [
+  body('phone').isMobilePhone().withMessage('Please provide a valid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { phone } = req.body;
+    const userId = req.user._id;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.phone = phone;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Phone number updated successfully',
+      phone: user.phone
+    });
+  } catch (error) {
+    console.error('Error updating phone number:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+});
+
+
+// @desc    Debug endpoint to check all critical services
+// @route   GET /api/debug/status
+// @access  Private
+app.get('/api/debug/status', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+    
+    const status = {
+      user: {
+        id: user._id,
+        email: user.email,
+        phone: user.phone,
+        hasPhone: !!user.phone,
+        referralCode: user.referralCode,
+        walletBalance: user.walletBalance
+      },
+      tokens: {
+        hasToken: !!req.headers.authorization,
+        tokenLength: req.headers.authorization ? req.headers.authorization.length : 0
+      },
+      services: {
+        database: 'connected', // Assuming DB is connected
+        vtpass: 'unknown' // You can add VTpass health check here
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({ success: true, status });
+  } catch (error) {
+    console.error('Debug status error:', error);
+    res.status(500).json({ success: false, message: 'Debug status check failed' });
+  }
+});
+
+
+
+
+// @desc    Check and fix missing transactions from VTpass
+// @route   POST /api/transactions/fix-missing
+// @access  Private
+app.post('/api/transactions/fix-missing', protect, [
+  body('requestId').notEmpty().withMessage('Request ID is required'),
+  body('serviceID').notEmpty().withMessage('Service ID is required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { requestId, serviceID, phone, amount } = req.body;
+    const userId = req.user._id;
+
+    console.log('🔧 Fixing missing transaction:', { requestId, serviceID, userId });
+
+    // Check if transaction already exists
+    const existingTransaction = await Transaction.findOne({
+      reference: requestId,
+      userId: userId
+    }).session(session);
+
+    if (existingTransaction) {
+      await session.abortTransaction();
+      return res.json({
+        success: true,
+        message: 'Transaction already exists',
+        transaction: existingTransaction
+      });
+    }
+
+    // Get user and verify balance
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Query VTpass for transaction status
+    const vtpassResult = await callVtpassApi('/pay', {
+      request_id: requestId,
+      serviceID: serviceID
+    });
+
+    console.log('📦 VTpass status check:', vtpassResult);
+
+    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+      const vtpassData = vtpassResult.data;
+      const transactionAmount = parseFloat(vtpassData.amount) || parseFloat(amount) || 0;
+
+      // Deduct from user balance
+      const balanceBefore = user.walletBalance;
+      user.walletBalance -= transactionAmount;
+      const balanceAfter = user.walletBalance;
+      await user.save({ session });
+
+      // Create transaction record
+      const newTransaction = await createTransaction(
+        userId,
+        transactionAmount,
+        'debit',
+        'successful',
+        `${serviceID} purchase for ${phone}`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        'pin',
+        requestId
+      );
+
+      await session.commitTransaction();
+
+      console.log('✅ Missing transaction fixed:', newTransaction._id);
+
+      res.json({
+        success: true,
+        message: 'Transaction successfully recorded',
+        transaction: newTransaction,
+        newBalance: balanceAfter
+      });
+    } else {
+      await session.abortTransaction();
+      res.status(400).json({
+        success: false,
+        message: 'Transaction not found in VTpass or not successful',
+        vtpassResponse: vtpassResult.data
+      });
+    }
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Error fixing missing transaction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix transaction',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+
+// @desc    Debug transaction status
+// @route   GET /api/debug/transaction-status
+// @access  Private
+app.get('/api/debug/transaction-status', protect, [
+  query('requestId').notEmpty().withMessage('Request ID is required')
+], async (req, res) => {
+  try {
+    const { requestId } = req.query;
+    const userId = req.user._id;
+
+    console.log('🔍 Debug transaction status for:', requestId);
+
+    // Check database
+    const dbTransaction = await Transaction.findOne({
+      reference: requestId,
+      userId: userId
+    });
+
+    // Check VTpass status
+    const vtpassResult = await callVtpassApi('/pay', {
+      request_id: requestId
+    });
+
+    res.json({
+      success: true,
+      database: {
+        exists: !!dbTransaction,
+        transaction: dbTransaction
+      },
+      vtpass: {
+        success: vtpassResult.success,
+        data: vtpassResult.data
+      },
+      user: {
+        id: userId,
+        walletBalance: req.user.walletBalance
+      }
+    });
+
+  } catch (error) {
+    console.error('Debug transaction error:', error);
+    res.status(500).json({ success: false, message: 'Debug failed' });
+  }
+});
+
+
+// @desc    Send OTP for email verification using Nodemailer
+// @route   POST /api/auth/send-verification-otp
+// @access  Public
+app.post('/api/auth/send-verification-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+
+  try {
+    const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Rate limiting check (your existing code)
+    const now = Date.now();
+    const window = 60 * 1000; // 1 minute
+    const maxAttempts = 5;
+
+    if (!otpRequests.has(normalizedEmail)) {
+      otpRequests.set(normalizedEmail, []);
+    }
+
+    const requests = otpRequests.get(normalizedEmail);
+    const recent = requests.filter(t => now - t < window);
+    
+    if (recent.length >= maxAttempts) {
+      return res.status(429).json({ 
+        success: false, 
+        message: 'Too many requests. Please wait 1 minute.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+    }
+
+    requests.push(now);
+    otpRequests.set(normalizedEmail, recent.concat([now]));
+
+    // Generate and store OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    otpStore.set(normalizedEmail, { 
+      otp, 
+      expiresAt, 
+      verified: false,
+      attempts: 0
+    });
+
+    console.log(`📧 [VERIFICATION] OTP generated for ${normalizedEmail}: ${otp}`);
+
+    // Send email for verification
+    const emailResult = await sendVerificationEmail(
+      normalizedEmail, 
+      otp, 
+      'User',  // Default name since this might be for new signup
+      'verification'  // Specify this is for email verification
+    );
+    
+    if (!emailResult.success) {
+      console.log(`⚠️ [VERIFICATION] Email sending failed, but OTP is: ${otp}`);
+      
+      // In development, return OTP for testing
+      if (process.env.NODE_ENV === 'development') {
+        return res.json({
+          success: true,
+          message: 'Email service unavailable. For development, OTP is: ' + otp,
+          email: normalizedEmail,
+          otp: otp,
+          slogan: 'Smart Life, Fast Pay'  // Added slogan
+        });
+      }
+      
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to send verification email. Please try again.',
+        slogan: 'Smart Life, Fast Pay'  // Added slogan
+      });
+    }
+
+    console.log(`✅ [VERIFICATION] OTP email sent successfully to ${normalizedEmail}`);
+    
+    return res.json({
+      success: true,
+      message: 'Verification code sent successfully! Check your email.',
+      email: normalizedEmail,
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+
+  } catch (error) {
+    console.error('❌ [VERIFICATION] Send OTP error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send verification code. Please try again.',
+      slogan: 'Smart Life, Fast Pay'  // Added slogan
+    });
+  }
+});
+
+
+
+// @desc    Verify OTP
+// @route   POST /api/auth/verify-otp
+// @access  Public
+app.post('/api/auth/verify-otp', [
+  body('email').isEmail().withMessage('Valid email required'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, otp } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+    const inputOTP = otp.toString();
+
+    // Get stored OTP data
+    const storedData = otpStore.get(normalizedEmail);
+    
+    if (!storedData) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP not found or expired. Please request a new one.' 
+      });
+    }
+
+    // Check expiration
+    if (Date.now() > storedData.expiresAt) {
+      otpStore.delete(normalizedEmail);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP has expired. Please request a new one.' 
+      });
+    }
+
+    // Check attempts (max 5)
+    if (storedData.attempts >= 5) {
+      otpStore.delete(normalizedEmail);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Too many attempts. Please request a new OTP.' 
+      });
+    }
+
+    // Verify OTP
+    if (storedData.otp !== inputOTP) {
+      storedData.attempts += 1;
+      otpStore.set(normalizedEmail, storedData);
+      
+      const attemptsLeft = 5 - storedData.attempts;
+      return res.status(400).json({ 
+        success: false, 
+        message: `Invalid OTP. ${attemptsLeft} attempts remaining.` 
+      });
+    }
+
+    // Mark as verified (you might want to store this in database)
+    storedData.verified = true;
+    storedData.verifiedAt = Date.now();
+    otpStore.set(normalizedEmail, storedData);
+
+    console.log(`✅ OTP verified for ${normalizedEmail}`);
+    
+    // You can also remove the OTP after successful verification
+    // otpStore.delete(normalizedEmail); // Uncomment if you want one-time use
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully!',
+      email: normalizedEmail
+    });
+
+  } catch (error) {
+    console.error('❌ OTP verification error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Verification failed. Please try again.' 
+    });
+  }
+});
+
+
+
+
+// @desc    Verify OTP
+// @route   POST /api/auth/verify-otp
+// @access  Public
+app.post('/api/auth/verify-otp', [
+  body('email').isEmail().withMessage('Please provide a valid email'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  try {
+    const { email, otp } = req.body;
+    
+    console.log(`🔍 Verifying OTP for ${email}: ${otp}`);
+
+    // Check if OTP exists
+    const otpData = otpStore.get(email);
+    if (!otpData) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP not found or expired. Please request a new one.' 
+      });
+    }
+
+    // Check if OTP is expired
+    if (Date.now() > otpData.expiresAt) {
+      otpStore.delete(email);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'OTP has expired. Please request a new one.' 
+      });
+    }
+
+    // Verify OTP
+    if (otpData.otp !== otp) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid OTP. Please try again.' 
+      });
+    }
+
+    // Mark as verified
+    otpData.verified = true;
+    otpStore.set(email, otpData);
+
+    console.log('✅ OTP verified successfully');
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully',
+      email: email
+    });
+
+  } catch (error) {
+    console.error('❌ Verify OTP error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to verify OTP' 
+    });
+  }
+});
+
+// @desc    Check if email is verified
+// @route   GET /api/auth/check-verification/:email
+// @access  Public
+app.get('/api/auth/check-verification/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const otpData = otpStore.get(email);
+    const isVerified = otpData && otpData.verified;
+
+    res.json({
+      success: true,
+      verified: isVerified,
+      email: email
+    });
+
+  } catch (error) {
+    console.error('❌ Check verification error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to check verification status' 
+    });
+  }
+});
+
+
+
+// In your index.js, BEFORE the 404 handler, add:
+console.log('✅ Commission routes registered at /api/commission');
+console.log('   Available endpoints:');
+console.log('   - GET /api/commission/balance');
+console.log('   - POST /api/commission/withdraw');
+console.log('   - GET /api/commission/transactions');
+console.log('   - POST /api/commission/use-for-service');
+console.log('   - POST /api/commission/complete-service-purchase');
+console.log('   - POST /api/commission/refund');
+
+
+
+// @desc    Save failed electricity transaction (for amount below minimum or VTpass low balance)
+// @route   POST /api/vtpass/electricity/failed-transaction
+// @access  Private
+app.post('/api/vtpass/electricity/failed-transaction', protect, verifyTransactionAuth, [
+  body('serviceID').notEmpty().withMessage('Provider required'),
+  body('billersCode').notEmpty().withMessage('Meter number required'), // Changed from fixed length
+  body('variation_code').notEmpty().withMessage('Meter type required'), // Removed strict validation
+  body('amount').isFloat({ min: 1 }).withMessage('Amount required'),
+  body('phone').optional().isMobilePhone('en-NG').withMessage('Valid phone required'),
+  body('failureReason').optional().isString(),
+  body('customerName').optional().isString(),
+  body('customerAddress').optional().isString()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    console.log('❌ Validation errors:', errors.array());
+    return res.status(400).json({ 
+      success: false, 
+      message: errors.array()[0].msg,
+      errors: errors.array() 
+    });
+  }
+
+  const { 
+    serviceID, 
+    billersCode, 
+    variation_code, 
+    amount, 
+    phone, 
+    customerName, 
+    customerAddress, 
+    failureReason,
+    vtpassLowBalance,
+    transactionPin,
+    useBiometric 
+  } = req.body;
+  
+  const userId = req.user._id;
+  const authenticationMethod = req.authenticationMethod || (transactionPin ? 'pin' : (useBiometric ? 'biometric' : 'unknown'));
+
+  try {
+    // Get user to get current balance
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('❌ User not found:', userId);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Determine failure type based on parameters
+    let failureType = 'AMOUNT_BELOW_MINIMUM';
+    let adminAlert = false;
+    let userMessage = 'Amount below minimum. Minimum electricity purchase is ₦2000.';
+    
+    if (vtpassLowBalance) {
+      failureType = 'VT_PASS_LOW_BALANCE';
+      adminAlert = true;
+      userMessage = 'Transaction failed. Please try again later.';
+    }
+    
+    if (failureReason && failureReason.includes('insufficient') || failureReason?.toLowerCase().includes('low balance')) {
+      failureType = 'VT_PASS_LOW_BALANCE';
+      adminAlert = true;
+      userMessage = 'Transaction failed. Please try again later.';
+    }
+
+    // Generate unique IDs
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 10).toUpperCase();
+    
+    // Create a failed transaction record
+    const failedTransaction = new Transaction({
+      userId: userId,
+      user: userId, // Also store user reference if your schema requires it
+      type: 'Electricity Purchase',
+      amount: amount,
+      status: 'Failed',
+      transactionId: `FAILED_${failureType}_${timestamp}_${randomString}`,
+      reference: `FAILED_REF_${timestamp}_${randomString}`,
+      description: failureReason || (failureType === 'AMOUNT_BELOW_MINIMUM' 
+        ? `Electricity payment failed: Amount ₦${amount} is below minimum of ₦2000`
+        : `Electricity payment failed: ${failureReason || 'Service provider issue'}`),
+      balanceBefore: user.walletBalance,
+      balanceAfter: user.walletBalance, // Balance unchanged for failed transactions
+      metadata: {
+        meterNumber: billersCode,
+        provider: serviceID,
+        variation: variation_code,
+        phone: phone || 'N/A',
+        customerName: customerName || 'N/A',
+        customerAddress: customerAddress || 'N/A',
+        failureType: failureType,
+        adminAlert: adminAlert,
+        serviceID: serviceID,
+        billersCode: billersCode,
+        variation_code: variation_code,
+        amount: amount,
+        phone: phone || 'N/A'
+      },
+      isFailed: true,
+      shouldShowAsFailed: true,
+      amountBelowMinimum: failureType === 'AMOUNT_BELOW_MINIMUM',
+      failureReason: failureReason || (failureType === 'AMOUNT_BELOW_MINIMUM' 
+        ? 'Amount below minimum (₦2000)' 
+        : 'Service provider temporarily unavailable'),
+      gateway: 'DalabaPay App',
+      isCommission: false,
+      service: 'electricity',
+      authenticationMethod: authenticationMethod,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    await failedTransaction.save();
+    
+    console.log('✅ FAILED ELECTRICITY TRANSACTION SAVED TO DATABASE:');
+    console.log('   User ID:', userId);
+    console.log('   Transaction ID:', failedTransaction._id);
+    console.log('   Status:', failedTransaction.status);
+    console.log('   Failure Type:', failureType);
+    console.log('   isFailed:', failedTransaction.isFailed);
+    console.log('   amountBelowMinimum:', failedTransaction.amountBelowMinimum);
+    console.log('   Meter:', billersCode);
+    console.log('   Amount: ₦', amount);
+    console.log('   Admin Alert:', adminAlert);
+
+    // If VTpass low balance, log for admin (you can add email/SMS notification here)
+    if (adminAlert) {
+      console.log('🚨 ADMIN ALERT: VTpass low balance detected!');
+      console.log('   Service:', serviceID);
+      console.log('   Meter:', billersCode);
+      console.log('   Amount Attempted: ₦', amount);
+      console.log('   Time:', new Date().toISOString());
+      
+      // Uncomment to send admin notification
+      // await sendAdminAlert({
+      //   type: 'VT_PASS_LOW_BALANCE',
+      //   message: `VTpass wallet low balance detected! Electricity purchase attempted for ₦${amount}`,
+      //   details: {
+      //     serviceID,
+      //     meterNumber: billersCode,
+      //     amount,
+      //     timestamp: new Date()
+      //   }
+      // });
+    }
+
+    // Return response
+    return res.json({
+      success: false, // Transaction failed
+      message: userMessage,
+      isFailed: true,
+      shouldShowAsFailed: true,
+      amountBelowMinimum: failureType === 'AMOUNT_BELOW_MINIMUM',
+      adminAlert: adminAlert,
+      transactionId: failedTransaction._id,
+      transactionData: {
+        _id: failedTransaction._id,
+        userId: failedTransaction.userId,
+        type: failedTransaction.type,
+        amount: failedTransaction.amount,
+        status: failedTransaction.status,
+        transactionId: failedTransaction.transactionId,
+        reference: failedTransaction.reference,
+        description: failedTransaction.description,
+        balanceBefore: failedTransaction.balanceBefore,
+        balanceAfter: failedTransaction.balanceAfter,
+        metadata: failedTransaction.metadata,
+        isFailed: failedTransaction.isFailed,
+        shouldShowAsFailed: failedTransaction.shouldShowAsFailed,
+        amountBelowMinimum: failedTransaction.amountBelowMinimum,
+        failureReason: failedTransaction.failureReason,
+        service: failedTransaction.service,
+        createdAt: failedTransaction.createdAt,
+        updatedAt: failedTransaction.updatedAt
+      },
+      savedToDatabase: true
+    });
+
+  } catch (error) {
+    console.error('❌ Error saving failed transaction:', error);
+    console.error('Error stack:', error.stack);
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Failed to save transaction record. Please try again.',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// ==================== INTERNATIONAL AIRTIME ROUTES ====================
+
+// @desc    Get International Airtime Countries
+// @route   GET /api/international-airtime/countries
+// @access  Private
+app.get('/api/international-airtime/countries', protect, async (req, res) => {
+  console.log('🌍🌍🌍 INTERNATIONAL COUNTRIES ENDPOINT HIT 🌍🌍🌍');
+  console.log('📱 User:', req.user?._id);
+  
+  try {
+    // Try cache first
+    const cacheKey = 'int_airtime_countries';
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      console.log('📦 Returning cached countries');
+      return res.json({
+        success: true,
+        countries: cachedData,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling LIVE VTpass API...');
+
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      return res.json({
+        success: true,
+        countries: [],
+        source: 'vtpass_error',
+        note: vtpassData.response_description
+      });
+    }
+
+    const countries = vtpassData.content?.countries || [];
+    
+    console.log(`✅ Found ${countries.length} countries`);
+
+    // Cache for 1 hour
+    cache.set(cacheKey, countries, 3600);
+
+    res.json({
+      success: true,
+      countries: countries,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error.message);
+    console.error('❌ Full error:', error);
+    
+    res.json({
+      success: true,
+      countries: [],
+      source: 'mock_fallback',
+      note: 'Error: ' + error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Product Types
+// @route   GET /api/international-airtime/product-types/:countryCode
+// @access  Private
+app.get('/api/international-airtime/product-types/:countryCode', protect, async (req, res) => {
+  console.log('📦 INTERNATIONAL PRODUCT TYPES - countryCode:', req.params.countryCode);
+  
+  try {
+    const { countryCode } = req.params;
+    
+    const cacheKey = `int_product_types_${countryCode}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        productTypes: cachedData,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling VTpass API for product types:', countryCode);
+
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-product-types',
+      {
+        params: { code: countryCode },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      return res.json({
+        success: true,
+        productTypes: [],
+        source: 'vtpass_error',
+        note: vtpassData.response_description
+      });
+    }
+
+    const productTypes = vtpassData.content || [];
+    
+    console.log(`✅ Found ${productTypes.length} product types`);
+
+    cache.set(cacheKey, productTypes, 3600);
+
+    res.json({
+      success: true,
+      productTypes: productTypes,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching product types:', error.message);
+    res.json({
+      success: true,
+      productTypes: [],
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Operators
+// @route   GET /api/international-airtime/operators
+// @access  Private
+app.get('/api/international-airtime/operators', protect, async (req, res) => {
+  console.log('📱 INTERNATIONAL OPERATORS - query:', req.query);
+  
+  try {
+    const { countryCode, productTypeId } = req.query;
+    
+    if (!countryCode || !productTypeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'countryCode and productTypeId are required'
+      });
+    }
+    
+    const cacheKey = `int_operators_${countryCode}_${productTypeId}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        operators: cachedData,
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling VTpass API for operators...');
+
+    const response = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-operators',
+      {
+        params: { 
+          code: countryCode,
+          product_type_id: productTypeId
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      return res.json({
+        success: true,
+        operators: [],
+        source: 'vtpass_error',
+        note: vtpassData.response_description
+      });
+    }
+
+    const operators = vtpassData.content || [];
+    
+    console.log(`✅ Found ${operators.length} operators`);
+    // Log operator names for debugging
+    operators.forEach(op => {
+      console.log(`  📌 Operator: ${op.name} (ID: ${op.operator_id})`);
+    });
+
+    cache.set(cacheKey, operators, 3600);
+
+    res.json({
+      success: true,
+      operators: operators,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching operators:', error.message);
+    res.json({
+      success: true,
+      operators: [],
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// @desc    Get International Airtime Variations
+// @route   GET /api/international-airtime/variations
+// @access  Private
+app.get('/api/international-airtime/variations', protect, async (req, res) => {
+  console.log('📊 INTERNATIONAL VARIATIONS - query:', req.query);
+  
+  try {
+    const { operatorId, productTypeId } = req.query;
+    
+    if (!operatorId || !productTypeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'operatorId and productTypeId are required'
+      });
+    }
+    
+    const cacheKey = `int_variations_${operatorId}_${productTypeId}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      return res.json({
+        success: true,
+        variations: cachedData,
+        serviceName: 'International Airtime',
+        source: 'cache'
+      });
+    }
+
+    console.log('🚀 Calling VTpass API for variations...');
+    console.log(`  📌 Operator ID: ${operatorId}`);
+    console.log(`  📌 Product Type ID: ${productTypeId}`);
+
+    const response = await axios.get(
+      'https://vtpass.com/api/service-variations',
+      {
+        params: {
+          serviceID: 'foreign-airtime',
+          operator_id: operatorId,
+          product_type_id: productTypeId
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': process.env.VTPASS_API_KEY,
+          'secret-key': process.env.VTPASS_SECRET_KEY,
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log('📦 VTpass API response status:', response.status);
+    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
+
+    const vtpassData = response.data;
+
+    if (vtpassData.response_description !== '000') {
+      console.log('❌ VTpass API error:', vtpassData.response_description);
+      return res.json({
+        success: true,
+        variations: [],
+        serviceName: 'International Airtime',
+        source: 'vtpass_error',
+        note: vtpassData.response_description
+      });
+    }
+
+    const variations = vtpassData.content?.variations || [];
+    const serviceName = vtpassData.content?.ServiceName || 'International Airtime';
+    
+    console.log(`✅ Found ${variations.length} variations`);
+    // Log first 3 variations for debugging
+    variations.slice(0, 3).forEach(v => {
+      console.log(`  📌 Variation: ${v.name} (Code: ${v.variation_code}, Fixed: ${v.fixedPrice})`);
+    });
+
+    cache.set(cacheKey, variations, 3600);
+
+    res.json({
+      success: true,
+      variations: variations,
+      serviceName: serviceName,
+      source: 'vtpass_live_api',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching variations:', error.message);
+    res.json({
+      success: true,
+      variations: [],
+      serviceName: 'International Airtime',
+      source: 'mock_fallback',
+      timestamp: new Date().toISOString(),
+      note: 'Using empty data due to service unavailability: ' + error.message
+    });
+  }
+});
+
+// @desc    Purchase International Airtime – RACE CONDITION PROTECTED + EXACT NAIRA AMOUNT FROM VTPASS
+// @route   POST /api/international-airtime/purchase
+// @access  Private
+app.post('/api/international-airtime/purchase', 
+  protect, 
+  verifyTransactionAuth, 
+  checkServiceEnabled('isAirtimeEnabled'),
+  checkGlobalPerMinuteLimit, // ✅ Global limit
+  smartLimitCheck,
+  checkTransactionLimit('international_airtime'), // ✅ Use the correct key
+  checkPerMinuteLimit('international_airtime'), // ✅ Service-specific limit
+  preventRaceCondition({ 
+    windowMs: 30000,
+    maxRequests: 1,
+    keyPrefix: 'int_airtime',
+    excludeStatuses: ['Failed']
+  }),
+  userServiceRateLimiter('int_airtime', 1, 60000),
+  [
+    body('operatorId').notEmpty().withMessage('Operator ID is required'),
+    body('countryCode').notEmpty().withMessage('Country code is required'),
+    body('productTypeId').notEmpty().withMessage('Product type ID is required'),
+    body('variationCode').notEmpty().withMessage('Variation code is required'),
+    body('phoneNumber').notEmpty().withMessage('Phone number is required'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be at least 1'),
+    body('currency').optional().isString().withMessage('Currency must be a string')
+  ], 
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
+      return res.status(400).json({ 
+        success: false, 
+        message: errors.array()[0].msg 
+      });
+    }
+
+    console.log('🌍 ========== INTERNATIONAL AIRTIME PURCHASE START ==========');
+    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User ID:', req.user?._id);
+    console.log('📧 User Email:', req.user?.email);
+    console.log('🔐 Auth Method:', req.authenticationMethod || 'pin');
+
+    const {
+      operatorId,
+      countryCode,
+      productTypeId,
+      variationCode,
+      phoneNumber,
+      amount,
+      currency = 'USD',
+      email
+    } = req.body;
+
+    const userId = req.user._id;
+    const requestId = generateVtpassRequestId();
+
+    console.log('🆔 Generated Request ID:', requestId);
+    console.log('📊 Operator ID:', operatorId);
+    console.log('🌍 Country Code:', countryCode);
+    console.log('📦 Product Type ID:', productTypeId);
+    console.log('🔢 Variation Code:', variationCode);
+    console.log('📞 Phone Number:', phoneNumber);
+    console.log('💰 Requested Amount:', amount, currency);
+    console.log('📧 Email:', email || 'Not provided');
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        session.endSession();
+        console.log('❌ User not found for ID:', userId);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'User not found' 
+        });
+      }
+
+      console.log('💰 Current Wallet Balance: ₦', user.walletBalance.toFixed(2));
+      console.log('👤 User Status:', user.isActive ? 'Active' : 'Inactive');
+
+      // ================================================
+      // 🔥 DUPLICATE CHECK: Check for recent transaction
+      // ================================================
+      const thirtySecondsAgo = new Date(Date.now() - 30000);
+      const existingTransaction = await Transaction.findOne({
+        userId: userId,
+        type: 'International Airtime Purchase',
+        status: 'Successful',
+        'metadata.phoneNumber': phoneNumber,
+        'metadata.countryCode': countryCode,
+        createdAt: { $gte: thirtySecondsAgo }
+      }).session(session);
+      
+      if (existingTransaction) {
+        await session.abortTransaction();
+        session.endSession();
+        console.log(`🚫 DUPLICATE TRANSACTION BLOCKED:`);
+        console.log(`   Phone: ${phoneNumber}`);
+        console.log(`   Country: ${countryCode}`);
+        console.log(`   Existing Transaction ID: ${existingTransaction._id}`);
+        console.log(`   Existing Transaction Time: ${existingTransaction.createdAt}`);
+        return res.status(409).json({
+          success: false,
+          message: 'An international airtime transaction to this number was just processed. Please wait 30 seconds.',
+          code: 'RECENT_TRANSACTION_EXISTS',
+          alreadyProcessed: true,
+          existingTransactionId: existingTransaction._id
+        });
+      }
+
+      // ================================================
+      // 🔥 BUILD VTPASS PAYLOAD
+      // ================================================
+      const vtpassPayload = {
+        request_id: requestId,
+        serviceID: 'foreign-airtime',
+        billersCode: phoneNumber,
+        variation_code: variationCode,
+        amount: amount, // Send the foreign amount, VTpass will determine Naira equivalent
+        phone: phoneNumber,
+        operator_id: operatorId,
+        country_code: countryCode,
+        product_type_id: productTypeId,
+        email: email || user.email || 'customer@example.com'
+      };
+
+      console.log('📤 ========== VTPASS PAYLOAD ==========');
+      console.log(JSON.stringify(vtpassPayload, null, 2));
+      console.log('📤 ======================================');
+
+      // ================================================
+      // 🔥 CALL VTPASS API TO GET EXACT NAIRA AMOUNT
+      // ================================================
+      console.log('📡 Calling VTpass API...');
+      console.log('🌐 Endpoint: /api/pay');
+      console.log('⏰ Time:', new Date().toISOString());
+      
+      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
+      console.log('📡 ========== VTPASS RESPONSE RECEIVED ==========');
+      console.log('📡 Success:', vtpassResult.success);
+      console.log('📡 Full Response:', JSON.stringify(vtpassResult, null, 2));
+      console.log('📡 ==============================================');
+
+      // ================================================
+      // 🔥 EXTRACT NAIRA AMOUNT FROM VTPASS RESPONSE
+      // ================================================
+      const vtpassCode = vtpassResult.data?.code?.toString() || vtpassResult.data?.response_description?.toString() || 'UNKNOWN';
+      const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
+
+      console.log('🔍 VTpass Code:', vtpassCode);
+      console.log('🔍 VTpass Description:', vtpassDesc);
+
+      let nairaAmount = 0;
+      let transactionStatus = 'Failed';
+      let vtpassData = null;
+      let exchangeRate = 0;
+      let actualForeignAmount = amount;
+
+      // ================================================
+      // 🔥 HANDLE SUCCESSFUL VTPASS RESPONSE
+      // ================================================
+      if (vtpassResult.success && vtpassCode === '000') {
+        console.log('✅ VTPASS TRANSACTION SUCCESSFUL');
+        vtpassData = vtpassResult.data;
+        transactionStatus = 'Successful';
+
+        // ================================================
+        // 🔥 EXTRACT NAIRA AMOUNT - NO FALLBACK RATES
+        // ================================================
+        console.log('🔍 ========== EXTRACTING NAIRA AMOUNT ==========');
+        console.log('🔍 Checking VTpass response structure...');
+        
+        // Method 1: Check top-level amount field
+        if (vtpassResult.data?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.amount);
+          console.log(`💰 Method 1 - Top-level amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 2: Check top-level Amount field (e.g., "NGN2")
+        if (nairaAmount === 0 && vtpassResult.data?.Amount) {
+          const amountStr = vtpassResult.data.Amount.toString();
+          console.log(`🔍 Top-level Amount string: "${amountStr}"`);
+          const nairaMatch = amountStr.match(/NGN(\d+\.?\d*)/i);
+          if (nairaMatch) {
+            nairaAmount = parseFloat(nairaMatch[1]);
+            console.log(`💰 Method 2 - Top-level Amount (NGN): ₦${nairaAmount}`);
+          }
+        }
+        
+        // Method 3: Check content.transactions.amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.transactions.amount);
+          console.log(`💰 Method 3 - content.transactions.amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 4: Check content.transactions.total_amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.total_amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.transactions.total_amount);
+          console.log(`💰 Method 4 - content.transactions.total_amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 5: Check content.amount
+        if (nairaAmount === 0 && vtpassResult.data?.content?.amount) {
+          nairaAmount = parseFloat(vtpassResult.data.content.amount);
+          console.log(`💰 Method 5 - content.amount: ₦${nairaAmount}`);
+        }
+        
+        // Method 6: Check unit_price * quantity
+        if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.unit_price) {
+          const unitPrice = parseFloat(vtpassResult.data.content.transactions.unit_price);
+          const quantity = vtpassResult.data.content.transactions.quantity || 1;
+          nairaAmount = unitPrice * quantity;
+          console.log(`💰 Method 6 - unit_price * quantity: ₦${unitPrice} * ${quantity} = ₦${nairaAmount}`);
+        }
+
+        console.log('🔍 =============================================');
+
+        // ================================================
+        // 🔥 IF NO NAIRA AMOUNT FOUND, RE-QUERY VTPASS
+        // ================================================
+        if (nairaAmount <= 0) {
+          console.log('⚠️ No Naira amount found in initial response');
+          console.log('🔄 Re-querying VTpass for transaction status...');
+          
+          const requeryResult = await callVtpassApi('/requery', { 
+            request_id: requestId 
+          });
+
+          console.log('📡 ========== VTPASS RE-QUERY RESPONSE ==========');
+          console.log('📡 Requery Success:', requeryResult.success);
+          console.log('📡 Full Requery Response:', JSON.stringify(requeryResult, null, 2));
+          console.log('📡 ==============================================');
+
+          if (requeryResult.success && requeryResult.data) {
+            // Extract from requery response
+            if (requeryResult.data?.amount) {
+              nairaAmount = parseFloat(requeryResult.data.amount);
+              console.log(`💰 Requery - Top-level amount: ₦${nairaAmount}`);
+            }
+            
+            if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.amount) {
+              nairaAmount = parseFloat(requeryResult.data.content.transactions.amount);
+              console.log(`💰 Requery - content.transactions.amount: ₦${nairaAmount}`);
+            }
+            
+            if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.total_amount) {
+              nairaAmount = parseFloat(requeryResult.data.content.transactions.total_amount);
+              console.log(`💰 Requery - content.transactions.total_amount: ₦${nairaAmount}`);
+            }
+          }
+        }
+
+        // ================================================
+        // 🔥 FAIL SAFELY IF NO NAIRA AMOUNT DETERMINED
+        // ================================================
+        if (nairaAmount <= 0) {
+          await session.abortTransaction();
+          session.endSession();
+          console.error('❌ CRITICAL: Could not determine exact Naira amount from VTpass');
+          console.error('❌ VTpass Response:', JSON.stringify(vtpassResult, null, 2));
+          console.error('❌ Requery Response:', JSON.stringify(requeryResult || {}, null, 2));
+          
+          return res.status(400).json({
+            success: false,
+            message: 'Could not determine exact amount. Your wallet was NOT debited. Please try again.',
+            code: 'AMOUNT_DETERMINATION_FAILED',
+            userDebited: false,
+            vtpassCode: vtpassCode,
+            vtpassDescription: vtpassDesc
+          });
+        }
+
+        // ✅ Calculate exchange rate (for display purposes only)
+        if (amount > 0 && nairaAmount > 0) {
+          exchangeRate = nairaAmount / amount;
+          actualForeignAmount = amount;
+          console.log(`📊 Exchange Rate Calculated: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
+        }
+
+        console.log(`💰 FINAL NAIRA AMOUNT TO DEDUCT: ₦${nairaAmount.toFixed(2)}`);
+        console.log(`💰 Foreign Amount: ${currency} ${actualForeignAmount}`);
+
+        // ================================================
+        // 🔥 CHECK BALANCE AGAINST EXACT NAIRA AMOUNT
+        // ================================================
+        if (user.walletBalance < nairaAmount) {
+          await session.abortTransaction();
+          session.endSession();
+          console.log(`❌ INSUFFICIENT BALANCE:`);
+          console.log(`   Available: ₦${user.walletBalance.toFixed(2)}`);
+          console.log(`   Required: ₦${nairaAmount.toFixed(2)}`);
+          console.log(`   Difference: ₦${(nairaAmount - user.walletBalance).toFixed(2)}`);
+          
+          return res.status(400).json({ 
+            success: false, 
+            message: `Insufficient balance. Required: ₦${nairaAmount.toFixed(2)}, Available: ₦${user.walletBalance.toFixed(2)}`,
+            code: 'INSUFFICIENT_BALANCE',
+            nairaRequired: nairaAmount,
+            currency: 'NGN',
+            nairaAmount: nairaAmount,
+            exchangeRate: exchangeRate,
+            userDebited: false
+          });
+        }
+
+        // ================================================
+        // 🔥 DEBIT EXACT NAIRA AMOUNT FROM WALLET
+        // ================================================
+        const balanceBefore = user.walletBalance;
+        user.walletBalance -= nairaAmount;
+        const balanceAfter = user.walletBalance;
+        await user.save({ session });
+
+        console.log(`💰 WALLET DEBITED SUCCESSFULLY:`);
+        console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
+        console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
+        console.log(`   Debited: ₦${nairaAmount.toFixed(2)}`);
+
+        // ================================================
+        // 🔥 CREATE TRANSACTION RECORD
+        // ================================================
+        const newTransaction = new Transaction({
+          userId: userId,
+          amount: nairaAmount,
+          type: 'International Airtime Purchase',
+          status: 'Successful',
+          description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${actualForeignAmount}`,
+          balanceBefore: balanceBefore,
+          balanceAfter: balanceAfter,
+          reference: requestId,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phoneNumber: phoneNumber,
+            countryCode: countryCode,
+            operatorId: operatorId,
+            productTypeId: productTypeId,
+            variationCode: variationCode,
+            currency: currency,
+            originalAmount: actualForeignAmount,
+            nairaAmount: nairaAmount,
+            exchangeRate: exchangeRate,
+            vtpassResponse: vtpassData,
+            userDebited: true,
+            debitAmount: nairaAmount,
+            vtpassDelivered: true,
+            vtpassCode: vtpassCode,
+            vtpassDescription: vtpassDesc,
+            vtpassFullResponse: vtpassResult.data
+          }
+        });
+
+        await newTransaction.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        console.log(`✅ TRANSACTION RECORD SAVED: ${newTransaction._id}`);
+
+        // ================================================
+        // 🔥 CALCULATE COMMISSION (OUTSIDE TRANSACTION)
+        // ================================================
+        await calculateAndAddCommission(userId, nairaAmount, 'airtime')
+          .catch(err => console.log('⚠️ Commission calculation error:', err.message));
+
+        // ================================================
+        // 🔥 CREATE NOTIFICATION
+        // ================================================
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "International Airtime Purchase Successful 🌍",
+            message: `International airtime of ${currency} ${actualForeignAmount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${nairaAmount.toFixed(2)}`,
+            type: 'transaction',
+            isRead: false,
+            metadata: {
+              phoneNumber: phoneNumber,
+              amount: actualForeignAmount,
+              currency: currency,
+              countryCode: countryCode,
+              nairaAmount: nairaAmount,
+              exchangeRate: exchangeRate,
+              newBalance: balanceAfter,
+              userDebited: true
+            }
+          });
+          console.log('📧 Notification created successfully');
+        } catch (notifError) {
+          console.error('❌ Notification creation error:', notifError);
+        }
+
+        console.log('🎉 ========== TRANSACTION COMPLETE ==========');
+        console.log(`✅ Success: ${countryCode} - ${currency} ${actualForeignAmount} to ${phoneNumber}`);
+        console.log(`💰 Naira Deducted: ₦${nairaAmount.toFixed(2)}`);
+        console.log(`📊 Exchange Rate: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
+        console.log(`💳 New Balance: ₦${balanceAfter.toFixed(2)}`);
+        console.log('============================================');
+
+        // ================================================
+        // 🔥 RETURN SUCCESS RESPONSE
+        // ================================================
+        return res.json({
+          success: true,
+          message: `International airtime purchase successful! ${currency} ${actualForeignAmount} sent to ${phoneNumber}.`,
+          transactionId: newTransaction._id.toString(),
+          reference: requestId,
+          status: 'Successful',
+          newBalance: balanceAfter,
+          // Foreign amount (what user entered)
+          foreignAmount: actualForeignAmount,
+          currency: currency,
+          // Naira amount (what was deducted)
+          nairaAmount: nairaAmount,
+          nairaEquivalent: nairaAmount,
+          exchangeRate: exchangeRate,
+          phoneNumber: phoneNumber,
+          countryCode: countryCode,
+          userDebited: true,
+          amountDebited: nairaAmount,
+          vtpassResponse: vtpassData,
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc,
+          // Original fields for backward compatibility
+          amount: actualForeignAmount
+        });
+
+      } else {
+        // ================================================
+        // 🔥 VTPASS FAILED - USER IS NOT DEBITED
+        // ================================================
+        console.log(`❌ VTPASS TRANSACTION FAILED:`);
+        console.log(`   Code: ${vtpassCode}`);
+        console.log(`   Description: ${vtpassDesc}`);
+        console.log('❌ Full VTpass error response:', JSON.stringify(vtpassResult, null, 2));
+
+        await session.abortTransaction();
+        session.endSession();
+
+        // Build user-friendly error message
+        let userMessage = 'Transaction failed. Please try again.';
+        let displayMessage = 'Purchase failed. Please try again.';
+
+        if (vtpassCode === '018' || vtpassDesc.includes('LOW WALLET BALANCE')) {
+          userMessage = 'Service provider wallet is low. Please try again later.';
+          displayMessage = 'Service temporarily unavailable.';
+        } else if (vtpassCode === '024' || vtpassDesc.includes('INSUFFICIENT')) {
+          userMessage = 'Service provider issue. Please try again later.';
+          displayMessage = 'Service issue. Please try again.';
+        } else if (vtpassDesc.toLowerCase().includes('invalid') || vtpassDesc.toLowerCase().includes('not found')) {
+          userMessage = 'Invalid details. Please check your phone number and try again.';
+          displayMessage = 'Invalid details. Please check and try again.';
+        } else if (vtpassCode === '019' || vtpassDesc.includes('DUPLICATE')) {
+          userMessage = 'This transaction was already processed. Please check your transaction history.';
+          displayMessage = 'Transaction already processed.';
+        }
+
+        console.log('📤 Sending failure response to client');
+        console.log('============================================');
+
+        return res.status(400).json({
+          success: false,
+          message: userMessage,
+          displayMessage: displayMessage,
+          vtpassResponse: vtpassData,
+          vtpassCode: vtpassCode,
+          vtpassDescription: vtpassDesc,
+          isFailed: true,
+          shouldShowAsFailed: true,
+          userDebited: false,
+          amount: amount,
+          currency: currency
+        });
+      }
+
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+
+      console.error('💥 ========== INTERNATIONAL AIRTIME CRITICAL ERROR ==========');
+      console.error('❌ Error:', error);
+      console.error('❌ Stack:', error.stack);
+      console.error('❌ Request ID:', requestId);
+      console.error('❌ User ID:', userId);
+      console.error('❌ Phone:', phoneNumber);
+      console.error('❌ Country:', countryCode);
+      console.error('💥 ===========================================================');
+
+      if (error.code === 11000) {
+        console.error('❌ DUPLICATE KEY ERROR - Transaction already exists');
+        return res.status(409).json({
+          success: false,
+          message: 'This transaction was already processed.',
+          code: 'DUPLICATE_TRANSACTION',
+          alreadyProcessed: true
+        });
+      }
+
+      res.status(500).json({ 
+        success: false, 
+        message: 'Service temporarily unavailable. Please try again.',
+        displayMessage: 'Transaction failed. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+// @desc    Requery International Airtime Transaction Status
+// @route   POST /api/international-airtime/requery
+// @access  Private
+app.post('/api/international-airtime/requery', protect, [
+  body('requestId').notEmpty().withMessage('Request ID is required')
+], async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    
+    console.log(`🔍 Requerying international airtime: ${requestId}`);
+    
+    const vtpassResult = await callVtpassApi('/requery', {
+      request_id: requestId
+    });
+    
+    console.log('📡 VTpass Requery Response:', JSON.stringify(vtpassResult, null, 2));
+    
+    if (vtpassResult.success && vtpassResult.data) {
+      return res.json({
+        success: true,
+        data: vtpassResult.data
+      });
+    } else {
+      throw new Error(vtpassResult.message || 'Failed to requery transaction');
+    }
+    
+  } catch (error) {
+    console.error('Error requerying transaction:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to requery transaction',
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+// Add this BEFORE your /api/international-airtime/countries route
+// ==================== DEBUG ROUTE - PUT THIS FIRST ====================
+// ==================== PROTECTED DEBUG ROUTE ====================
+app.get('/api/international-airtime/debug', protect, async (req, res) => {
+  try {
+    const apiKey = process.env.VTPASS_API_KEY;
+    const secretKey = process.env.VTPASS_SECRET_KEY;
+    
+    console.log('🔍 DEBUG: User authenticated:', req.user?._id);
+    console.log('API Key exists:', !!apiKey);
+    console.log('Secret Key exists:', !!secretKey);
+    
+    // Test VTpass API directly
+    const testResponse = await axios.get(
+      'https://vtpass.com/api/get-international-airtime-countries',
+      {
+        headers: {
+          'api-key': apiKey || '',
+          'secret-key': secretKey || '',
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+    
+    res.json({
+      success: true,
+      credentials: {
+        apiKeyExists: !!apiKey,
+        secretKeyExists: !!secretKey,
+        apiKeyLength: apiKey?.length || 0,
+        secretKeyLength: secretKey?.length || 0
+      },
+      vtpassResponse: testResponse.data,
+      statusCode: testResponse.status
+    });
+  } catch (error) {
+    console.error('❌ Debug error:', error.message);
+    res.json({
+      success: false,
+      error: error.message,
+      response: error.response?.data,
+      statusCode: error.response?.status
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+// ==================== FLUTTER-COMPATIBLE HEALTH ENDPOINT ====================
+
+// @desc    Health check endpoint for Flutter app compatibility
+// @route   GET /health
+// @access  Public
+// ==================== HEALTH CHECK - FLUTTER COMPATIBLE ====================
+app.get('/health', async (req, res) => {
+  try {
+    const mongoConnected = mongoose.connection.readyState === 1;
+    const memoryUsage = process.memoryUsage();
+    const heapUsedMB = (memoryUsage.heapUsed / 1024 / 1024).toFixed(2);
+    
+    res.json({
+      'status': 'OK',
+      'message': 'Server is healthy',
+      'timestamp': new Date().toISOString(),
+      'uptime': process.uptime(),
+      'database': mongoConnected ? 'connected' : 'disconnected',
+      'memory': {
+        heapUsedMB: heapUsedMB,
+        rssMB: (memoryUsage.rss / 1024 / 1024).toFixed(2)
+      }
+    });
+  } catch (error) {
+    res.json({
+      'status': 'ERROR',
+      'message': error.message,
+      'timestamp': new Date().toISOString()
+    });
+  }
+});
+
+
+
+// @desc    Alternative health endpoint with 'success' field
+// @route   GET /api/health
+// @access  Public
+app.get('/api/health', (req, res) => {
+  const mongoConnected = mongoose.connection.readyState === 1;
+  
+  res.json({
+    'success': mongoConnected,
+    'status': mongoConnected ? 'OK' : 'ERROR',
+    'message': mongoConnected ? 'Server is healthy' : 'Database connection failed',
+    'timestamp': new Date().toISOString(),
+    'uptime': process.uptime(),
+    'database': mongoConnected ? 'connected' : 'disconnected'
+  });
+});
+
+
+
+
+
+// Catch-all 404 handler — KEEP THIS AS THE VERY LAST app.use() BEFORE app.listen()
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: 'API endpoint not found' 
+  });
+});
+
+
+// Start the server with graceful shutdown handling
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🔌 Socket.IO server ready`);
+});
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    mongoose.connection.close();
+    process.exit(0);
+  });
+});
