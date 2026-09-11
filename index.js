@@ -25,6 +25,9 @@ const {
   getUnreadCount
 } = require('./socket-server');
 
+// ✅ FIX #2: Alias — because rest of file calls it getUserUnreadCount
+const getUserUnreadCount = getUnreadCount;
+
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 const Notification = require('./models/Notification');
@@ -34,9 +37,271 @@ const AuthLog = require('./models/AuthLog');
 const Alert = require('./models/Alert');
 const Referral = require('./models/Referral');
 
+
+
+
 const formatCurrency = (amount) => `₦${(amount || 0).toFixed(2)}`;
+
+// ==================== VTpass RESPONSE CODE MASTER HANDLER ====================
+/**
+ * Master function to interpret any VTpass response and return the correct action.
+ * USE THIS EVERYWHERE — never check code === '000' alone.
+ * 
+ * @param {Object} vtpassData - The full VTpass response data
+ * @param {String} endpointType - 'purchase' | 'requery' | 'verify'
+ * @returns {Object} { success, status, action, code, description, isPending, isFailed, isDelivered, needsRequery, userDebited }
+ */
+function interpretVtpassResponse(vtpassData, endpointType = 'purchase') {
+  // Default safe outcome — pending (never auto-success)
+  const result = {
+    success: false,
+    status: 'Pending',
+    action: 'REQUERY',
+    code: 'UNKNOWN',
+    description: 'Unknown response',
+    isPending: true,
+    isFailed: false,
+    isDelivered: false,
+    needsRequery: true,
+    userDebited: true, // Assume debited unless proven otherwise
+    rawData: vtpassData || null
+  };
+
+  if (!vtpassData) {
+    result.code = 'NO_RESPONSE';
+    result.description = 'No response from VTpass';
+    return result;
+  }
+
+  // Extract code — could be in different places
+  const code = String(
+    vtpassData.code ||
+    vtpassData.response_description ||
+    vtpassData.content?.transactions?.code ||
+    'UNKNOWN'
+  ).trim();
+
+  const description = String(
+    vtpassData.response_description ||
+    vtpassData.message ||
+    vtpassData.content?.transactions?.response_description ||
+    'No description'
+  ).trim();
+
+  result.code = code;
+  result.description = description;
+
+  // ================================================
+  // ✅ CODE 000 — Transaction Processed (CHECK INNER STATUS!)
+  // ================================================
+  if (code === '000') {
+    // 🔥 CRITICAL: Look inside content.transactions.status
+    const innerStatus = String(
+      vtpassData.content?.transactions?.status ||
+      vtpassData.content?.status ||
+      vtpassData.status ||
+      vtpassData.transactions?.status ||
+      ''
+    ).toLowerCase().trim();
+
+    result.innerStatus = innerStatus;
+
+    if (innerStatus === 'delivered') {
+      result.success = true;
+      result.status = 'Successful';
+      result.action = 'COMPLETE';
+      result.isDelivered = true;
+      result.isPending = false;
+      result.needsRequery = false;
+      result.description = description || 'Transaction delivered';
+      return result;
+    }
+
+    if (innerStatus === 'pending') {
+      result.success = false;
+      result.status = 'Pending';
+      result.action = 'REQUERY';
+      result.isPending = true;
+      result.needsRequery = true;
+      result.description = 'Transaction is pending with provider';
+      return result;
+    }
+
+    if (innerStatus === 'initiated') {
+      result.success = false;
+      result.status = 'Pending';
+      result.action = 'REQUERY';
+      result.isPending = true;
+      result.needsRequery = true;
+      result.description = 'Transaction initiated, awaiting delivery';
+      return result;
+    }
+
+    // If no inner status but code is 000 → treat as pending (SAFE)
+    result.success = false;
+    result.status = 'Pending';
+    result.action = 'REQUERY';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = description || 'Transaction processed, awaiting confirmation';
+    return result;
+  }
+
+  // ================================================
+  // 🔄 CODE 099 — TRANSACTION IS PROCESSING → PENDING
+  // ================================================
+  if (code === '099') {
+    result.status = 'Pending';
+    result.action = 'REQUERY_AFTER_DELAY';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = 'Transaction is processing';
+    return result;
+  }
+
+  // ================================================
+  // 🔄 CODE 089 — REQUEST IS PROCESSING → PENDING
+  // ================================================
+  if (code === '089') {
+    result.status = 'Pending';
+    result.action = 'REQUERY_AFTER_DELAY';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = 'Previous request still processing';
+    return result;
+  }
+
+  // ================================================
+  // 🔄 CODE 014 / 019 — DUPLICATE → REQUERY (likely successful)
+  // ================================================
+  if (code === '014' || code === '019') {
+    result.status = 'Pending';
+    result.action = 'REQUERY_DUPLICATE';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = 'Duplicate transaction — requery to confirm';
+    return result;
+  }
+
+  // ================================================
+  // 🔄 CODE 001 / 040 / 083 — REQUERY / REVERSAL / SYSTEM ERROR
+  // ================================================
+  if (code === '001' || code === '040' || code === '083') {
+    result.status = 'Pending';
+    result.action = 'REQUERY';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = description || 'Transaction status unknown — requery';
+    return result;
+  }
+
+  // ================================================
+  // ⚠️ CODE 018 — LOW WALLET BALANCE (VTpass side)
+  // User is debited, VTpass can't fulfill → keep pending, admin alert
+  // ================================================
+  if (code === '018') {
+    result.status = 'Pending';
+    result.action = 'ADMIN_ALERT_KEEP_PENDING';
+    result.isPending = true;
+    result.needsRequery = false; // No point requerying, VTpass has no funds
+    result.description = 'Provider wallet low — user debited, awaiting reconciliation';
+    result.isFailed = false; // DO NOT mark failed — user was debited
+    return result;
+  }
+
+  // ================================================
+  // ⚠️ CODE 030 — BILLER NOT REACHABLE → PENDING, RETRY
+  // ================================================
+  if (code === '030') {
+    result.status = 'Pending';
+    result.action = 'REQUERY_LATER';
+    result.isPending = true;
+    result.needsRequery = true;
+    result.description = 'Biller unreachable — will retry';
+    return result;
+  }
+
+  // ================================================
+  // ✅ CODE 044 — TRANSACTION RESOLVED (contact support)
+  // ================================================
+  if (code === '044') {
+    result.status = 'Pending';
+    result.action = 'CONTACT_SUPPORT';
+    result.isPending = true;
+    result.needsRequery = false;
+    result.description = 'Transaction resolved — contact support';
+    return result;
+  }
+
+  // ================================================
+  // ❌ CODE 091 — TRANSACTION NOT PROCESSED (user NOT charged)
+  // ================================================
+  if (code === '091') {
+    result.status = 'Failed';
+    result.action = 'REFUND_USER';
+    result.isFailed = true;
+    result.isPending = false;
+    result.needsRequery = false;
+    result.userDebited = false;
+    result.description = 'Transaction not processed — refund user';
+    return result;
+  }
+
+  // ================================================
+  // ❌ EXPLICIT FAILURE CODES (user debited, no service)
+  // 011, 012, 013, 015, 016, 017, 021-028, 031, 032, 034, 035, 085, 087
+  // ================================================
+  const explicitFailCodes = [
+    '011', // invalid arguments
+    '012', // product doesn't exist
+    '013', // below minimum
+    '015', // invalid request id
+    '016', // transaction failed
+    '017', // above maximum
+    '021', // account locked
+    '022', // account suspended
+    '023', // api not enabled
+    '024', // account inactive
+    '025', // recipient bank invalid
+    '026', // recipient account unverified
+    '027', // ip not whitelisted
+    '028', // product not whitelisted
+    '031', // below min quantity
+    '032', // above max quantity
+    '034', // service suspended
+    '035', // service inactive
+    '085', // improper request id
+    '087'  // invalid credentials
+  ];
+
+  if (explicitFailCodes.includes(code)) {
+    result.status = 'Failed';
+    result.action = 'KEEP_DEBIT_FLAG_FAILED';
+    result.isFailed = true;
+    result.isPending = false;
+    result.needsRequery = false;
+    result.userDebited = true; // Already debited in our flow
+    result.description = description || 'Transaction failed';
+    return result;
+  }
+
+  // ================================================
+  // ⚠️ UNKNOWN CODE → TREAT AS PENDING (SAFEST)
+  // Your file says: "Take any response that differs from the guidelines provided here as pending"
+  // ================================================
+  result.status = 'Pending';
+  result.action = 'REQUERY_UNKNOWN';
+  result.isPending = true;
+  result.needsRequery = true;
+  result.description = `Unknown code ${code}: ${description}`;
+  return result;
+}
+// ==================== END MASTER HANDLER ====================
+
+
+
 const adminExportRoutes = require('./routes/adminExportRoutes');
-const { createNotificationAndSendPush, getUserUnreadCount } = require('./helpers/notificationHelper');
+const { createNotificationAndSendPush } = require('./helpers/notificationHelper');
 const { sendPushNotification } = require('./firebaseAdmin');
 console.log('🔍 firebaseAdmin loaded. sendPushNotification type:', typeof sendPushNotification);
 
@@ -1944,7 +2209,7 @@ setInterval(() => {
 // @access  Internal
 const vtpassRequery = async (requestId) => {
   try {
-    console.log(`🔄 REQUERYING transaction: ${requestId}`);
+    console.log(`🔄 [REQUERY] Starting requery for: ${requestId}`);
     
     const response = await axios.post('https://vtpass.com/api/requery', {
       request_id: requestId
@@ -1957,18 +2222,42 @@ const vtpassRequery = async (requestId) => {
       timeout: 15000
     });
     
-    console.log(`📡 Requery response for ${requestId}:`, response.data);
+    console.log(`📡 [REQUERY] Raw response for ${requestId}:`, JSON.stringify(response.data, null, 2));
+    
+    // Use master interpreter
+    const interpretation = interpretVtpassResponse(response.data, 'requery');
+    console.log(`🎯 [REQUERY] Interpretation for ${requestId}:`, {
+      code: interpretation.code,
+      innerStatus: interpretation.innerStatus,
+      status: interpretation.status,
+      action: interpretation.action,
+      isDelivered: interpretation.isDelivered,
+      isPending: interpretation.isPending,
+      isFailed: interpretation.isFailed
+    });
     
     return {
       success: true,
-      data: response.data
+      data: response.data,
+      interpretation
     };
   } catch (error) {
-    console.error(`❌ Requery failed for ${requestId}:`, error.message);
+    console.error(`❌ [REQUERY] Failed for ${requestId}:`, error.message);
+    if (error.response) {
+      console.error(`❌ [REQUERY] Response status:`, error.response.status);
+      console.error(`❌ [REQUERY] Response data:`, JSON.stringify(error.response.data, null, 2));
+    }
     return {
       success: false,
       message: error.message,
-      data: null
+      data: null,
+      interpretation: {
+        status: 'Pending',
+        action: 'REQUERY',
+        isPending: true,
+        needsRequery: true,
+        description: `Requery network error: ${error.message}`
+      }
     };
   }
 };
@@ -1977,83 +2266,315 @@ const vtpassRequery = async (requestId) => {
 // This runs every 30 seconds to check pending transactions
 const pendingTransactionsCache = new Map();
 
+// ==================== BACKGROUND REQUERY SERVICE (FIXED — HANDLES DOWNGRADES) ====================
 const startBackgroundRequeryService = () => {
-  console.log('🔄 Starting background requery service...');
-  
+  console.log('🔄 [BG-REQUERY] Starting background requery service (with downgrade handling)...');
+
   setInterval(async () => {
     try {
-      // Find pending transactions from last 24 hours
       const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+      // ================================================
+      // 1. PENDING / PROCESSING transactions (last 24h)
+      // ================================================
       const pendingTransactions = await Transaction.find({
-        status: { $in: ['Pending', 'Processing'] },
+        status: { $in: ['Pending', 'Processing', 'pending', 'processing'] },
         createdAt: { $gte: oneDayAgo },
-        type: { $in: ['Electricity Purchase', 'Data Purchase', 'Airtime Purchase', 'Cable TV Subscription'] }
-      }).limit(50);
-      
-      if (pendingTransactions.length === 0) return;
-      
-      console.log(`🔍 Found ${pendingTransactions.length} pending transactions to requery`);
-      
-      for (const transaction of pendingTransactions) {
-        const requestId = transaction.reference || transaction.transactionId;
-        
-        // Skip if we already requeried this in last 30 seconds
-        const lastRequery = pendingTransactionsCache.get(requestId);
-        if (lastRequery && (Date.now() - lastRequery) < 30000) {
-          continue;
+        type: {
+          $in: [
+            'Electricity Purchase',
+            'Data Purchase',
+            'Airtime Purchase',
+            'Cable TV Subscription',
+            'International Airtime Purchase',
+            'Education Purchase',
+            'Insurance Purchase'
+          ]
         }
-        
+      }).limit(50);
+
+      // ================================================
+      // 2. RECENTLY SUCCESSFUL transactions (last 10 min)
+      //    To detect VTpass downgrading Successful → Pending / Failed
+      // ================================================
+      const recentSuccessful = await Transaction.find({
+        status: 'Successful',
+        createdAt: { $gte: tenMinutesAgo },
+        'metadata.requeryFinalized': { $ne: true },
+        type: {
+          $in: [
+            'Electricity Purchase',
+            'Data Purchase',
+            'Airtime Purchase',
+            'Cable TV Subscription',
+            'International Airtime Purchase',
+            'Education Purchase',
+            'Insurance Purchase'
+          ]
+        }
+      }).limit(30);
+
+      const allToRequery = [...pendingTransactions, ...recentSuccessful];
+
+      if (allToRequery.length === 0) return;
+
+      console.log(`🔍 [BG-REQUERY] Found ${pendingTransactions.length} pending + ${recentSuccessful.length} recent-successful = ${allToRequery.length} to requery`);
+
+      for (const transaction of allToRequery) {
+        const requestId = transaction.reference || transaction.transactionId;
+        if (!requestId) continue;
+
+        // Cooldown: 30s normally, 5 min for VTpass balance issues, 2 min for already-successful
+        const lastRequery = pendingTransactionsCache.get(requestId);
+        let requeryCooldown = 30000;
+        if (transaction.metadata?.vtpassBalanceError) requeryCooldown = 300000;
+        if (transaction.status === 'Successful') requeryCooldown = 120000;
+
+        if (lastRequery && (Date.now() - lastRequery) < requeryCooldown) continue;
         pendingTransactionsCache.set(requestId, Date.now());
-        
+
         // Requery VTpass
         const requeryResult = await vtpassRequery(requestId);
-        
-        if (requeryResult.success && requeryResult.data) {
-          const vtpassData = requeryResult.data;
-          const transactionStatus = vtpassData.content?.transactions?.status || vtpassData.status;
-          
-          // Update transaction status based on VTpass response
-          if (transactionStatus === 'delivered') {
+        if (!requeryResult.success || !requeryResult.interpretation) {
+          console.log(`⚠️ [BG-REQUERY] Requery failed for ${requestId}`);
+          continue;
+        }
+
+        const interp = requeryResult.interpretation;
+        console.log(`🎯 [BG-REQUERY] ${requestId}: status=${interp.status} action=${interp.action} (txn.status=${transaction.status})`);
+
+        // ================================================
+        // ✅ DELIVERED
+        // ================================================
+        if (interp.isDelivered && interp.status === 'Successful') {
+          if (transaction.status !== 'Successful') {
             transaction.status = 'Successful';
+            transaction.metadata = transaction.metadata || {};
             transaction.metadata.vtpassRequeryStatus = 'delivered';
             transaction.metadata.requeriedAt = new Date();
+            transaction.metadata.vtpassRequeryResponse = requeryResult.data;
+
+            if (requeryResult.data?.purchased_code || requeryResult.data?.token) {
+              const rawToken = requeryResult.data.purchased_code || requeryResult.data.token;
+              transaction.metadata.token = String(rawToken)
+                .replace('Token : ', '')
+                .replace('Token:', '')
+                .trim();
+            }
+
             await transaction.save();
-            console.log(`✅ Transaction ${requestId} updated to Successful via requery`);
-            
-            // Create notification
+            console.log(`✅ [BG-REQUERY] ${requestId} → Successful`);
+
             try {
               await Notification.create({
                 recipient: transaction.userId,
                 title: "Transaction Completed ✅",
                 message: `Your ${transaction.type} of ₦${transaction.amount} has been confirmed.`,
                 type: 'transaction',
-                isRead: false
+                isRead: false,
+                metadata: { transactionId: transaction._id, requeryConfirmed: true }
               });
             } catch (notifError) {
               console.error('Notification error:', notifError.message);
             }
-          } else if (transactionStatus === 'failed') {
-            transaction.status = 'Failed';
-            transaction.metadata.vtpassRequeryStatus = 'failed';
-            transaction.metadata.requeriedAt = new Date();
+          } else {
+            // Already Successful and confirmed by VTpass → mark finalized (stop rechecking)
+            transaction.metadata = transaction.metadata || {};
+            transaction.metadata.requeryFinalized = true;
+            transaction.metadata.finalizedAt = new Date();
             await transaction.save();
-            console.log(`❌ Transaction ${requestId} updated to Failed via requery`);
+            console.log(`✅ [BG-REQUERY] ${requestId} — finalized`);
           }
         }
+
+        // ================================================
+        // 🔴 DOWNGRADE: Successful → Pending
+        // ================================================
+        else if (interp.isPending && transaction.status === 'Successful') {
+          console.log(`⚠️ [BG-REQUERY] ${requestId} — VTpass FLIPPED Successful → Pending!`);
+
+          transaction.status = 'Pending';
+          transaction.metadata = transaction.metadata || {};
+          transaction.metadata.vtpassRequeryStatus = 'downgraded_to_pending';
+          transaction.metadata.downgradedAt = new Date();
+          transaction.metadata.downgradedFrom = 'Successful';
+          transaction.metadata.vtpassRequeryResponse = requeryResult.data;
+          transaction.metadata.requiresAdminReview = true;
+          await transaction.save();
+
+          try {
+            await Notification.create({
+              recipient: transaction.userId,
+              title: "Transaction Under Review ⏳",
+              message: `Your ${transaction.type} of ₦${transaction.amount} is being re-verified. We'll update you shortly.`,
+              type: 'transaction_pending',
+              isRead: false,
+              metadata: { transactionId: transaction._id, downgraded: true }
+            });
+          } catch (notifError) {
+            console.error('Notification error:', notifError.message);
+          }
+        }
+
+        // ================================================
+        // 🔴 DOWNGRADE: Successful → Failed (code 091 = refund)
+        // ================================================
+        else if (interp.isFailed && interp.action === 'REFUND_USER' && transaction.status === 'Successful') {
+          console.log(`⚠️ [BG-REQUERY] ${requestId} — VTpass FLIPPED Successful → Failed! Refunding.`);
+
+          const session2 = await mongoose.startSession();
+          session2.startTransaction();
+          try {
+            const u = await User.findById(transaction.userId).session(session2);
+            if (u) {
+              const before = u.walletBalance;
+              u.walletBalance += transaction.amount;
+              await u.save({ session: session2 });
+
+              transaction.status = 'Failed';
+              transaction.metadata = transaction.metadata || {};
+              transaction.metadata.vtpassRequeryStatus = 'downgraded_to_failed';
+              transaction.metadata.downgradedAt = new Date();
+              transaction.metadata.downgradedFrom = 'Successful';
+              transaction.metadata.refundedAt = new Date();
+              transaction.metadata.refundReason = interp.description;
+              transaction.metadata.requiresAdminReview = true;
+              await transaction.save({ session: session2 });
+
+              await Transaction.create([{
+                userId: u._id,
+                type: 'Refund Credit',
+                amount: transaction.amount,
+                status: 'Successful',
+                description: `Auto-refund: VTpass downgraded txn ${transaction.reference}`,
+                balanceBefore: before,
+                balanceAfter: u.walletBalance,
+                reference: `REFUND_DOWNGRADE_${transaction.reference}_${Date.now()}`,
+                metadata: { originalTransactionId: transaction._id, autoDowngradeRefund: true }
+              }], { session: session2 });
+
+              await session2.commitTransaction();
+
+              try {
+                await Notification.create({
+                  recipient: transaction.userId,
+                  title: "Transaction Reversed — Refunded 💰",
+                  message: `Your ${transaction.type} of ₦${transaction.amount} was reversed. Amount refunded to wallet.`,
+                  type: 'transaction',
+                  isRead: false,
+                  metadata: { transactionId: transaction._id, refunded: true }
+                });
+              } catch (e) { console.error('Notif error:', e.message); }
+            } else {
+              await session2.abortTransaction();
+            }
+          } catch (refundErr) {
+            await session2.abortTransaction();
+            console.error('Downgrade refund error:', refundErr.message);
+          } finally {
+            session2.endSession();
+          }
+        }
+
+        // ================================================
+        // ❌ NORMAL FAILURE → REFUND (was pending, VTpass says 091)
+        // ================================================
+        else if (interp.isFailed && interp.action === 'REFUND_USER') {
+          console.log(`💰 [BG-REQUERY] ${requestId} → REFUNDING USER (code 091)`);
+
+          const session3 = await mongoose.startSession();
+          session3.startTransaction();
+          try {
+            const u = await User.findById(transaction.userId).session(session3);
+            if (u) {
+              const before = u.walletBalance;
+              u.walletBalance += transaction.amount;
+              await u.save({ session: session3 });
+
+              transaction.status = 'Failed';
+              transaction.metadata = transaction.metadata || {};
+              transaction.metadata.vtpassRequeryStatus = 'failed_refunded';
+              transaction.metadata.requeriedAt = new Date();
+              transaction.metadata.refundedAt = new Date();
+              transaction.metadata.refundReason = interp.description;
+              await transaction.save({ session: session3 });
+
+              await Transaction.create([{
+                userId: u._id,
+                type: 'Refund Credit',
+                amount: transaction.amount,
+                status: 'Successful',
+                description: `Refund for failed transaction ${transaction.reference}: ${interp.description}`,
+                balanceBefore: before,
+                balanceAfter: u.walletBalance,
+                reference: `REFUND_${transaction.reference}_${Date.now()}`,
+                metadata: { originalTransactionId: transaction._id, requeryRefund: true }
+              }], { session: session3 });
+
+              await session3.commitTransaction();
+
+              try {
+                await Notification.create({
+                  recipient: transaction.userId,
+                  title: "Transaction Refunded 💰",
+                  message: `Your ${transaction.type} of ₦${transaction.amount} failed. Refund credited to your wallet.`,
+                  type: 'transaction',
+                  isRead: false
+                });
+              } catch (e) { console.error('Notif error:', e.message); }
+
+              console.log(`✅ [BG-REQUERY] ${requestId} → Refunded user`);
+            } else {
+              await session3.abortTransaction();
+            }
+          } catch (refundErr) {
+            await session3.abortTransaction();
+            console.error(`❌ [BG-REQUERY] Refund error:`, refundErr.message);
+          } finally {
+            session3.endSession();
+          }
+        }
+
+        // ================================================
+        // ⚠️ VTpass failed but user debited → keep Pending for admin
+        // ================================================
+        else if (interp.isFailed && interp.action === 'KEEP_DEBIT_FLAG_FAILED') {
+          console.log(`⚠️ [BG-REQUERY] ${requestId} — VTpass failed, user debited. Keeping Pending for admin.`);
+
+          transaction.metadata = transaction.metadata || {};
+          transaction.metadata.vtpassRequeryStatus = 'failed_but_debited';
+          transaction.metadata.requeriedAt = new Date();
+          transaction.metadata.requiresAdminReview = true;
+          transaction.metadata.vtpassFailCode = interp.code;
+          transaction.metadata.vtpassFailDescription = interp.description;
+          await transaction.save();
+        }
+
+        // ================================================
+        // 🔄 STILL PENDING → leave for next cycle
+        // ================================================
+        else {
+          transaction.metadata = transaction.metadata || {};
+          transaction.metadata.vtpassRequeryStatus = 'still_pending';
+          transaction.metadata.requeriedAt = new Date();
+          transaction.metadata.lastRequeryAction = interp.action;
+          await transaction.save();
+          console.log(`🔄 [BG-REQUERY] ${requestId} still pending (${interp.action})`);
+        }
       }
-      
-      // Clean old cache entries (older than 1 hour)
+
+      // Clean old cache entries
       for (const [key, timestamp] of pendingTransactionsCache.entries()) {
         if (Date.now() - timestamp > 3600000) {
           pendingTransactionsCache.delete(key);
         }
       }
-      
+
     } catch (error) {
-      console.error('Background requery error:', error.message);
+      console.error('❌ [BG-REQUERY] Error:', error.message);
     }
-  }, 30000); // Run every 30 seconds
+  }, 30000);
 };
 
 // Start the background service when server starts
@@ -7778,84 +8299,7 @@ app.post('/api/admin/service-toggle', adminProtect, async (req, res) => {
   }
 });
 
-// ==================== MAINTENANCE STATUS - FIXED ====================
-// @desc    Get maintenance status with admin check
-// @route   GET /api/maintenance-status
-// @access  Public (with admin detection)
-app.get('/api/maintenance-status', async (req, res) => {
-  try {
-    console.log('🔧 Maintenance status check from:', req.ip);
-    
-    const settings = await Settings.findOne().lean();
-    
-    // Check if the requester is an admin (try to decode token)
-    let isAdmin = false;
-    let adminDetails = {};
-    
-    const token = req.headers.authorization?.split(' ')[1];
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        if (decoded && decoded.id) {
-          const user = await User.findById(decoded.id).select('isAdmin role fullName email isSuperAdmin').lean();
-          if (user && (user.isAdmin === true || user.role === 'admin' || user.role === 'super_admin' || user.isSuperAdmin === true)) {
-            isAdmin = true;
-            adminDetails = {
-              name: user.fullName,
-              email: user.email,
-              role: user.role || 'admin'
-            };
-            console.log('👑 Admin user detected:', user.email);
-          }
-        }
-      } catch (tokenError) {
-        // Token invalid - not admin
-        console.log('⚠️ Token validation failed:', tokenError.message);
-      }
-    }
-    
-    const response = {
-      success: true,
-      maintenanceMode: settings?.isMaintenanceMode || false,
-      message: settings?.maintenanceMessage || '',
-      isAdmin: isAdmin,
-      adminDetails: adminDetails,
-      timestamp: new Date().toISOString(),
-      readOnlyAllowed: true,
-      allowedEndpoints: [
-        'View Balance',
-        'View Transactions',
-        'View Commission Balance',
-        'View Notifications',
-        'View Beneficiaries'
-      ],
-      blockedActions: [
-        'New Transactions',
-        'Airtime Purchase',
-        'Data Purchase',
-        'Electricity Bill Payment',
-        'Cable TV Subscription',
-        'International Airtime',
-        'Education Purchase',
-        'Insurance Purchase',
-        'Money Transfer',
-        'Wallet Funding'
-      ]
-    };
-    
-    res.json(response);
-    
-  } catch (error) {
-    console.error('❌ Maintenance status error:', error);
-    res.json({
-      success: false,
-      maintenanceMode: false,
-      message: 'Unable to fetch maintenance status',
-      timestamp: new Date().toISOString(),
-      readOnlyAllowed: false
-    });
-  }
-});
+
 
 // ==================== REGISTRATIONS BY DATE RANGE ====================
 // @desc    Get registrations by date range
@@ -13990,20 +14434,31 @@ app.post('/api/vtpass/airtime/purchase',
       
       console.log('VTPass Response:', JSON.stringify(vtpassResult, null, 2));
       
-      let transactionStatus = 'Failed';
+          // ================================================
+      // 🔥 INTERPRET VTPASS RESPONSE PROPERLY
+      // ================================================
+      const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
+      
+      console.log(`🎯 [AIRTIME] VTpass interpretation:`, {
+        code: interpretation.code,
+        innerStatus: interpretation.innerStatus,
+        status: interpretation.status,
+        action: interpretation.action,
+        isDelivered: interpretation.isDelivered,
+        isPending: interpretation.isPending,
+        isFailed: interpretation.isFailed
+      });
+      
+      let transactionStatus = interpretation.status; // 'Successful' | 'Pending' | 'Failed'
       let newBalance = balanceAfter;
       
-      // Handle VTpass response
-      if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
-        transactionStatus = 'Successful';
-        // Balance already deducted above, just update status
-        newBalance = balanceAfter;
-        
-        // Calculate and add commission
+      // ================================================
+      // ✅ DELIVERED — success + commission + notification
+      // ================================================
+      if (interpretation.isDelivered && interpretation.status === 'Successful') {
         await calculateAndAddCommission(userId, amount, network, session)
           .catch(err => console.log('⚠️ Airtime commission calculation failed:', err.message));
         
-        // Create notification
         try {
           await Notification.create({
             recipient: userId,
@@ -14011,25 +14466,87 @@ app.post('/api/vtpass/airtime/purchase',
             message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
             type: 'transaction',
             isRead: false,
-            metadata: {
-              phone: phone,
-              amount: amount,
-              network: network,
-              newBalance: newBalance
-            }
+            metadata: { phone, amount, network, newBalance, vtpassCode: interpretation.code }
           });
         } catch (notificationError) {
           console.error('Error creating transaction notification:', notificationError);
         }
         
-        console.log(`✅ AIRTIME SUCCESS: ${network} - ₦${amount} to ${phone}`);
+        console.log(`✅ [AIRTIME] SUCCESS: ${network} - ₦${amount} to ${phone}`);
+      }
+      // ================================================
+      // 🔄 PENDING — user debited, awaiting VTpass confirmation
+      // ================================================
+      else if (interpretation.isPending) {
+        transactionStatus = 'Pending';
+        console.log(`🔄 [AIRTIME] PENDING: User debited ₦${amount}, awaiting VTpass. Code: ${interpretation.code}`);
         
-      } else {
-        // VTpass failed - user is already debited
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Airtime Purchase Pending ⏳",
+            message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. We'll notify you once confirmed.`,
+            type: 'transaction_pending',
+            isRead: false,
+            metadata: { phone, amount, network, vtpassCode: interpretation.code, action: interpretation.action }
+          });
+        } catch (notificationError) {
+          console.error('Error creating pending notification:', notificationError);
+        }
+      }
+      // ================================================
+      // ⚠️ CODE 018 — VTpass wallet low → keep pending, alert admin
+      // ================================================
+      else if (interpretation.action === 'ADMIN_ALERT_KEEP_PENDING') {
+        transactionStatus = 'Pending';
+        console.log(`🚨 [AIRTIME] VTpass LOW BALANCE — user debited ₦${amount}, kept pending`);
+        
+        try {
+          const alert = new Alert({
+            type: 'VTPASS_LOW_BALANCE',
+            title: 'VTpass Wallet Low Balance Alert',
+            message: `VTpass wallet low balance detected. User ${userId} debited ₦${amount} for airtime ${phone}.`,
+            severity: 'CRITICAL',
+            data: { serviceID: network, phone, amount, userId: userId.toString() }
+          });
+          await alert.save();
+        } catch (alertErr) {
+          console.error('Alert save error:', alertErr.message);
+        }
+      }
+      // ================================================
+      // ❌ EXPLICIT FAILURE (code 091 = not processed → refund)
+      // ================================================
+      else if (interpretation.isFailed && interpretation.action === 'REFUND_USER') {
         transactionStatus = 'Failed';
-        console.log(`❌ VTPASS FAILED: User already debited ₦${amount}, service not delivered`);
+        // VTpass says NOT processed → refund user
+        const refundAmount = amount;
+        user.walletBalance += refundAmount;
+        newBalance = user.walletBalance;
+        await user.save({ session });
         
-        // Create failure notification
+        console.log(`💰 [AIRTIME] REFUNDED ₦${refundAmount} to user (VTpass code 091)`);
+        
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Airtime Purchase Failed — Refunded 💰",
+            message: `Your airtime purchase of ₦${amount} failed. ₦${refundAmount} has been refunded to your wallet.`,
+            type: 'transaction',
+            isRead: false,
+            metadata: { phone, amount, network, refunded: true }
+          });
+        } catch (notificationError) {
+          console.error('Error creating refund notification:', notificationError);
+        }
+      }
+      // ================================================
+      // ⚠️ EXPLICIT FAILURE (VTpass failed, user was debited, no refund)
+      // ================================================
+      else {
+        transactionStatus = 'Failed';
+        console.log(`❌ [AIRTIME] FAILED: User debited ₦${amount}, code ${interpretation.code}: ${interpretation.description}`);
+        
         try {
           await Notification.create({
             recipient: userId,
@@ -14037,22 +14554,24 @@ app.post('/api/vtpass/airtime/purchase',
             message: `Your wallet was debited ₦${amount} for airtime to ${phone}, but delivery failed. Our team will investigate.`,
             type: 'transaction_issue',
             isRead: false,
-            metadata: { phone: phone, amount: amount, network: network }
+            metadata: { phone, amount, network, vtpassCode: interpretation.code }
           });
         } catch (notificationError) {
           console.error('Error creating notification:', notificationError);
         }
       }
       
-      // Create transaction record (user already debited)
+      // ================================================
+      // CREATE TRANSACTION RECORD
+      // ================================================
       const newTransaction = await createTransaction(
         userId,
         amount,
         'Airtime Purchase',
         transactionStatus,
-        `Airtime purchase for ${phone} on ${network}${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}`,
+        `Airtime purchase for ${phone} on ${network}${transactionStatus === 'Failed' ? ' - USER DEBITED' : ''}${transactionStatus === 'Pending' ? ' - AWAITING VTPASS' : ''}`,
         balanceBefore,
-        balanceAfter,
+        newBalance,
         session,
         false,
         req.authenticationMethod,
@@ -14062,21 +14581,30 @@ app.post('/api/vtpass/airtime/purchase',
           network: network,
           userDebited: true,
           debitAmount: amount,
-          vtpassDelivered: transactionStatus === 'Successful'
+          vtpassDelivered: interpretation.isDelivered,
+          vtpassCode: interpretation.code,
+          vtpassInnerStatus: interpretation.innerStatus,
+          vtpassAction: interpretation.action,
+          vtpassDescription: interpretation.description,
+          needsRequery: interpretation.needsRequery,
+          vtpassResponse: vtpassResult.data,
+          pendingSince: transactionStatus === 'Pending' ? new Date() : null
         }
       );
       
       await session.commitTransaction();
       
-      console.log(`✅ AIRTIME TRANSACTION COMPLETE: ${network} - ₦${amount} to ${phone} - Status: ${transactionStatus} - User debited: true`);
+      console.log(`✅ [AIRTIME] COMPLETE: ${network} - ₦${amount} → Status: ${transactionStatus} | VTpass: ${interpretation.code}/${interpretation.innerStatus}`);
       
-      // Return response based on VTpass result
+      // ================================================
+      // RETURN RESPONSE
+      // ================================================
       if (transactionStatus === 'Successful') {
-        res.json({
+        return res.json({
           success: true,
           message: `Airtime purchase successful! ₦${amount} sent to ${phone}.`,
           transactionId: newTransaction._id,
-          status: newTransaction.status,
+          status: 'Successful',
           newBalance: newBalance,
           phone: phone,
           network: network,
@@ -14084,12 +14612,28 @@ app.post('/api/vtpass/airtime/purchase',
           userDebited: true,
           amountDebited: amount
         });
+      } else if (transactionStatus === 'Pending') {
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. You'll be notified once confirmed.`,
+          transactionId: newTransaction._id,
+          status: 'Pending',
+          newBalance: newBalance,
+          phone: phone,
+          network: network,
+          amount: amount,
+          userDebited: true,
+          amountDebited: amount,
+          isPending: true,
+          needsRequery: interpretation.needsRequery
+        });
       } else {
-        res.status(400).json({
+        return res.status(400).json({
           success: false,
           message: `Your wallet was debited ₦${amount} but airtime delivery failed. Please contact support.`,
           transactionId: newTransaction._id,
-          status: newTransaction.status,
+          status: 'Failed',
           newBalance: newBalance,
           phone: phone,
           network: network,
@@ -14280,18 +14824,30 @@ app.post('/api/vtpass/data/purchase',
 
       console.log('📡 Calling VTpass for Data:', { serviceID, phone, variationCode, requestId });
 
-      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+           const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
-      let transactionStatus = 'Failed';
+      // ================================================
+      // 🔥 INTERPRET VTPASS RESPONSE PROPERLY
+      // ================================================
+      const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
+      
+      console.log(`🎯 [DATA] VTpass interpretation:`, {
+        code: interpretation.code,
+        innerStatus: interpretation.innerStatus,
+        status: interpretation.status,
+        action: interpretation.action,
+        isDelivered: interpretation.isDelivered,
+        isPending: interpretation.isPending,
+        isFailed: interpretation.isFailed
+      });
+
+      let transactionStatus = interpretation.status;
       let finalBalance = balanceAfter;
 
-      // Handle successful response
-      if (vtpassResult.success && vtpassResult.data?.code === '000') {
-        transactionStatus = 'Successful';
-        // Balance already deducted above, just update status
-        finalBalance = balanceAfter;
-
-        // SAVE TRANSACTION WITH READABLE PLAN NAME (user already debited)
+      // ================================================
+      // ✅ DELIVERED
+      // ================================================
+      if (interpretation.isDelivered && interpretation.status === 'Successful') {
         const newTransaction = await createTransaction(
           userId,
           amount,
@@ -14313,15 +14869,17 @@ app.post('/api/vtpass/data/purchase',
             dataPlan: planName,
             userDebited: true,
             debitAmount: amount,
-            vtpassDelivered: true
+            vtpassDelivered: true,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassResponse: vtpassResult.data
           }
         );
 
-        // Calculate and add commission
         await calculateAndAddCommission(userId, amount, serviceID, session)
           .catch(err => console.log('⚠️ Data commission calculation failed:', err.message));
 
-        // Create success notification
         try {
           await Notification.create({
             recipient: userId,
@@ -14329,23 +14887,14 @@ app.post('/api/vtpass/data/purchase',
             message: `${planName} data bundle purchased for ${phone} (${network.toUpperCase()}). New balance: ₦${balanceAfter.toFixed(2)}`,
             type: 'transaction',
             isRead: false,
-            metadata: {
-              phone: phone,
-              amount: amount,
-              network: network,
-              planName: planName,
-              variationCode: variationCode,
-              newBalance: balanceAfter,
-              userDebited: true
-            }
+            metadata: { phone, amount, network, planName, newBalance: balanceAfter, userDebited: true }
           });
         } catch (notificationError) {
           console.error('Error creating notification:', notificationError);
         }
 
         await session.commitTransaction();
-
-        console.log(`✅ DATA PURCHASE COMPLETE: ${network} - ${planName} to ${phone} - User debited: true`);
+        console.log(`✅ [DATA] SUCCESS: ${network} - ${planName} to ${phone}`);
 
         return res.json({
           success: true,
@@ -14353,7 +14902,7 @@ app.post('/api/vtpass/data/purchase',
           newBalance: balanceAfter,
           vtpassResponse: vtpassResult.data,
           requestId: requestId,
-          transactionId: newTransaction._id || vtpassResult.data.content?.transactions?.transactionId || requestId,
+          transactionId: newTransaction._id,
           planName: planName,
           phone: phone,
           network: network,
@@ -14361,26 +14910,26 @@ app.post('/api/vtpass/data/purchase',
           userDebited: true,
           amountDebited: amount
         });
-      } 
-      
-      // Handle duplicate request_id response from VTpass
-      else if (vtpassResult.data?.code === '019' || 
-               vtpassResult.data?.response_description?.includes('DUPLICATE') ||
-               vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
-        
-        console.log('🔁 VTpass says duplicate, checking if transaction was successful');
-        
-        // Check if transaction already exists in our database
+      }
+
+      // ================================================
+      // 🔄 PENDING (includes 019 duplicate, 099 processing, 089, code 000 with pending status)
+      // ================================================
+      else if (interpretation.isPending) {
+        // Check if a successful transaction already exists for this requestId
         const existingTx = await Transaction.findOne({
           $or: [
             { reference: requestId },
+            { transactionId: requestId },
             { 'metadata.request_id': requestId }
-          ]
+          ],
+          status: 'Successful'
         }).session(session);
-        
-        if (existingTx && existingTx.status === 'Successful') {
+
+        if (existingTx) {
+          // Already successful — do NOT create duplicate
           await session.commitTransaction();
-          console.log(`✅ Duplicate request - returning existing successful transaction`);
+          console.log(`✅ [DATA] Duplicate request — existing successful transaction ${existingTx._id}`);
           return res.json({
             success: true,
             message: 'Data purchase already completed successfully',
@@ -14393,15 +14942,14 @@ app.post('/api/vtpass/data/purchase',
             amountDebited: amount
           });
         }
-        
-        // No existing transaction found, but user is already debited
-        // Create failed transaction record
-        const failedTransaction = await createTransaction(
+
+        // Create PENDING transaction (user already debited)
+        const pendingTx = await createTransaction(
           userId,
           amount,
           'Data Purchase',
-          'Failed',
-          `${network.toUpperCase()} Data Purchase for ${phone} - DUPLICATE (USER DEBITED)`,
+          'Pending',
+          `${network.toUpperCase()} Data Purchase for ${phone} - PENDING (awaiting VTpass)`,
           balanceBefore,
           balanceAfter,
           session,
@@ -14415,29 +14963,181 @@ app.post('/api/vtpass/data/purchase',
             network: network,
             userDebited: true,
             debitAmount: amount,
-            vtpassError: 'Duplicate transaction',
-            failureReason: 'VTpass returned duplicate error - USER DEBITED'
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassDescription: interpretation.description,
+            needsRequery: interpretation.needsRequery,
+            vtpassResponse: vtpassResult.data,
+            pendingSince: new Date()
           }
         );
-        
+
+        // Notify user (pending)
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Data Purchase Pending ⏳",
+            message: `Your ${planName} data purchase for ${phone} is being processed. We'll confirm shortly.`,
+            type: 'transaction_pending',
+            isRead: false,
+            metadata: { phone, amount, network, planName, action: interpretation.action }
+          });
+        } catch (notificationError) {
+          console.error('Error creating pending notification:', notificationError);
+        }
+
         await session.commitTransaction();
-        
-        return res.status(400).json({
-          success: false,
-          message: `Duplicate transaction detected. Your wallet was debited ₦${amount}. Please check your data balance.`,
-          code: 'DUPLICATE_TRANSACTION',
-          transactionId: failedTransaction._id,
+        console.log(`🔄 [DATA] PENDING: ${network} - ${planName} to ${phone} | code=${interpretation.code} inner=${interpretation.innerStatus}`);
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: `Your data purchase is being processed. We'll notify you once confirmed.`,
+          transactionId: pendingTx._id,
+          status: 'Pending',
+          newBalance: balanceAfter,
+          planName: planName,
+          phone: phone,
+          network: network,
+          amount: amount,
           userDebited: true,
           amountDebited: amount,
-          isFailed: true
+          isPending: true,
+          needsRequery: interpretation.needsRequery
         });
       }
-      
-      // Handle failed response - user is already debited
+
+      // ================================================
+      // ⚠️ VTpass low balance → pending + admin alert
+      // ================================================
+      else if (interpretation.action === 'ADMIN_ALERT_KEEP_PENDING') {
+        const pendingTx = await createTransaction(
+          userId,
+          amount,
+          'Data Purchase',
+          'Pending',
+          `${network.toUpperCase()} Data Purchase for ${phone} - PENDING (VTpass low balance)`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          req.authenticationMethod || 'pin',
+          requestId,
+          { 
+            phone, variation_code: variationCode, plan: planName, network,
+            userDebited: true, debitAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
+            vtpassBalanceError: true,
+            needsRequery: false, // no point requerying
+            vtpassResponse: vtpassResult.data
+          }
+        );
+
+        try {
+          const alert = new Alert({
+            type: 'VTPASS_LOW_BALANCE',
+            title: 'VTpass Wallet Low Balance Alert',
+            message: `VTpass wallet low balance. User ${userId} debited ₦${amount} for data ${phone}.`,
+            severity: 'CRITICAL',
+            data: { serviceID, phone, amount, userId: userId.toString() }
+          });
+          await alert.save();
+        } catch (alertErr) {
+          console.error('Alert save error:', alertErr.message);
+        }
+
+        await session.commitTransaction();
+        console.log(`🚨 [DATA] VTpass LOW BALANCE — user debited ₦${amount}, kept pending`);
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: `Service temporarily unavailable. Your payment is recorded and will be processed.`,
+          transactionId: pendingTx._id,
+          status: 'Pending',
+          newBalance: balanceAfter,
+          userDebited: true,
+          amountDebited: amount,
+          isPending: true
+        });
+      }
+
+      // ================================================
+      // ❌ REFUND_USER (code 091 — VTpass not processed)
+      // ================================================
+      else if (interpretation.isFailed && interpretation.action === 'REFUND_USER') {
+        // Refund user
+        user.walletBalance += amount;
+        finalBalance = user.walletBalance;
+        await user.save({ session });
+
+        const refundedTx = await createTransaction(
+          userId,
+          amount,
+          'Data Purchase',
+          'Failed',
+          `${network.toUpperCase()} Data Purchase for ${phone} - FAILED (REFUNDED)`,
+          balanceBefore,
+          finalBalance,
+          session,
+          false,
+          req.authenticationMethod || 'pin',
+          requestId,
+          { 
+            phone, variation_code: variationCode, plan: planName, network,
+            userDebited: false, refunded: true,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
+            vtpassResponse: vtpassResult.data
+          }
+        );
+
+        // Refund credit transaction
+        await Transaction.create([{
+          userId,
+          type: 'Refund Credit',
+          amount: amount,
+          status: 'Successful',
+          description: `Refund for failed data purchase ${requestId}`,
+          balanceBefore: balanceAfter,
+          balanceAfter: finalBalance,
+          reference: `REFUND_${requestId}_${Date.now()}`,
+          metadata: { originalTransactionId: refundedTx._id, requeryRefund: true }
+        }], { session });
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Data Purchase Failed — Refunded 💰",
+            message: `Your data purchase of ₦${amount} failed. Refund credited to your wallet.`,
+            type: 'transaction',
+            isRead: false,
+            metadata: { phone, amount, network, refunded: true }
+          });
+        } catch (notificationError) {
+          console.error('Error creating refund notification:', notificationError);
+        }
+
+        await session.commitTransaction();
+        console.log(`💰 [DATA] REFUNDED ₦${amount} to user (code 091)`);
+
+        return res.json({
+          success: false,
+          message: `Data purchase failed. ₦${amount} has been refunded to your wallet.`,
+          transactionId: refundedTx._id,
+          status: 'Failed',
+          newBalance: finalBalance,
+          userDebited: false,
+          refunded: true
+        });
+      }
+
+      // ================================================
+      // ❌ EXPLICIT FAILURE (VTpass failed, user debited, no refund yet)
+      // ================================================
       else {
-        console.log(`❌ DATA PURCHASE FAILED: User already debited ₦${amount}, service not delivered`);
-        
-        // Create failed transaction record (user already debited)
         const failedTransaction = await createTransaction(
           userId,
           amount,
@@ -14451,26 +15151,34 @@ app.post('/api/vtpass/data/purchase',
           req.authenticationMethod || 'pin',
           requestId,
           { 
-            phone: phone,
-            variation_code: variationCode,
-            plan: planName,
-            network: network,
-            userDebited: true,
-            debitAmount: amount,
+            phone, variation_code: variationCode, plan: planName, network,
+            userDebited: true, debitAmount: amount,
             vtpassResponse: vtpassResult.data,
-            vtpassError: vtpassResult.data?.response_description || 'Unknown error',
-            failureReason: vtpassResult.data?.response_description || 'VTpass delivery failed - USER DEBITED'
+            vtpassCode: interpretation.code,
+            vtpassError: interpretation.description,
+            failureReason: `${interpretation.description} - USER DEBITED`
           }
         );
-        
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Data Purchase Issue ⚠️",
+            message: `Your wallet was debited ₦${amount} for data to ${phone}, but delivery failed. Our team will investigate.`,
+            type: 'transaction_issue',
+            isRead: false,
+            metadata: { phone, amount, network, vtpassCode: interpretation.code }
+          });
+        } catch (notificationError) {
+          console.error('Error creating notification:', notificationError);
+        }
+
         await session.commitTransaction();
-        
-        const msg = vtpassResult.data?.response_description || 'Data purchase failed';
-        console.log(`❌ DATA PURCHASE FAILED: ${msg} - User debited ₦${amount}`);
-        
+        console.log(`❌ [DATA] FAILED: ${interpretation.code} - ${interpretation.description} | User debited ₦${amount}`);
+
         return res.status(400).json({ 
           success: false, 
-          message: `${msg}. Your wallet was debited ₦${amount}. Please contact support if data was not delivered.`,
+          message: `${interpretation.description}. Your wallet was debited ₦${amount}. Please contact support if data was not delivered.`,
           vtpassResponse: vtpassResult.data,
           transactionId: failedTransaction._id,
           userDebited: true,
@@ -14920,7 +15628,7 @@ app.post('/api/vtpass/electricity/purchase',
           }
         }, 5000);
         
-        return res.status(202).json({
+        return res.status(200).json({
           success: true,
           message: `Your payment of ₦${amount} has been received and is being processed. You will receive confirmation shortly.`,
           transactionId: pendingTransaction._id,
@@ -14941,15 +15649,31 @@ app.post('/api/vtpass/electricity/purchase',
       });
 
       // SUCCESSFUL TRANSACTION (VTpass delivered)
-      if (vtpassData.code === '000') {
-        // Extract data
-        const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
-        const customerName = vtpassData.customerName || 'N/A';
-        const customerAddress = vtpassData.customerAddress || 'N/A';
-        const exchangeReference = vtpassData.exchangeReference || requestId;
-        const units = vtpassData.units || '0.00';
+           // ================================================
+      // 🔥 INTERPRET VTPASS RESPONSE PROPERLY
+      // ================================================
+      const interpretation = interpretVtpassResponse(vtpassData, 'purchase');
+      
+      console.log(`🎯 [ELECTRICITY] VTpass interpretation:`, {
+        code: interpretation.code,
+        innerStatus: interpretation.innerStatus,
+        status: interpretation.status,
+        action: interpretation.action,
+        isDelivered: interpretation.isDelivered,
+        isPending: interpretation.isPending,
+        isFailed: interpretation.isFailed
+      });
 
-        // Format token
+      // ================================================
+      // ✅ DELIVERED
+      // ================================================
+      if (interpretation.isDelivered && interpretation.status === 'Successful') {
+        const rawToken = vtpassData.purchased_code || vtpassData.token || vtpassData.Token || null;
+        const customerName = vtpassData.customerName || vtpassData.content?.Customer_Name || 'N/A';
+        const customerAddress = vtpassData.customerAddress || vtpassData.content?.Address || 'N/A';
+        const exchangeReference = vtpassData.exchangeReference || requestId;
+        const units = vtpassData.units || vtpassData.content?.Units || '0.00';
+
         let formattedToken = null;
         if (rawToken) {
           formattedToken = rawToken.toString()
@@ -14964,60 +15688,42 @@ app.post('/api/vtpass/electricity/purchase',
           }
         }
 
-        // Build metadata
         const metadata = {
-          serviceID: serviceID,
-          billersCode: billersCode,
-          variation_code: variation_code,
-          amount: amount.toFixed(2),
-          phone: phone,
-          meterNumber: billersCode,
+          serviceID, billersCode, variation_code,
+          amount: amount.toFixed(2), phone, meterNumber: billersCode,
           token: formattedToken || 'Check SMS',
-          customerName: customerName,
-          customerAddress: customerAddress,
-          exchangeReference: exchangeReference,
-          units: units,
+          customerName, customerAddress, exchangeReference, units,
           vtpassResponse: vtpassData,
-          serviceType: 'electricity',
-          provider: serviceID,
-          type: variation_code,
-          userDebited: true,
-          debitAmount: amount,
-          debitConfirmed: true,
-          vtpassDelivered: true
+          serviceType: 'electricity', provider: serviceID, type: variation_code,
+          userDebited: true, debitAmount: amount, debitConfirmed: true,
+          vtpassDelivered: true,
+          vtpassCode: interpretation.code,
+          vtpassInnerStatus: interpretation.innerStatus,
+          vtpassAction: interpretation.action
         };
 
-        // Create transaction (user already debited above)
         const transaction = new Transaction({
-          userId,
-          amount,
+          userId, amount,
           type: 'Electricity Purchase',
           status: 'Successful',
           transactionId: requestId,
           reference: requestId,
           description: `${serviceID.replace('-', ' ')} purchase - Successful`,
-          balanceBefore,
-          balanceAfter,
-          metadata: metadata,
-          isCommission: false,
-          service: 'electricity',
+          balanceBefore, balanceAfter,
+          metadata,
+          isCommission: false, service: 'electricity',
           authenticationMethod: req.authenticationMethod || 'pin',
           gateway: 'DalabaPay App',
-          userDebited: true,
-          debitConfirmed: true
+          userDebited: true, debitConfirmed: true
         });
 
         await transaction.save({ session });
 
-        // ADD COMMISSION CALCULATION
         await calculateAndAddCommission(userId, amount, serviceID, session)
           .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
 
         await session.commitTransaction();
 
-        console.log('✅ ELECTRICITY PURCHASE COMPLETE - User debited, service delivered');
-
-        // Create success notification
         try {
           await Notification.create({
             recipient: userId,
@@ -15031,6 +15737,8 @@ app.post('/api/vtpass/electricity/purchase',
           console.error('Notification error:', notifError.message);
         }
 
+        console.log('✅ [ELECTRICITY] DELIVERED — token issued');
+
         return res.json({
           success: true,
           message: 'Electricity purchased successfully!',
@@ -15038,65 +15746,260 @@ app.post('/api/vtpass/electricity/purchase',
           transactionId: requestId,
           reference: requestId,
           token: formattedToken || 'Check SMS',
-          customerName: customerName,
-          customerAddress: customerAddress,
+          customerName, customerAddress,
           meterNumber: billersCode,
-          units: units,
+          units,
           gateway: 'DalabaPay App',
-          balanceBefore: balanceBefore,
+          balanceBefore,
           vtpassResponse: vtpassData,
           userDebited: true,
           amountDebited: amount
         });
-      } 
-      
-      // VTpass returned an error - user is already debited
-      else {
-        // Create FAILED transaction (user is debited, service not delivered)
-        const failedTransaction = new Transaction({
+      }
+
+      // ================================================
+      // 🔄 PENDING (code 000 pending, 099, 089, 019, etc.)
+      // ================================================
+      else if (interpretation.isPending) {
+        const pendingTx = new Transaction({
+          userId, amount,
+          type: 'Electricity Purchase',
+          status: 'Pending',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - PENDING (awaiting VTpass)`,
+          balanceBefore, balanceAfter,
+          metadata: {
+            serviceID, billersCode, variation_code,
+            amount: amount.toFixed(2), phone, meterNumber: billersCode,
+            vtpassResponse: vtpassData,
+            serviceType: 'electricity', provider: serviceID, type: variation_code,
+            userDebited: true, debitAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassDescription: interpretation.description,
+            needsRequery: interpretation.needsRequery,
+            pendingSince: new Date()
+          },
+          isCommission: false, service: 'electricity',
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          userDebited: true, debitConfirmed: true
+        });
+
+        await pendingTx.save({ session });
+        await session.commitTransaction();
+
+        console.log(`🔄 [ELECTRICITY] PENDING: code=${interpretation.code} inner=${interpretation.innerStatus}`);
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Electricity Purchase Pending ⏳",
+            message: `Your electricity purchase of ₦${amount} for meter ${billersCode} is being processed. We'll confirm shortly.`,
+            type: 'transaction_pending',
+            isRead: false,
+            metadata: { meterNumber: billersCode, amount }
+          });
+        } catch (notifError) {
+          console.error('Notification error:', notifError.message);
+        }
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: `Your payment of ₦${amount} is being processed. You will receive confirmation shortly.`,
+          transactionId: pendingTx._id,
+          reference: requestId,
+          status: 'Pending',
+          newBalance: balanceAfter,
+          amountDebited: amount,
+          userDebited: true,
+          meterNumber: billersCode,
+          requiresRequery: interpretation.needsRequery
+        });
+      }
+
+      // ================================================
+      // ⚠️ VTpass low balance → pending + admin alert
+      // ================================================
+      else if (interpretation.action === 'ADMIN_ALERT_KEEP_PENDING') {
+        const pendingTx = new Transaction({
+          userId, amount,
+          type: 'Electricity Purchase',
+          status: 'Pending',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - PENDING (VTpass low balance)`,
+          balanceBefore, balanceAfter,
+          metadata: {
+            serviceID, billersCode, variation_code,
+            amount: amount.toFixed(2), phone, meterNumber: billersCode,
+            vtpassResponse: vtpassData,
+            serviceType: 'electricity', provider: serviceID, type: variation_code,
+            userDebited: true, debitAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
+            vtpassBalanceError: true,
+            needsRequery: false,
+            pendingSince: new Date()
+          },
+          isCommission: false, service: 'electricity',
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          userDebited: true, debitConfirmed: true
+        });
+
+        await pendingTx.save({ session });
+        await session.commitTransaction();
+
+        try {
+          const alert = new Alert({
+            type: 'VTPASS_LOW_BALANCE',
+            title: 'VTpass Wallet Low Balance Alert',
+            message: `VTpass wallet low. User ${userId} debited ₦${amount} for electricity ${billersCode}.`,
+            severity: 'CRITICAL',
+            data: { serviceID, billersCode, amount, userId: userId.toString() }
+          });
+          await alert.save();
+        } catch (alertErr) {
+          console.error('Alert save error:', alertErr.message);
+        }
+
+        console.log(`🚨 [ELECTRICITY] VTpass LOW BALANCE — pending, alert sent`);
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: 'Service temporarily unavailable. Your payment is recorded and will be processed.',
+          transactionId: pendingTx._id,
+          status: 'Pending',
+          newBalance: balanceAfter,
+          userDebited: true,
+          amountDebited: amount
+        });
+      }
+
+      // ================================================
+      // ❌ REFUND_USER (code 091)
+      // ================================================
+      else if (interpretation.isFailed && interpretation.action === 'REFUND_USER') {
+        user.walletBalance += amount;
+        await user.save({ session });
+
+        const refundedTx = new Transaction({
+          userId, amount,
+          type: 'Electricity Purchase',
+          status: 'Failed',
+          transactionId: requestId,
+          reference: requestId,
+          description: `${serviceID.replace('-', ' ')} purchase - FAILED (REFUNDED)`,
+          balanceBefore, balanceAfter: user.walletBalance,
+          metadata: {
+            serviceID, billersCode, variation_code,
+            amount: amount.toFixed(2), phone, meterNumber: billersCode,
+            vtpassResponse: vtpassData,
+            serviceType: 'electricity', provider: serviceID, type: variation_code,
+            userDebited: false, refunded: true,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description
+          },
+          service: 'electricity',
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App'
+        });
+        await refundedTx.save({ session });
+
+        await Transaction.create([{
           userId,
-          amount,
+          type: 'Refund Credit',
+          amount: amount,
+          status: 'Successful',
+          description: `Refund for failed electricity purchase ${requestId}`,
+          balanceBefore: balanceAfter,
+          balanceAfter: user.walletBalance,
+          reference: `REFUND_${requestId}_${Date.now()}`,
+          metadata: { originalTransactionId: refundedTx._id, requeryRefund: true }
+        }], { session });
+
+        await session.commitTransaction();
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Electricity Purchase Failed — Refunded 💰",
+            message: `Your electricity purchase of ₦${amount} failed. ₦${amount} has been refunded to your wallet.`,
+            type: 'transaction',
+            isRead: false,
+            metadata: { meterNumber: billersCode, amount, refunded: true }
+          });
+        } catch (notifError) {
+          console.error('Notification error:', notifError.message);
+        }
+
+        return res.json({
+          success: false,
+          message: `Electricity purchase failed. ₦${amount} has been refunded to your wallet.`,
+          transactionId: refundedTx._id,
+          status: 'Failed',
+          newBalance: user.walletBalance,
+          userDebited: false,
+          refunded: true
+        });
+      }
+
+      // ================================================
+      // ❌ EXPLICIT FAILURE (VTpass failed, user debited)
+      // ================================================
+      else {
+        const failedTransaction = new Transaction({
+          userId, amount,
           type: 'Electricity Purchase',
           status: 'Failed',
           transactionId: requestId,
           reference: requestId,
           description: `${serviceID.replace('-', ' ')} purchase - FAILED (USER DEBITED ₦${amount})`,
-          balanceBefore,
-          balanceAfter,
+          balanceBefore, balanceAfter,
           metadata: {
-            serviceID: serviceID,
-            billersCode: billersCode,
-            variation_code: variation_code,
-            amount: amount.toFixed(2),
-            phone: phone,
-            meterNumber: billersCode,
+            serviceID, billersCode, variation_code,
+            amount: amount.toFixed(2), phone, meterNumber: billersCode,
             vtpassResponse: vtpassData,
-            serviceType: 'electricity',
-            provider: serviceID,
-            type: variation_code,
-            userDebited: true,
-            debitAmount: amount,
-            vtpassError: vtpassData.response_description || 'VTpass delivery failed',
-            failureReason: vtpassData.response_description || 'Unknown error'
+            serviceType: 'electricity', provider: serviceID, type: variation_code,
+            userDebited: true, debitAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassError: interpretation.description,
+            failureReason: `${interpretation.description} - USER DEBITED`
           },
-          isFailed: true,
-          shouldShowAsFailed: true,
-          failureReason: vtpassData.response_description || 'VTpass delivery failed - USER DEBITED',
+          isFailed: true, shouldShowAsFailed: true,
+          failureReason: `${interpretation.description} - USER DEBITED`,
           gateway: 'DalabaPay App',
-          userDebited: true,
-          debitConfirmed: true
+          userDebited: true, debitConfirmed: true
         });
 
         await failedTransaction.save({ session });
         await session.commitTransaction();
 
-        console.log(`❌ VTPASS FAILED - User debited ₦${amount}, service not delivered`);
-
-        let errorMsg = vtpassData.response_description || 'Purchase failed';
+        let errorMsg = interpretation.description || 'Purchase failed';
         if (errorMsg.includes('BELOW MINIMUM AMOUNT')) {
           errorMsg = `Amount below minimum allowed. Minimum electricity purchase: ₦2000`;
         }
-        
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "Electricity Purchase Issue ⚠️",
+            message: `Your wallet was debited ₦${amount} for electricity but delivery failed. Our team will investigate.`,
+            type: 'transaction_issue',
+            isRead: false,
+            metadata: { meterNumber: billersCode, amount, vtpassCode: interpretation.code }
+          });
+        } catch (notifError) {
+          console.error('Notification error:', notifError.message);
+        }
+
+        console.log(`❌ [ELECTRICITY] FAILED: ${interpretation.code} - ${interpretation.description} | User debited ₦${amount}`);
+
         return res.status(400).json({ 
           success: false, 
           message: `${errorMsg}. Your wallet has been debited ₦${amount}. Please contact support if service was not delivered.`,
@@ -15108,7 +16011,7 @@ app.post('/api/vtpass/electricity/purchase',
           transactionId: failedTransaction._id
         });
       }
-      
+
     } catch (error) {
       await session.abortTransaction();
       console.error('💥 ELECTRICITY PURCHASE ERROR:', error.message);
@@ -17145,21 +18048,34 @@ app.post('/api/education/purchase', protect, verifyTransactionAuth,
       message: vtpassResult.data?.response_description
     });
 
-    const balanceBefore = user.walletBalance;
+       const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
 
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+    // 🔥 FIX #6: Use master interpreter instead of raw code === '000' check
+    const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
+    console.log(`🎯 [EDUCATION] VTpass interpretation:`, {
+      code: interpretation.code,
+      innerStatus: interpretation.innerStatus,
+      status: interpretation.status,
+      action: interpretation.action,
+      isDelivered: interpretation.isDelivered,
+      isPending: interpretation.isPending,
+      isFailed: interpretation.isFailed
+    });
+
+    // ================================================
+    // ✅ DELIVERED
+    // ================================================
+    if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
 
-      // Credit commission
-     
-await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceID is like 'waec' or 'jamb'
-  .catch(err => console.log('⚠️ Education commission calculation failed:', err.message));
-      // AUTO-CREATE TRANSACTION NOTIFICATION
+      await calculateAndAddCommission(userId, amount, serviceID, session)
+        .catch(err => console.log('⚠️ Education commission calculation failed:', err.message));
+
       try {
         await Notification.create({
           recipientId: userId,
@@ -17170,12 +18086,68 @@ await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceI
       } catch (notificationError) {
         console.error('Error creating transaction notification:', notificationError);
       }
-    } else {
+    }
+    // ================================================
+    // 🔄 PENDING — DO NOT debit, create pending record
+    // ================================================
+    else if (interpretation.isPending) {
       await session.abortTransaction();
+      session.endSession();
+
+      const pendingTx = new Transaction({
+        userId,
+        amount,
+        type: 'Education Purchase',
+        status: 'Pending',
+        description: `${serviceID.toUpperCase()} purchase for ${phone} - PENDING`,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceBefore, // NOT debited
+        reference: reference,
+        metadata: {
+          serviceID, variationCode, phone, profileId,
+          vtpassCode: interpretation.code,
+          vtpassInnerStatus: interpretation.innerStatus,
+          vtpassAction: interpretation.action,
+          vtpassDescription: interpretation.description,
+          needsRequery: interpretation.needsRequery,
+          userDebited: false,
+          pendingSince: new Date(),
+          vtpassResponse: vtpassResult.data
+        }
+      });
+      await pendingTx.save();
+
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Education Purchase Pending ⏳",
+          message: `Your ${serviceID.toUpperCase()} purchase is being processed. We'll notify you once confirmed.`,
+          isRead: false
+        });
+      } catch (e) { console.error('Notif error:', e.message); }
+
+      return res.status(200).json({
+        success: true,
+        pending: true,
+        message: 'Your education purchase is being processed. We\'ll notify you once confirmed.',
+        transactionId: pendingTx._id,
+        status: 'Pending',
+        userDebited: false
+      });
+    }
+    // ================================================
+    // ❌ FAILED
+    // ================================================
+    else {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(vtpassResult.status || 400).json({
         success: false,
-        message: vtpassResult.data?.response_description || 'Education purchase failed',
-        details: vtpassResult.data
+        message: interpretation.description || vtpassResult.data?.response_description || 'Education purchase failed',
+        details: vtpassResult.data,
+        code: interpretation.code,
+        isFailed: true,
+        userDebited: false
       });
     }
 
@@ -17206,15 +18178,21 @@ await calculateAndAddCommission(userId, amount, serviceID, session)  // serviceI
       tokens: vtpassResult.data?.content?.tokens || []
     });
 
-  } catch (error) {
-    await session.abortTransaction();
+   } catch (error) {
+    try {
+      await session.abortTransaction();
+    } catch (e) { /* ignore */ }
     console.error('❌ Error in education purchase:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Education purchase failed' 
-    });
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        success: false, 
+        message: 'Education purchase failed' 
+      });
+    }
   } finally {
-    session.endSession();
+    try {
+      await session.endSession();
+    } catch (e) { /* ignore — may already be ended */ }
   }
 });
 
@@ -17949,22 +18927,34 @@ app.post('/api/insurance/purchase', protect, verifyTransactionAuth,
 
     console.log('📦 VTpass Insurance Response:', JSON.stringify(vtpassResult, null, 2));
 
-    const balanceBefore = user.walletBalance;
+       const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
     let newBalance = balanceBefore;
 
-    if (vtpassResult.success && vtpassResult.data && vtpassResult.data.code === '000') {
+    // 🔥 FIX #7: Use master interpreter instead of raw code === '000' check
+    const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
+    console.log(`🎯 [INSURANCE] VTpass interpretation:`, {
+      code: interpretation.code,
+      innerStatus: interpretation.innerStatus,
+      status: interpretation.status,
+      action: interpretation.action,
+      isDelivered: interpretation.isDelivered,
+      isPending: interpretation.isPending,
+      isFailed: interpretation.isFailed
+    });
+
+    // ================================================
+    // ✅ DELIVERED
+    // ================================================
+    if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
 
-      // Credit commission
-     
-await calculateAndAddCommission(userId, amount, 'insurance', session)
-  .catch(err => console.log('⚠️ Insurance commission calculation failed:', err.message));
+      await calculateAndAddCommission(userId, amount, 'insurance', session)
+        .catch(err => console.log('⚠️ Insurance commission calculation failed:', err.message));
 
-      // Create notification
       try {
         await Notification.create({
           recipientId: userId,
@@ -17975,12 +18965,70 @@ await calculateAndAddCommission(userId, amount, 'insurance', session)
       } catch (notificationError) {
         console.error('Error creating insurance notification:', notificationError);
       }
-    } else {
+    }
+    // ================================================
+    // 🔄 PENDING — DO NOT debit
+    // ================================================
+    else if (interpretation.isPending) {
       await session.abortTransaction();
+      session.endSession();
+
+      const pendingTx = new Transaction({
+        userId,
+        amount,
+        type: 'Insurance Purchase',
+        status: 'Pending',
+        description: `Insurance for ${plateNumber} - PENDING`,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceBefore, // NOT debited
+        reference: reference,
+        metadata: {
+          variationCode, phone, insuredName, plateNumber,
+          vehicleMake, vehicleModel, vehicleColor, yearOfMake,
+          state, lga, engineCapacity, chasisNumber, email,
+          vtpassCode: interpretation.code,
+          vtpassInnerStatus: interpretation.innerStatus,
+          vtpassAction: interpretation.action,
+          vtpassDescription: interpretation.description,
+          needsRequery: interpretation.needsRequery,
+          userDebited: false,
+          pendingSince: new Date(),
+          vtpassResponse: vtpassResult.data
+        }
+      });
+      await pendingTx.save();
+
+      try {
+        await Notification.create({
+          recipientId: userId,
+          title: "Insurance Purchase Pending ⏳",
+          message: `Your insurance purchase for ${plateNumber} is being processed. We'll notify you once confirmed.`,
+          isRead: false
+        });
+      } catch (e) { console.error('Notif error:', e.message); }
+
+      return res.status(200).json({
+        success: true,
+        pending: true,
+        message: 'Your insurance purchase is being processed. We\'ll notify you once confirmed.',
+        transactionId: pendingTx._id,
+        status: 'Pending',
+        userDebited: false
+      });
+    }
+    // ================================================
+    // ❌ FAILED
+    // ================================================
+    else {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(vtpassResult.status || 400).json({
         success: false,
-        message: vtpassResult.data?.response_description || 'Insurance purchase failed',
-        details: vtpassResult.data
+        message: interpretation.description || vtpassResult.data?.response_description || 'Insurance purchase failed',
+        details: vtpassResult.data,
+        code: interpretation.code,
+        isFailed: true,
+        userDebited: false
       });
     }
 
@@ -18019,18 +19067,23 @@ await calculateAndAddCommission(userId, amount, 'insurance', session)
       purchased_code: vtpassResult.data.purchased_code
     });
 
-  } catch (error) {
-    await session.abortTransaction();
+    } catch (error) {
+    try {
+      await session.abortTransaction();
+    } catch (e) { /* ignore — may already be ended */ }
     console.error('❌ Error in insurance purchase:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Insurance purchase failed',
-      error: error.message 
-    });
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        success: false, 
+        message: 'Insurance purchase failed',
+        error: error.message 
+      });
+    }
   } finally {
-    session.endSession();
-  }
-});
+    try {
+      await session.endSession();
+    } catch (e) { /* ignore — may already be ended */ }
+  }});
 
 
 // @desc    Get all insurance-related options (makes, colors, states, etc.)
@@ -18797,96 +19850,7 @@ app.get('/api/transactions/check-reference/:reference', protect, async (req, res
 
 
 
-// @desc    Check if transaction reference exists in database
-// @route   GET /api/transactions/check-reference/:reference
-// @access  Private
-app.get('/api/transactions/check-reference/:reference', protect, async (req, res) => {
-  try {
-    const { reference } = req.params;
-    const userId = req.user._id;
 
-    console.log('🔍 DATABASE CHECK: Verifying reference:', reference);
-
-    const transaction = await Transaction.findOne({ 
-      reference: reference,
-      userId: userId
-    });
-
-    if (!transaction) {
-      return res.json({
-        exists: false,
-        message: 'Transaction reference not found in database'
-      });
-    }
-
-    res.json({
-      exists: true,
-      alreadyProcessed: transaction.status === 'successful',
-      transaction: {
-        _id: transaction._id,
-        amount: transaction.amount,
-        status: transaction.status,
-        createdAt: transaction.createdAt,
-        balanceUpdated: transaction.balanceAfter !== transaction.balanceBefore,
-        description: transaction.description
-      },
-      message: transaction.status === 'successful' 
-        ? 'Transaction already processed successfully' 
-        : `Transaction is ${transaction.status}`
-    });
-
-  } catch (error) {
-    console.error('Error checking transaction reference:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check transaction reference'
-    });
-  }
-});
-
-
-// @desc    Get user's pending transaction verifications
-// @route   GET /api/transactions/pending-verifications
-// @access  Private
-app.get('/api/transactions/pending-verifications', protect, [
-  query('days').optional().isInt({ min: 1, max: 30 }).withMessage('Days must be between 1 and 30')
-], async (req, res) => {
-  try {
-    const { days = 7 } = req.query;
-    const userId = req.user._id;
-
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
-
-    console.log('🔍 Fetching pending verifications for user:', userId);
-
-    const pendingTransactions = await Transaction.find({
-      userId: userId,
-      status: { $in: ['pending', 'processing'] },
-      createdAt: { $gte: cutoffDate },
-      $or: [
-        { 'metadata.source': 'paystack' },
-        { 'description': /paystack/i }
-      ]
-    }).sort({ createdAt: -1 });
-
-    console.log(`📊 Found ${pendingTransactions.length} pending transactions`);
-
-    res.json({
-      success: true,
-      pendingTransactions: pendingTransactions,
-      count: pendingTransactions.length,
-      cutoffDate: cutoffDate
-    });
-
-  } catch (error) {
-    console.error('Error fetching pending verifications:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch pending transactions'
-    });
-  }
-});
 
 
 // Add this route to your main backend (index.js)
@@ -20305,169 +21269,100 @@ app.post('/api/international-airtime/purchase',
       let exchangeRate = 0;
       let actualForeignAmount = amount;
 
+           // ================================================
+      // 🔥 INTERPRET VTPASS RESPONSE PROPERLY
       // ================================================
-      // 🔥 HANDLE SUCCESSFUL VTPASS RESPONSE
-      // ================================================
-      if (vtpassResult.success && vtpassCode === '000') {
-        console.log('✅ VTPASS TRANSACTION SUCCESSFUL');
-        vtpassData = vtpassResult.data;
-        transactionStatus = 'Successful';
+      const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
+      
+      console.log(`🎯 [INTL-AIRTIME] VTpass interpretation:`, {
+        code: interpretation.code,
+        innerStatus: interpretation.innerStatus,
+        status: interpretation.status,
+        action: interpretation.action,
+        isDelivered: interpretation.isDelivered,
+        isPending: interpretation.isPending,
+        isFailed: interpretation.isFailed
+      });
 
-        // ================================================
-        // 🔥 EXTRACT NAIRA AMOUNT - NO FALLBACK RATES
-        // ================================================
-        console.log('🔍 ========== EXTRACTING NAIRA AMOUNT ==========');
-        console.log('🔍 Checking VTpass response structure...');
-        
-        // Method 1: Check top-level amount field
+      // ================================================
+      // ✅ DELIVERED
+      // ================================================
+      if (interpretation.isDelivered && interpretation.status === 'Successful') {
+        vtpassData = vtpassResult.data;
+
+        // ---- Extract Naira amount as before ----
         if (vtpassResult.data?.amount) {
           nairaAmount = parseFloat(vtpassResult.data.amount);
-          console.log(`💰 Method 1 - Top-level amount: ₦${nairaAmount}`);
         }
-        
-        // Method 2: Check top-level Amount field (e.g., "NGN2")
         if (nairaAmount === 0 && vtpassResult.data?.Amount) {
           const amountStr = vtpassResult.data.Amount.toString();
-          console.log(`🔍 Top-level Amount string: "${amountStr}"`);
           const nairaMatch = amountStr.match(/NGN(\d+\.?\d*)/i);
-          if (nairaMatch) {
-            nairaAmount = parseFloat(nairaMatch[1]);
-            console.log(`💰 Method 2 - Top-level Amount (NGN): ₦${nairaAmount}`);
-          }
+          if (nairaMatch) nairaAmount = parseFloat(nairaMatch[1]);
         }
-        
-        // Method 3: Check content.transactions.amount
         if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.amount) {
           nairaAmount = parseFloat(vtpassResult.data.content.transactions.amount);
-          console.log(`💰 Method 3 - content.transactions.amount: ₦${nairaAmount}`);
         }
-        
-        // Method 4: Check content.transactions.total_amount
         if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.total_amount) {
           nairaAmount = parseFloat(vtpassResult.data.content.transactions.total_amount);
-          console.log(`💰 Method 4 - content.transactions.total_amount: ₦${nairaAmount}`);
         }
-        
-        // Method 5: Check content.amount
-        if (nairaAmount === 0 && vtpassResult.data?.content?.amount) {
-          nairaAmount = parseFloat(vtpassResult.data.content.amount);
-          console.log(`💰 Method 5 - content.amount: ₦${nairaAmount}`);
-        }
-        
-        // Method 6: Check unit_price * quantity
         if (nairaAmount === 0 && vtpassResult.data?.content?.transactions?.unit_price) {
           const unitPrice = parseFloat(vtpassResult.data.content.transactions.unit_price);
           const quantity = vtpassResult.data.content.transactions.quantity || 1;
           nairaAmount = unitPrice * quantity;
-          console.log(`💰 Method 6 - unit_price * quantity: ₦${unitPrice} * ${quantity} = ₦${nairaAmount}`);
         }
 
-        console.log('🔍 =============================================');
-
-        // ================================================
-        // 🔥 IF NO NAIRA AMOUNT FOUND, RE-QUERY VTPASS
-        // ================================================
+        // If VTpass delivered but no naira amount found → requery
         if (nairaAmount <= 0) {
-          console.log('⚠️ No Naira amount found in initial response');
-          console.log('🔄 Re-querying VTpass for transaction status...');
+          const requeryResult = await callVtpassApi('/requery', { request_id: requestId });
+          const requeryInterp = interpretVtpassResponse(requeryResult.data, 'requery');
           
-          const requeryResult = await callVtpassApi('/requery', { 
-            request_id: requestId 
-          });
-
-          console.log('📡 ========== VTPASS RE-QUERY RESPONSE ==========');
-          console.log('📡 Requery Success:', requeryResult.success);
-          console.log('📡 Full Requery Response:', JSON.stringify(requeryResult, null, 2));
-          console.log('📡 ==============================================');
-
-          if (requeryResult.success && requeryResult.data) {
-            // Extract from requery response
-            if (requeryResult.data?.amount) {
-              nairaAmount = parseFloat(requeryResult.data.amount);
-              console.log(`💰 Requery - Top-level amount: ₦${nairaAmount}`);
-            }
-            
+          if (requeryInterp.isDelivered) {
+            if (requeryResult.data?.amount) nairaAmount = parseFloat(requeryResult.data.amount);
             if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.amount) {
               nairaAmount = parseFloat(requeryResult.data.content.transactions.amount);
-              console.log(`💰 Requery - content.transactions.amount: ₦${nairaAmount}`);
             }
-            
             if (nairaAmount === 0 && requeryResult.data?.content?.transactions?.total_amount) {
               nairaAmount = parseFloat(requeryResult.data.content.transactions.total_amount);
-              console.log(`💰 Requery - content.transactions.total_amount: ₦${nairaAmount}`);
             }
           }
         }
 
-        // ================================================
-        // 🔥 FAIL SAFELY IF NO NAIRA AMOUNT DETERMINED
-        // ================================================
+        // Fail safely
         if (nairaAmount <= 0) {
           await session.abortTransaction();
           session.endSession();
-          console.error('❌ CRITICAL: Could not determine exact Naira amount from VTpass');
-          console.error('❌ VTpass Response:', JSON.stringify(vtpassResult, null, 2));
-          console.error('❌ Requery Response:', JSON.stringify(requeryResult || {}, null, 2));
-          
+          console.error('❌ [INTL-AIRTIME] Delivered but could not determine Naira amount');
           return res.status(400).json({
             success: false,
             message: 'Could not determine exact amount. Your wallet was NOT debited. Please try again.',
             code: 'AMOUNT_DETERMINATION_FAILED',
             userDebited: false,
-            vtpassCode: vtpassCode,
-            vtpassDescription: vtpassDesc
+            vtpassCode: interpretation.code
           });
         }
 
-        // ✅ Calculate exchange rate (for display purposes only)
         if (amount > 0 && nairaAmount > 0) {
           exchangeRate = nairaAmount / amount;
           actualForeignAmount = amount;
-          console.log(`📊 Exchange Rate Calculated: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
         }
 
-        console.log(`💰 FINAL NAIRA AMOUNT TO DEDUCT: ₦${nairaAmount.toFixed(2)}`);
-        console.log(`💰 Foreign Amount: ${currency} ${actualForeignAmount}`);
-
-        // ================================================
-        // 🔥 CHECK BALANCE AGAINST EXACT NAIRA AMOUNT
-        // ================================================
         if (user.walletBalance < nairaAmount) {
           await session.abortTransaction();
           session.endSession();
-          console.log(`❌ INSUFFICIENT BALANCE:`);
-          console.log(`   Available: ₦${user.walletBalance.toFixed(2)}`);
-          console.log(`   Required: ₦${nairaAmount.toFixed(2)}`);
-          console.log(`   Difference: ₦${(nairaAmount - user.walletBalance).toFixed(2)}`);
-          
           return res.status(400).json({ 
             success: false, 
             message: `Insufficient balance. Required: ₦${nairaAmount.toFixed(2)}, Available: ₦${user.walletBalance.toFixed(2)}`,
             code: 'INSUFFICIENT_BALANCE',
             nairaRequired: nairaAmount,
-            currency: 'NGN',
-            nairaAmount: nairaAmount,
-            exchangeRate: exchangeRate,
             userDebited: false
           });
         }
 
-        // ================================================
-        // 🔥 DEBIT EXACT NAIRA AMOUNT FROM WALLET
-        // ================================================
         const balanceBefore = user.walletBalance;
         user.walletBalance -= nairaAmount;
         const balanceAfter = user.walletBalance;
         await user.save({ session });
 
-        console.log(`💰 WALLET DEBITED SUCCESSFULLY:`);
-        console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
-        console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
-        console.log(`   Debited: ₦${nairaAmount.toFixed(2)}`);
-
-        // ================================================
-        // 🔥 CREATE TRANSACTION RECORD
-        // ================================================
         const newTransaction = new Transaction({
           userId: userId,
           amount: nairaAmount,
@@ -20481,22 +21376,14 @@ app.post('/api/international-airtime/purchase',
           authenticationMethod: req.authenticationMethod || 'pin',
           gateway: 'DalabaPay App',
           metadata: {
-            phoneNumber: phoneNumber,
-            countryCode: countryCode,
-            operatorId: operatorId,
-            productTypeId: productTypeId,
-            variationCode: variationCode,
-            currency: currency,
-            originalAmount: actualForeignAmount,
-            nairaAmount: nairaAmount,
-            exchangeRate: exchangeRate,
+            phoneNumber, countryCode, operatorId, productTypeId, variationCode,
+            currency, originalAmount: actualForeignAmount, nairaAmount, exchangeRate,
             vtpassResponse: vtpassData,
-            userDebited: true,
-            debitAmount: nairaAmount,
-            vtpassDelivered: true,
-            vtpassCode: vtpassCode,
-            vtpassDescription: vtpassDesc,
-            vtpassFullResponse: vtpassResult.data
+            userDebited: true, debitAmount: nairaAmount, vtpassDelivered: true,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassDescription: interpretation.description
           }
         });
 
@@ -20504,17 +21391,9 @@ app.post('/api/international-airtime/purchase',
         await session.commitTransaction();
         session.endSession();
 
-        console.log(`✅ TRANSACTION RECORD SAVED: ${newTransaction._id}`);
-
-        // ================================================
-        // 🔥 CALCULATE COMMISSION (OUTSIDE TRANSACTION)
-        // ================================================
         await calculateAndAddCommission(userId, nairaAmount, 'airtime')
           .catch(err => console.log('⚠️ Commission calculation error:', err.message));
 
-        // ================================================
-        // 🔥 CREATE NOTIFICATION
-        // ================================================
         try {
           await Notification.create({
             recipient: userId,
@@ -20522,32 +21401,14 @@ app.post('/api/international-airtime/purchase',
             message: `International airtime of ${currency} ${actualForeignAmount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${nairaAmount.toFixed(2)}`,
             type: 'transaction',
             isRead: false,
-            metadata: {
-              phoneNumber: phoneNumber,
-              amount: actualForeignAmount,
-              currency: currency,
-              countryCode: countryCode,
-              nairaAmount: nairaAmount,
-              exchangeRate: exchangeRate,
-              newBalance: balanceAfter,
-              userDebited: true
-            }
+            metadata: { phoneNumber, amount: actualForeignAmount, currency, countryCode, nairaAmount, newBalance: balanceAfter }
           });
-          console.log('📧 Notification created successfully');
         } catch (notifError) {
           console.error('❌ Notification creation error:', notifError);
         }
 
-        console.log('🎉 ========== TRANSACTION COMPLETE ==========');
-        console.log(`✅ Success: ${countryCode} - ${currency} ${actualForeignAmount} to ${phoneNumber}`);
-        console.log(`💰 Naira Deducted: ₦${nairaAmount.toFixed(2)}`);
-        console.log(`📊 Exchange Rate: 1 ${currency} = ₦${exchangeRate.toFixed(4)}`);
-        console.log(`💳 New Balance: ₦${balanceAfter.toFixed(2)}`);
-        console.log('============================================');
+        console.log(`✅ [INTL-AIRTIME] SUCCESS: ₦${nairaAmount.toFixed(2)} debited`);
 
-        // ================================================
-        // 🔥 RETURN SUCCESS RESPONSE
-        // ================================================
         return res.json({
           success: true,
           message: `International airtime purchase successful! ${currency} ${actualForeignAmount} sent to ${phoneNumber}.`,
@@ -20555,10 +21416,8 @@ app.post('/api/international-airtime/purchase',
           reference: requestId,
           status: 'Successful',
           newBalance: balanceAfter,
-          // Foreign amount (what user entered)
           foreignAmount: actualForeignAmount,
           currency: currency,
-          // Naira amount (what was deducted)
           nairaAmount: nairaAmount,
           nairaEquivalent: nairaAmount,
           exchangeRate: exchangeRate,
@@ -20567,52 +21426,171 @@ app.post('/api/international-airtime/purchase',
           userDebited: true,
           amountDebited: nairaAmount,
           vtpassResponse: vtpassData,
-          vtpassCode: vtpassCode,
-          vtpassDescription: vtpassDesc,
-          // Original fields for backward compatibility
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description,
           amount: actualForeignAmount
         });
+      }
 
-      } else {
-        // ================================================
-        // 🔥 VTPASS FAILED - USER IS NOT DEBITED
-        // ================================================
-        console.log(`❌ VTPASS TRANSACTION FAILED:`);
-        console.log(`   Code: ${vtpassCode}`);
-        console.log(`   Description: ${vtpassDesc}`);
-        console.log('❌ Full VTpass error response:', JSON.stringify(vtpassResult, null, 2));
+      // ================================================
+      // 🔄 PENDING (includes 019, 099, 089, code 000 pending)
+      // ================================================
+      else if (interpretation.isPending) {
+        // For pending, we do NOT debit yet — but user initiated, so create pending record WITHOUT debit
+        // (Their balance is untouched — safer)
+        const pendingTx = new Transaction({
+          userId: userId,
+          amount: amount, // Foreign amount for reference
+          type: 'International Airtime Purchase',
+          status: 'Pending',
+          description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${amount} - PENDING`,
+          balanceBefore: user.walletBalance,
+          balanceAfter: user.walletBalance, // Not debited yet
+          reference: requestId,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phoneNumber, countryCode, operatorId, productTypeId, variationCode,
+            currency, originalAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassDescription: interpretation.description,
+            needsRequery: interpretation.needsRequery,
+            vtpassResponse: vtpassResult.data,
+            userDebited: false, // NOT debited yet
+            pendingSince: new Date()
+          }
+        });
 
+        await pendingTx.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "International Airtime Pending ⏳",
+            message: `Your international airtime purchase of ${currency} ${amount} for ${phoneNumber} is being processed. We'll confirm shortly.`,
+            type: 'transaction_pending',
+            isRead: false,
+            metadata: { phoneNumber, amount, currency, countryCode }
+          });
+        } catch (notifError) {
+          console.error('❌ Notification error:', notifError);
+        }
+
+        console.log(`🔄 [INTL-AIRTIME] PENDING: code=${interpretation.code} inner=${interpretation.innerStatus}`);
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: `Your international airtime purchase is being processed. We'll notify you once confirmed.`,
+          transactionId: pendingTx._id.toString(),
+          reference: requestId,
+          status: 'Pending',
+          newBalance: user.walletBalance,
+          foreignAmount: amount,
+          currency: currency,
+          phoneNumber: phoneNumber,
+          countryCode: countryCode,
+          userDebited: false,
+          isPending: true,
+          needsRequery: interpretation.needsRequery
+        });
+      }
+
+      // ================================================
+      // ⚠️ VTpass low balance
+      // ================================================
+      else if (interpretation.action === 'ADMIN_ALERT_KEEP_PENDING') {
+        const pendingTx = new Transaction({
+          userId: userId,
+          amount: amount,
+          type: 'International Airtime Purchase',
+          status: 'Pending',
+          description: `International airtime for ${phoneNumber} (${countryCode}) - PENDING (VTpass low balance)`,
+          balanceBefore: user.walletBalance,
+          balanceAfter: user.walletBalance,
+          reference: requestId,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phoneNumber, countryCode, operatorId, productTypeId, variationCode,
+            currency, originalAmount: amount,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
+            vtpassBalanceError: true,
+            needsRequery: false,
+            vtpassResponse: vtpassResult.data,
+            userDebited: false,
+            pendingSince: new Date()
+          }
+        });
+
+        await pendingTx.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        try {
+          const alert = new Alert({
+            type: 'VTPASS_LOW_BALANCE',
+            title: 'VTpass Wallet Low Balance Alert',
+            message: `VTpass wallet low. User ${userId} attempted international airtime ${currency} ${amount} to ${phoneNumber}.`,
+            severity: 'CRITICAL',
+            data: { serviceID: 'foreign-airtime', phoneNumber, amount, currency, userId: userId.toString() }
+          });
+          await alert.save();
+        } catch (alertErr) {
+          console.error('Alert save error:', alertErr.message);
+        }
+
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: 'Service temporarily unavailable. Please try again later.',
+          transactionId: pendingTx._id.toString(),
+          status: 'Pending',
+          userDebited: false
+        });
+      }
+
+      // ================================================
+      // ❌ FAILED (no debit)
+      // ================================================
+      else {
+        vtpassData = vtpassResult.data;
         await session.abortTransaction();
         session.endSession();
 
-        // Build user-friendly error message
         let userMessage = 'Transaction failed. Please try again.';
         let displayMessage = 'Purchase failed. Please try again.';
 
-        if (vtpassCode === '018' || vtpassDesc.includes('LOW WALLET BALANCE')) {
+        if (interpretation.code === '018' || interpretation.description.includes('LOW WALLET BALANCE')) {
           userMessage = 'Service provider wallet is low. Please try again later.';
           displayMessage = 'Service temporarily unavailable.';
-        } else if (vtpassCode === '024' || vtpassDesc.includes('INSUFFICIENT')) {
+        } else if (interpretation.code === '024' || interpretation.description.includes('INSUFFICIENT')) {
           userMessage = 'Service provider issue. Please try again later.';
           displayMessage = 'Service issue. Please try again.';
-        } else if (vtpassDesc.toLowerCase().includes('invalid') || vtpassDesc.toLowerCase().includes('not found')) {
+        } else if (interpretation.description.toLowerCase().includes('invalid')) {
           userMessage = 'Invalid details. Please check your phone number and try again.';
           displayMessage = 'Invalid details. Please check and try again.';
-        } else if (vtpassCode === '019' || vtpassDesc.includes('DUPLICATE')) {
+        } else if (interpretation.code === '019' || interpretation.description.includes('DUPLICATE')) {
           userMessage = 'This transaction was already processed. Please check your transaction history.';
           displayMessage = 'Transaction already processed.';
         }
 
-        console.log('📤 Sending failure response to client');
-        console.log('============================================');
+        console.log(`❌ [INTL-AIRTIME] FAILED: ${interpretation.code} - ${interpretation.description} | No debit`);
 
         return res.status(400).json({
           success: false,
           message: userMessage,
           displayMessage: displayMessage,
           vtpassResponse: vtpassData,
-          vtpassCode: vtpassCode,
-          vtpassDescription: vtpassDesc,
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description,
           isFailed: true,
           shouldShowAsFailed: true,
           userDebited: false,
