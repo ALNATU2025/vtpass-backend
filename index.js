@@ -8486,6 +8486,10 @@ app.get('/api/admin/debug-pending-failed', adminProtect, async (req, res) => {
 
 
 // POST update transaction status - CORRECTED (NO BALANCE CHANGES)
+// ==================== ADMIN: UPDATE TRANSACTION STATUS (FIXED) ====================
+// @desc    Update transaction status + auto-resolve disputes + create receipt + notify user
+// @route   POST /api/admin/transaction/:id/update-status
+// @access  Private/Admin
 app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -8494,54 +8498,97 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     const { id } = req.params;
     const { newStatus, adminNote, resolutionReference } = req.body;
 
+    console.log(`🔄 [UPDATE-STATUS] Request for transaction: ${id}`);
+    console.log(`   New Status: ${newStatus}`);
+    console.log(`   Admin Note: ${adminNote || '(none)'}`);
+    console.log(`   Admin: ${req.user?.email} (${req.user?._id})`);
+
     if (!newStatus || typeof newStatus !== 'string') {
       throw new Error('newStatus is required');
     }
 
     const transaction = await Transaction.findById(id).session(session);
-    if (!transaction) throw new Error('Transaction not found');
+    if (!transaction) {
+      throw new Error('Transaction not found');
+    }
 
-    const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending', 'Refunded', 'Resolved'];
+    const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending', 'Processing', 'Refunded', 'Resolved'];
     const normalizedStatus = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).toLowerCase();
     if (!validStatuses.includes(normalizedStatus)) {
       throw new Error(`Invalid status. Allowed: ${validStatuses.join(', ')}`);
     }
 
     const oldStatus = transaction.status;
+    console.log(`   Old Status: ${oldStatus} → New: ${normalizedStatus}`);
 
+    // ============================================
+    // 1. UPDATE TRANSACTION STATUS
+    // ============================================
     transaction.status = normalizedStatus;
 
-    if (normalizedStatus === 'Successful' || normalizedStatus === 'Completed' ||
-        normalizedStatus === 'Refunded' || normalizedStatus === 'Resolved') {
+    // ============================================
+    // 2. MARK AS RESOLVED FOR FINAL STATES
+    // ============================================
+    if (['Successful', 'Completed', 'Refunded', 'Resolved'].includes(normalizedStatus)) {
       transaction.isResolved = true;
       transaction.resolvedAt = new Date();
       transaction.resolvedBy = req.user._id;
       transaction.resolutionType = 'status_update';
-      transaction.resolutionNote = adminNote || `Status updated from ${oldStatus} to ${normalizedStatus} by admin`;
+      transaction.resolutionNote =
+        adminNote || `Status updated from ${oldStatus} to ${normalizedStatus} by admin`;
+    } else if (['Pending', 'Processing', 'Failed'].includes(normalizedStatus)) {
+      // Re-open if moved back to non-final state
+      transaction.isResolved = false;
+      transaction.resolvedAt = null;
+      transaction.resolvedBy = null;
+    }
 
-      await Dispute.updateMany(
-        { transactionId: transaction._id, status: { $in: ['pending', 'under_review', 'investigating'] } },
+    // ============================================
+    // 3. AUTO-RESOLVE OPEN DISPUTES (only on final states)
+    // ============================================
+    if (['Successful', 'Completed', 'Refunded', 'Resolved'].includes(normalizedStatus)) {
+      const disputeResult = await Dispute.updateMany(
         {
-          status: 'resolved',
-          resolution: `Transaction resolved - Status changed to ${normalizedStatus} by admin`,
-          resolvedAt: new Date(),
-          resolvedBy: req.user._id,
-          adminNotes: {
-            note: `Dispute auto-resolved when admin changed status to ${normalizedStatus}`,
-            adminId: req.user._id,
-            createdAt: new Date()
+          transactionId: transaction._id,
+          status: { $in: ['pending', 'under_review', 'investigating'] }
+        },
+        {
+          $set: {
+            status: 'resolved',
+            resolution: `Transaction resolved — status changed to ${normalizedStatus} by admin`,
+            resolvedAt: new Date(),
+            resolvedBy: req.user._id
+          },
+          $push: {
+            adminNotes: {
+              note: `Dispute auto-resolved when admin changed status to ${normalizedStatus}`,
+              adminId: req.user._id,
+              createdAt: new Date()
+            }
           }
         },
         { session }
       );
+      console.log(`   ✅ Auto-resolved ${disputeResult.modifiedCount} dispute(s)`);
     }
 
-    if (adminNote) transaction.adminNote = adminNote;
-    if (resolutionReference) transaction.resolutionReference = resolutionReference;
+    // ============================================
+    // 4. SAVE ADMIN NOTE & REFERENCE
+    // ============================================
+    if (adminNote && adminNote.trim()) {
+      transaction.adminNote = adminNote.trim();
+    }
+    if (resolutionReference && resolutionReference.trim()) {
+      transaction.resolutionReference = resolutionReference.trim();
+    }
     transaction.updatedAt = new Date();
 
     await transaction.save({ session });
+    console.log(`   ✅ Transaction status saved to DB`);
 
+    // ============================================
+    // 5. CREATE RECEIPT RECORD
+    // ============================================
     const receiptData = {
       receiptId: generateReceiptId(),
       type: 'status_update',
@@ -8550,9 +8597,10 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       amount: transaction.amount,
       oldStatus,
       newStatus: normalizedStatus,
-      adminNote,
+      adminNote: adminNote || '',
+      adminEmail: req.user.email || '',
       updatedAt: new Date(),
-      isResolved: transaction.isResolved
+      isResolved: transaction.isResolved === true
     };
 
     const receipt = new Receipt({
@@ -8566,14 +8614,28 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       receiptData
     });
     await receipt.save({ session });
+    console.log(`   ✅ Receipt created: ${receiptData.receiptId}`);
 
     await session.commitTransaction();
+    session.endSession();
 
-    // Notify user
+    // ============================================
+    // 6. NOTIFY USER (outside session)
+    // ============================================
     try {
+      const userFriendlyTitles = {
+        Successful: 'Transaction Successful ✅',
+        Completed: 'Transaction Completed ✅',
+        Failed: 'Transaction Failed ❌',
+        Pending: 'Transaction Pending ⏳',
+        Processing: 'Transaction Processing 🔄',
+        Refunded: 'Transaction Refunded 💰',
+        Resolved: 'Transaction Resolved ✔️'
+      };
+
       await Notification.create({
         recipient: transaction.userId,
-        title: `Transaction Status: ${normalizedStatus}`,
+        title: userFriendlyTitles[normalizedStatus] || `Transaction Status: ${normalizedStatus}`,
         message: `Your transaction (Ref: ${transaction.reference}) status has been updated to ${normalizedStatus}.${adminNote ? ' Note: ' + adminNote : ''}`,
         type: 'transaction',
         isRead: false,
@@ -8581,34 +8643,47 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
           transactionId: transaction._id,
           oldStatus,
           newStatus: normalizedStatus,
-          adminNote: adminNote || ''
+          adminNote: adminNote || '',
+          screen: 'transaction_details'
         }
       });
+      console.log(`   ✅ User notified`);
     } catch (notifErr) {
-      console.error('⚠️ Notification error:', notifErr.message);
+      console.error('   ⚠️ Notification error:', notifErr.message);
     }
+
+    // ============================================
+    // 7. RESPOND WITH FULL DATA
+    // ============================================
+    const freshTransaction = await Transaction.findById(transaction._id).lean();
+    const freshDisputes = await Dispute.find({ transactionId: transaction._id }).lean();
+    const freshReceipts = await Receipt.find({ transactionId: transaction._id }).lean();
+
+    console.log(`   ✅ [UPDATE-STATUS] COMPLETE for ${transaction._id}`);
 
     res.json({
       success: true,
       message: `Transaction status updated to ${normalizedStatus}`,
-      transaction,
+      transaction: freshTransaction,
+      disputes: freshDisputes,
+      receipts: freshReceipts,
       receipt: receiptData,
-      isResolved: transaction.isResolved === true
+      isResolved: transaction.isResolved === true,
+      canUpdate: true
     });
 
   } catch (error) {
     if (session.inTransaction()) {
       await session.abortTransaction();
     }
-    console.error('Update status error:', error);
+    console.error('❌ Update status error:', error);
     if (!res.headersSent) {
       res.status(400).json({ success: false, message: error.message });
     }
   } finally {
-    session.endSession();
+    try { session.endSession(); } catch (_) {}
   }
 });
-
 
 
 
@@ -8686,47 +8761,84 @@ app.post('/api/admin/transaction/:id/mark-resolved', adminProtect, async (req, r
 
 
 // GET transaction details with dispute/refund info
+// ==================== ADMIN: GET TRANSACTION DETAILS (FIXED) ====================
+// @desc    Get full transaction details with disputes, refunds, receipts
+// @route   GET /api/admin/transaction/:id
+// @access  Private/Admin
 app.get('/api/admin/transaction/:id', adminProtect, async (req, res) => {
   try {
-    const transaction = await Transaction.findById(req.params.id)
-      .populate('userId', 'fullName email phone walletBalance');
-    
+    const { id } = req.params;
+    console.log(`🔍 [GET-TRANSACTION] Fetching: ${id}`);
+
+    const transaction = await Transaction.findById(id)
+      .populate('userId', 'fullName email phone walletBalance isAdmin')
+      .lean();
+
     if (!transaction) {
       return res.status(404).json({ success: false, message: 'Transaction not found' });
     }
-    
-    const disputes = await Dispute.find({ transactionId: transaction._id })
-      .populate('resolvedBy', 'fullName email');
-    
-    const refunds = await Refund.find({ originalTransactionId: transaction._id })
-      .populate('processedBy', 'fullName email');
-    
-    const receipts = await Receipt.find({ 
-      $or: [
-        { transactionId: transaction._id }, 
-        { refundId: { $in: refunds.map(r => r._id) } }
-      ] 
-    });
-    
-    const hasUnresolvedDispute = disputes.some(d => d.status === 'pending' || d.status === 'under_review');
-    const hasPendingRefund = refunds.some(r => r.status === 'pending' || r.status === 'approved');
-    
+
+    const [disputes, refunds, receipts] = await Promise.all([
+      Dispute.find({ transactionId: transaction._id })
+        .populate('resolvedBy', 'fullName email')
+        .lean(),
+      Refund.find({ originalTransactionId: transaction._id })
+        .populate('processedBy', 'fullName email')
+        .lean(),
+      Receipt.find({
+        $or: [
+          { transactionId: transaction._id },
+          { refundId: { $in: (await Refund.find({ originalTransactionId: transaction._id }).select('_id').lean()).map(r => r._id) } }
+        ]
+      }).lean()
+    ]);
+
+    const hasUnresolvedDispute = disputes.some(
+      d => ['pending', 'under_review', 'investigating', 'escalated'].includes(d.status)
+    );
+    const hasPendingRefund = refunds.some(
+      r => ['pending', 'approved'].includes(r.status)
+    );
+
+    // ✅ Always allow admin to update
+    const canUpdate = true;
+
+    // Safe-number balances
+    const toNum = (v) => {
+      if (v === undefined || v === null) return 0;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') return parseFloat(v) || 0;
+      return 0;
+    };
+
+    const enriched = {
+      ...transaction,
+      balanceBefore: toNum(transaction.balanceBefore),
+      balanceAfter: toNum(transaction.balanceAfter)
+    };
+
+    console.log(`✅ [GET-TRANSACTION] Found: ${transaction.reference} | Status: ${transaction.status}`);
+
     res.json({
       success: true,
-      transaction,
+      transaction: enriched,
       disputes,
       refunds,
       receipts,
-      canUpdate: true,
+      canUpdate,
       canRefund: transaction.status !== 'Refunded',
       hasActiveDispute: hasUnresolvedDispute,
       hasPendingRefund: hasPendingRefund
     });
   } catch (error) {
-    console.error('Error in transaction details:', error);
+    console.error('❌ [GET-TRANSACTION] Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+
+
+
 
 // POST create dispute
 app.post('/api/admin/dispute/create', adminProtect, async (req, res) => {
