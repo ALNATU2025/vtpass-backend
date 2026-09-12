@@ -8521,10 +8521,38 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     const oldStatus = transaction.status;
     console.log(`   Old Status: ${oldStatus} → New: ${normalizedStatus}`);
 
-    // ============================================
+       // ============================================
     // 1. UPDATE TRANSACTION STATUS
     // ============================================
     transaction.status = normalizedStatus;
+
+    // ============================================
+    // 1B. ✅ CLEAR FAILURE FLAGS WHEN STATUS CHANGES
+    // ============================================
+    // This is CRITICAL. Without this, when admin changes
+    // "Failed" → "Pending", the frontend still sees
+    // `isFailed: true` / `shouldShowAsFailed: true` in the DB
+    // and overrides the new status back to "Failed" in the UI.
+    if (normalizedStatus !== 'Failed') {
+      transaction.isFailed = false;
+      transaction.shouldShowAsFailed = false;
+      transaction.amountBelowMinimum = false;
+      transaction.failureReason = null;
+
+      // Also clear the same flags from metadata (older transactions
+      // stored these inside metadata)
+      if (transaction.metadata && typeof transaction.metadata === 'object') {
+        transaction.metadata.isFailed = false;
+        transaction.metadata.shouldShowAsFailed = false;
+        transaction.metadata.amountBelowMinimum = false;
+        transaction.metadata.failureReason = null;
+        transaction.metadata.vtpassError = null;
+        transaction.metadata.adminOverrodeFailure = true;
+        transaction.metadata.adminOverrideAt = new Date();
+      }
+
+      console.log(`   ✅ Cleared failure flags (was Failed, now ${normalizedStatus})`);
+    }
 
     // ============================================
     // 2. MARK AS RESOLVED FOR FINAL STATES
