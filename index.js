@@ -8486,44 +8486,43 @@ app.get('/api/admin/debug-pending-failed', adminProtect, async (req, res) => {
 
 
 // POST update transaction status - CORRECTED (NO BALANCE CHANGES)
-// POST update transaction status - ALLOW EVEN WITH DISPUTES
 app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const { id } = req.params;
     const { newStatus, adminNote, resolutionReference } = req.body;
-    
+
+    if (!newStatus || typeof newStatus !== 'string') {
+      throw new Error('newStatus is required');
+    }
+
     const transaction = await Transaction.findById(id).session(session);
     if (!transaction) throw new Error('Transaction not found');
-    
+
     const validStatuses = ['Successful', 'Completed', 'Failed', 'Pending', 'Refunded', 'Resolved'];
     const normalizedStatus = newStatus.charAt(0).toUpperCase() + newStatus.slice(1).toLowerCase();
-    if (!validStatuses.includes(normalizedStatus)) throw new Error('Invalid status value');
-    
-    // ✅ REMOVED: Dispute check - Admin can update status even with unresolved disputes
-    
-    // ✅ REMOVED: Pending refund check - Admin can update status even with pending refunds
-    
+    if (!validStatuses.includes(normalizedStatus)) {
+      throw new Error(`Invalid status. Allowed: ${validStatuses.join(', ')}`);
+    }
+
     const oldStatus = transaction.status;
-    
-    // UPDATE ONLY STATUS - NO BALANCE CHANGES
+
     transaction.status = normalizedStatus;
-    
-    // MARK AS RESOLVED if status is Successful, Completed, or Refunded
-    if (normalizedStatus === 'Successful' || normalizedStatus === 'Completed' || normalizedStatus === 'Refunded' || normalizedStatus === 'Resolved') {
+
+    if (normalizedStatus === 'Successful' || normalizedStatus === 'Completed' ||
+        normalizedStatus === 'Refunded' || normalizedStatus === 'Resolved') {
       transaction.isResolved = true;
       transaction.resolvedAt = new Date();
       transaction.resolvedBy = req.user._id;
       transaction.resolutionType = 'status_update';
       transaction.resolutionNote = adminNote || `Status updated from ${oldStatus} to ${normalizedStatus} by admin`;
-      
-      // ✅ ALSO resolve any open disputes automatically
+
       await Dispute.updateMany(
         { transactionId: transaction._id, status: { $in: ['pending', 'under_review', 'investigating'] } },
-        { 
-          status: 'resolved', 
+        {
+          status: 'resolved',
           resolution: `Transaction resolved - Status changed to ${normalizedStatus} by admin`,
           resolvedAt: new Date(),
           resolvedBy: req.user._id,
@@ -8535,18 +8534,14 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
         },
         { session }
       );
-      console.log('✅ Disputes auto-resolved with status change');
     }
-    
+
     if (adminNote) transaction.adminNote = adminNote;
     if (resolutionReference) transaction.resolutionReference = resolutionReference;
     transaction.updatedAt = new Date();
-    
-    // ✅ NO BALANCE UPDATE - Status changes don't affect wallet
-    
+
     await transaction.save({ session });
-    
-    // Create receipt for the status update
+
     const receiptData = {
       receiptId: generateReceiptId(),
       type: 'status_update',
@@ -8557,10 +8552,9 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       newStatus: normalizedStatus,
       adminNote,
       updatedAt: new Date(),
-      isResolved: transaction.isResolved,
-      note: 'STATUS UPDATE ONLY - No financial transaction occurred'
+      isResolved: transaction.isResolved
     };
-    
+
     const receipt = new Receipt({
       receiptId: receiptData.receiptId,
       transactionId: transaction._id,
@@ -8572,25 +8566,44 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
       receiptData
     });
     await receipt.save({ session });
-    
+
     await session.commitTransaction();
-    
-    console.log(`✅ Transaction ${id}: ${oldStatus} → ${normalizedStatus} (Status updated despite disputes)`);
-    
-    res.json({ 
-      success: true, 
+
+    // Notify user
+    try {
+      await Notification.create({
+        recipient: transaction.userId,
+        title: `Transaction Status: ${normalizedStatus}`,
+        message: `Your transaction (Ref: ${transaction.reference}) status has been updated to ${normalizedStatus}.${adminNote ? ' Note: ' + adminNote : ''}`,
+        type: 'transaction',
+        isRead: false,
+        metadata: {
+          transactionId: transaction._id,
+          oldStatus,
+          newStatus: normalizedStatus,
+          adminNote: adminNote || ''
+        }
+      });
+    } catch (notifErr) {
+      console.error('⚠️ Notification error:', notifErr.message);
+    }
+
+    res.json({
+      success: true,
       message: `Transaction status updated to ${normalizedStatus}`,
-      transaction, 
+      transaction,
       receipt: receiptData,
-      isResolved: transaction.isResolved === true,
-      disputesAutoResolved: true,
-      note: "Status update completed - Disputes were auto-resolved"
+      isResolved: transaction.isResolved === true
     });
-    
+
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
     console.error('Update status error:', error);
-    res.status(400).json({ success: false, message: error.message });
+    if (!res.headersSent) {
+      res.status(400).json({ success: false, message: error.message });
+    }
   } finally {
     session.endSession();
   }
@@ -8704,8 +8717,10 @@ app.get('/api/admin/transaction/:id', adminProtect, async (req, res) => {
       disputes,
       refunds,
       receipts,
-      canUpdate: !hasUnresolvedDispute && !hasPendingRefund,
-      canRefund: !hasPendingRefund && transaction.status !== 'Refunded'
+      canUpdate: true,
+      canRefund: transaction.status !== 'Refunded',
+      hasActiveDispute: hasUnresolvedDispute,
+      hasPendingRefund: hasPendingRefund
     });
   } catch (error) {
     console.error('Error in transaction details:', error);
@@ -11632,6 +11647,250 @@ app.get('/api/admin/transaction-stats', adminProtect, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+
+// ==================== ADMIN: GET ALL TRANSACTIONS (UNIFIED — NEW) ====================
+// @desc    Get ALL transactions with full filter support
+//          status: all | successful | pending | failed | refunded | disputed
+// @route   GET /api/admin/transactions-all
+// @access  Private/Admin
+// 🆕 NEW endpoint — old endpoints untouched. Safe for existing app versions.
+app.get('/api/admin/transactions-all', adminProtect, async (req, res) => {
+  try {
+    const {
+      status = 'all',
+      search = '',
+      page = 1,
+      limit = 200
+    } = req.query;
+
+    const currentPage = Math.max(1, parseInt(page) || 1);
+    const pageLimit = Math.min(parseInt(limit) || 200, 500);
+    const skip = (currentPage - 1) * pageLimit;
+
+    console.log('🔍 [ADMIN ALL TX] Filters:', { status, search, page: currentPage, limit: pageLimit });
+
+    let query = {};
+
+    // ---- Status filter ----
+    if (status && status !== 'all') {
+      const s = status.toLowerCase();
+      if (s === 'successful') {
+        query.status = { $regex: /^(successful|success|completed)$/i };
+      } else if (s === 'pending') {
+        query.status = { $regex: /^pending$/i };
+      } else if (s === 'failed') {
+        query.status = { $regex: /^failed$/i };
+      } else if (s === 'refunded') {
+        query.status = { $regex: /^refunded$/i };
+      } else if (s === 'disputed') {
+        const disputedTxIds = await Dispute.distinct('transactionId', {
+          status: { $in: ['pending', 'under_review', 'escalated'] }
+        });
+        query._id = { $in: disputedTxIds };
+      }
+    }
+
+    // ---- Search filter ----
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      const matchedUsers = await User.find({
+        $or: [
+          { fullName: searchRegex },
+          { email: searchRegex },
+          { phone: searchRegex }
+        ]
+      }).select('_id').lean();
+
+      const userIds = matchedUsers.map(u => u._id);
+
+      query.$or = [
+        { reference: searchRegex },
+        { transactionId: searchRegex },
+        { description: searchRegex },
+        { type: searchRegex },
+        { userId: { $in: userIds } }
+      ];
+    }
+
+    // ---- Fetch ----
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageLimit)
+        .lean(),
+      Transaction.countDocuments(query)
+    ]);
+
+    // ---- Load related data ----
+    const userIds = [...new Set(
+      transactions.map(tx => tx.userId?.toString()).filter(id => id)
+    )];
+    const txIds = transactions.map(tx => tx._id);
+
+    const [users, disputes, refunds] = await Promise.all([
+      userIds.length > 0
+        ? User.find(
+            { _id: { $in: userIds.map(id => new mongoose.Types.ObjectId(id)) } },
+            { fullName: 1, email: 1, phone: 1, isAdmin: 1, walletBalance: 1 }
+          ).lean()
+        : [],
+      txIds.length > 0
+        ? Dispute.find({ transactionId: { $in: txIds } }).lean()
+        : [],
+      txIds.length > 0
+        ? Refund.find({ originalTransactionId: { $in: txIds } }).lean()
+        : []
+    ]);
+
+    const userMap = users.reduce((m, u) => {
+      m[u._id.toString()] = {
+        _id: u._id,
+        fullName: u.fullName || 'Unknown User',
+        email: u.email || 'N/A',
+        phone: u.phone || 'N/A',
+        isAdmin: u.isAdmin || false,
+        walletBalance: u.walletBalance || 0
+      };
+      return m;
+    }, {});
+
+    const toNum = (v) => {
+      if (v === undefined || v === null) return 0;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') return parseFloat(v) || 0;
+      return 0;
+    };
+
+    // ---- Enrich each transaction ----
+    const processed = transactions.map(tx => {
+      const userId = tx.userId?.toString();
+      const userData = userMap[userId] || {
+        _id: userId || 'system',
+        fullName: 'System',
+        email: 'system@transaction',
+        phone: 'N/A',
+        isAdmin: false,
+        walletBalance: 0
+      };
+
+      const txDisputes = disputes
+        .filter(d => d.transactionId?.toString() === tx._id.toString())
+        .map(d => ({
+          _id: d._id,
+          type: d.type,
+          reason: d.reason,
+          description: d.description,
+          status: d.status,
+          amount: d.amount,
+          resolution: d.resolution || '',
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt
+        }));
+
+      const txRefunds = refunds
+        .filter(r => r.originalTransactionId?.toString() === tx._id.toString())
+        .map(r => ({
+          _id: r._id,
+          amount: r.amount,
+          reason: r.reason,
+          status: r.status,
+          refundReference: r.refundReference,
+          adminNote: r.adminNote || '',
+          processedAt: r.processedAt,
+          completedAt: r.completedAt,
+          createdAt: r.createdAt
+        }));
+
+      const hasActiveDispute = txDisputes.some(
+        d => ['pending', 'under_review', 'escalated'].includes(d.status)
+      );
+      const hasPendingRefund = txRefunds.some(
+        r => ['pending', 'approved'].includes(r.status)
+      );
+
+      return {
+        _id: tx._id,
+        type: tx.type,
+        amount: tx.amount || 0,
+        status: tx.status,
+        description: tx.description,
+        reference: tx.reference,
+        transactionId: tx.transactionId,
+        createdAt: tx.createdAt,
+        updatedAt: tx.updatedAt,
+        balanceBefore: toNum(tx.balanceBefore),
+        balanceAfter: toNum(tx.balanceAfter),
+        isCommission: tx.isCommission || false,
+        authenticationMethod: tx.authenticationMethod || 'none',
+        gateway: tx.gateway || 'DalabaPay App',
+        metadata: tx.metadata || {},
+        userId: userId || 'system',
+        user: userData,
+        disputes: txDisputes,
+        refunds: txRefunds,
+        hasActiveDispute,
+        hasPendingRefund,
+        isResolved: tx.isResolved === true,
+        // ✅ Admin always has control
+        canUpdate: true
+      };
+    });
+
+    // ---- Global stats ----
+    const [successful, pending, failed, refunded, disputedCount] = await Promise.all([
+      Transaction.countDocuments({ status: { $regex: /^(successful|success|completed)$/i } }),
+      Transaction.countDocuments({ status: { $regex: /^pending$/i } }),
+      Transaction.countDocuments({ status: { $regex: /^failed$/i } }),
+      Transaction.countDocuments({ status: { $regex: /^refunded$/i } }),
+      Dispute.countDocuments({ status: { $in: ['pending', 'under_review', 'escalated'] } })
+    ]);
+
+    const totalAgg = await Transaction.aggregate([
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+
+    console.log(`✅ [ADMIN ALL TX] Returned ${processed.length} of ${total}`);
+
+    res.json({
+      success: true,
+      transactions: processed,
+      stats: {
+        all: await Transaction.countDocuments(),
+        successful,
+        pending,
+        failed,
+        refunded,
+        disputed: disputedCount,
+        totalAmount: totalAgg[0]?.total || 0
+      },
+      pagination: {
+        total,
+        page: currentPage,
+        limit: pageLimit,
+        pages: Math.ceil(total / pageLimit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [ADMIN ALL TX] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ============================================================
+
+
+
 
 
 
