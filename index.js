@@ -8153,32 +8153,43 @@ app.get('/api/admin/users/statistics', adminProtect, async (req, res) => {
     ]);
     
     // Format today's users for frontend
-    const formattedTodayUsers = todayUsers.map(user => ({
-      _id: user._id,
-      fullName: user.fullName,
-      email: user.email,
-      phone: user.phone,
-      isActive: user.isActive,
-      isAdmin: user.isAdmin,
-      walletBalance: user.walletBalance,
-      commissionBalance: user.commissionBalance,
-      createdAt: user.createdAt,
-      registrationDate: user.createdAt
-    }));
-    
-    // Format all users for frontend
-    const formattedAllUsers = allUsers.map(user => ({
-      _id: user._id,
-      fullName: user.fullName,
-      email: user.email,
-      phone: user.phone,
-      isActive: user.isActive,
-      isAdmin: user.isAdmin,
-      walletBalance: user.walletBalance,
-      commissionBalance: user.commissionBalance,
-      createdAt: user.createdAt,
-      registrationDate: user.createdAt
-    }));
+// Format today's users for frontend
+const formattedTodayUsers = todayUsers.map(user => ({
+  _id: user._id,
+  fullName: user.fullName,
+  email: user.email,
+  phone: user.phone,
+  isActive: user.isActive,
+  isAdmin: user.isAdmin,
+  role: user.role || 'user',
+  approvalStatus: user.approvalStatus || 'approved',
+  approvedAt: user.approvedAt || null,
+  rejectionReason: user.rejectionReason || null,
+  walletBalance: user.walletBalance,
+  commissionBalance: user.commissionBalance,
+  customLimits: user.customLimits || {},
+  createdAt: user.createdAt,
+  registrationDate: user.createdAt
+}));
+
+// Format all users for frontend
+const formattedAllUsers = allUsers.map(user => ({
+  _id: user._id,
+  fullName: user.fullName,
+  email: user.email,
+  phone: user.phone,
+  isActive: user.isActive,
+  isAdmin: user.isAdmin,
+  role: user.role || 'user',
+  approvalStatus: user.approvalStatus || 'approved',
+  approvedAt: user.approvedAt || null,
+  rejectionReason: user.rejectionReason || null,
+  walletBalance: user.walletBalance,
+  commissionBalance: user.commissionBalance,
+  customLimits: user.customLimits || {},
+  createdAt: user.createdAt,
+  registrationDate: user.createdAt
+}));
     
     // Prepare response
     const response = {
