@@ -136,15 +136,40 @@ customLimits: {
 // =========================================
 
     
-    isActive: {
+       isActive: {
       type: Boolean,
       default: true,
     },
+
+    // ✅ NEW: APPROVAL SYSTEM
+    approvalStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
+      index: true
+    },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    approvedAt: {
+      type: Date,
+      default: null
+    },
+    rejectionReason: {
+      type: String,
+      default: null
+    },
+    // ✅ END APPROVAL SYSTEM
 
     welcomeBonusReceived: {
       type: Boolean,
       default: false
     },
+
+
+    
     firstDepositBonusReceived: {
       type: Boolean,
       default: false
@@ -356,6 +381,25 @@ userSchema.methods.hasPermission = function(permission) {
   
   return false;
 };
+
+
+
+// ✅ NEW: Method to check if user is approved
+userSchema.methods.isApproved = function() {
+  // Admins are always approved
+  if (this.isAdmin || this.isSuperAdmin || this.role === 'admin' || this.role === 'super_admin') {
+    return true;
+  }
+  // Existing users without approvalStatus are grandfathered in as approved
+  const status = this.approvalStatus || 'approved';
+  return status === 'approved';
+};
+
+// Method to check if user has any of the specified roles
+userSchema.methods.hasRole = function(roles) {
+
+
+
 
 // Method to check if user has any of the specified roles
 userSchema.methods.hasRole = function(roles) {
@@ -919,6 +963,7 @@ userSchema.methods.clearResetToken = async function () {
 };
 
 // Indexes
+// Indexes
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ referralCode: 1 });
@@ -929,5 +974,6 @@ userSchema.index({ resetPasswordOTPExpire: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ isAdmin: 1 });
 userSchema.index({ isSuperAdmin: 1 });
+userSchema.index({ approvalStatus: 1 }); // ✅ NEW
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);
