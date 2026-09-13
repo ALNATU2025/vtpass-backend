@@ -142,10 +142,14 @@ customLimits: {
     },
 
     // ✅ NEW: APPROVAL SYSTEM
+        // ✅ NEW: APPROVAL SYSTEM
+    // Default = 'approved' so EXISTING users are grandfathered in.
+    // New users will be explicitly set to 'pending' at registration time
+    // ONLY if the global toggle (requireUserApproval) is ON.
     approvalStatus: {
       type: String,
       enum: ['pending', 'approved', 'rejected'],
-      default: 'pending',
+      default: 'approved',
       index: true
     },
     approvedBy: {
