@@ -1380,31 +1380,6 @@ app.use('/uploads', (req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-// ✅ Use the existing server instance (NO 'const' declaration)
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔌 Socket.IO server ready`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
-    mongoose.connection.close();
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
-    mongoose.connection.close();
-    process.exit(0);
-  });
-});
-
 
 
 // Helper function to generate Request ID in Africa/Lagos timezone
@@ -1721,6 +1696,24 @@ const protect = async (req, res, next) => {
   }
 };
 
+
+
+// ==================== ADMIN PROTECT MIDDLEWARE ====================
+const adminProtect = async (req, res, next) => {
+  await protect(req, res, async () => {
+    if (req.user.isAdmin) {
+      return next();
+    }
+    
+    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "690088325ca99bed6ab8d4a5";
+    if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
+      return next();
+    }
+    
+    return res.status(403).json({ success: false, message: 'Admin access only' });
+  });
+};
+// ==================== END ADMIN PROTECT ====================
 
 
 
@@ -3236,21 +3229,7 @@ app.post('/api/users/token-health', protect, async (req, res) => {
 
 
 
-// Middleware to protect routes for administrators only
-const adminProtect = async (req, res, next) => {
-  await protect(req, res, async () => {
-    if (req.user.isAdmin) {
-      return next();
-    }
-    
-    const specificAdminUserId = process.env.SPECIFIC_ADMIN_USER_ID || "690088325ca99bed6ab8d4a5";
-    if (specificAdminUserId && req.user._id.toString() === specificAdminUserId) {
-      return next();
-    }
-    
-    return res.status(403).json({ success: false, message: 'Admin access only' });
-  });
-};
+
 
 
 // ================================================
