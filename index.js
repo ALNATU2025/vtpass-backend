@@ -302,8 +302,137 @@ function interpretVtpassResponse(vtpassData, endpointType = 'purchase') {
 
 const adminExportRoutes = require('./routes/adminExportRoutes');
 const { createNotificationAndSendPush } = require('./helpers/notificationHelper');
-const { sendPushNotification } = require('./firebaseAdmin');
+const { sendPushNotification, sendPushNotificationToMultiple } = require('./firebaseAdmin');
 console.log('🔍 firebaseAdmin loaded. sendPushNotification type:', typeof sendPushNotification);
+
+// ==================== ADMIN TRANSACTION NOTIFIER ====================
+/**
+ * Notify ALL admins about a new transaction via push + socket.
+ * Called from every transaction route.
+ *
+ * @param {Object} opts
+ * @param {String} opts.title
+ * @param {String} opts.message
+ * @param {String} opts.transactionType  e.g. 'Airtime Purchase'
+ * @param {Number} opts.amount
+ * @param {String} opts.userName         the user who made the txn
+ * @param {String} opts.userEmail
+ * @param {String} opts.reference
+ * @param {String} opts.status
+ * @param {String} [opts.transactionId]  mongo _id
+ */
+async function notifyAdminsOfTransaction({
+  title,
+  message,
+  transactionType,
+  amount,
+  userName,
+  userEmail,
+  reference,
+  status,
+  transactionId,
+}) {
+  try {
+    const adminUsers = await User.find({
+      $or: [
+        { isAdmin: true },
+        { isSuperAdmin: true },
+        { role: 'admin' },
+        { role: 'super_admin' }
+      ]
+    }).select('_id fcmToken email fullName');
+
+    if (!adminUsers || adminUsers.length === 0) {
+      console.log('ℹ️ [ADMIN-NOTIFY] No admins to notify');
+      return;
+    }
+
+    const notifTitle = title || '💸 New Transaction';
+    const notifMessage = message || `${userName} made a ${transactionType} of ₦${Number(amount || 0).toFixed(2)}`;
+
+    console.log(`📣 [ADMIN-NOTIFY] Notifying ${adminUsers.length} admin(s) about ${transactionType} - ₦${amount}`);
+
+    for (const admin of adminUsers) {
+      // 1. Save in-app notification record
+      try {
+        await Notification.create({
+          recipient: admin._id,
+          title: notifTitle,
+          message: notifMessage,
+          type: 'admin_transaction',
+          isRead: false,
+          metadata: {
+            transactionId: transactionId || null,
+            transactionType,
+            amount,
+            userName,
+            userEmail,
+            reference,
+            status,
+            screen: 'admin_transactions'
+          }
+        });
+      } catch (dbErr) {
+        console.error(`⚠️ [ADMIN-NOTIFY] DB save failed for ${admin._id}:`, dbErr.message);
+      }
+
+      // 2. Push notification to phone tray
+      if (admin.fcmToken) {
+        try {
+          await sendPushNotification({
+            userId: admin._id,
+            title: notifTitle,
+            message: notifMessage,
+            type: 'admin_transaction',
+            screen: 'admin_transactions',
+            badgeCount: 0,
+            data: {
+              transactionId: transactionId || '',
+              transactionType,
+              amount: String(amount || 0),
+              reference: reference || '',
+              status: status || ''
+            }
+          });
+          console.log(`📱 [ADMIN-NOTIFY] Push sent to ${admin.email}`);
+        } catch (pushErr) {
+          console.error(`⚠️ [ADMIN-NOTIFY] Push failed for ${admin.email}:`, pushErr.message);
+        }
+      } else {
+        console.log(`⚠️ [ADMIN-NOTIFY] No FCM token for ${admin.email}`);
+      }
+
+      // 3. Socket.IO — instant in-app alert
+      if (global.io) {
+        try {
+          global.io.to(`user:${admin._id}`).emit('notification', {
+            title: notifTitle,
+            message: notifMessage,
+            type: 'admin_transaction',
+            screen: 'admin_transactions',
+            createdAt: new Date().toISOString(),
+            metadata: {
+              transactionId: transactionId || null,
+              transactionType,
+              amount,
+              userName,
+              reference,
+              status
+            }
+          });
+        } catch (socketErr) {
+          // Silent
+        }
+      }
+    }
+  } catch (err) {
+    console.error('❌ [ADMIN-NOTIFY] Error:', err.message);
+  }
+}
+// ==================== END ADMIN TRANSACTION NOTIFIER ====================
+
+
+
 
 // ==================== COMMISSION STATS CACHE ====================
 const commissionStatsCache = new Map();
@@ -2918,6 +3047,41 @@ app.get('/api/users/token-status', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
+
+// @desc    Debug — list admins + FCM token status
+// @route   GET /api/admin/fcm-status
+// @access  Private/Admin
+app.get('/api/admin/fcm-status', adminProtect, async (req, res) => {
+  try {
+    const admins = await User.find({
+      $or: [
+        { isAdmin: true },
+        { isSuperAdmin: true },
+        { role: 'admin' },
+        { role: 'super_admin' }
+      ]
+    }).select('_id fullName email fcmToken role isAdmin isSuperAdmin');
+
+    res.json({
+      success: true,
+      totalAdmins: admins.length,
+      withToken: admins.filter(a => !!a.fcmToken).length,
+      admins: admins.map(a => ({
+        _id: a._id,
+        name: a.fullName,
+        email: a.email,
+        role: a.role,
+        hasFcmToken: !!a.fcmToken,
+        fcmTokenPreview: a.fcmToken ? a.fcmToken.substring(0, 20) + '...' : null
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 
 
 // @desc    Update FCM token
@@ -11459,8 +11623,21 @@ app.post('/api/users/fund', adminProtect, [
       'none'
     );
     
-    await session.commitTransaction();
+       await session.commitTransaction();
     console.log(`✅ Successfully funded user ${user.email}`);
+
+    // ✅ NOTIFY ADMINS
+    notifyAdminsOfTransaction({
+      title: '💰 Wallet Funded',
+      message: `${req.user.fullName} funded ${user.fullName}'s wallet with ₦${amount}`,
+      transactionType: 'Wallet Funding',
+      amount: amount,
+      userName: req.user.fullName,
+      userEmail: req.user.email,
+      reference: Date.now().toString(),
+      status: 'Successful',
+      transactionId: null
+    }).catch(err => console.error('⚠️ Admin notify error:', err.message));
     
     res.json({ 
       success: true, 
@@ -11758,9 +11935,22 @@ checkPerMinuteLimit('transfer'), // ✅ Service-specific limit
         }
       }], { session });
       
-      await session.commitTransaction();
+          await session.commitTransaction();
       await session.endSession();
-      
+
+      // ✅ NOTIFY ADMINS
+      notifyAdminsOfTransaction({
+        title: '💸 Wallet Transfer',
+        message: `${sender.fullName} sent ₦${amount} to ${receiver.fullName || receiver.email}`,
+        transactionType: 'Transfer Sent',
+        amount: amount,
+        userName: sender.fullName,
+        userEmail: sender.email,
+        reference: 'TRF_' + Date.now(),
+        status: 'Successful',
+        transactionId: null
+      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+
       // ========== COMMISSION CALCULATION COMMENTED OUT ==========
       // Wallet-to-wallet transfers do not earn commission
       /*
@@ -14847,9 +15037,22 @@ app.post('/api/vtpass/tv/purchase',
 
         await newTransaction.save({ session });
 
-        // ✅ Commit BEFORE commission (prevents WriteConflict)
+                // ✅ Commit BEFORE commission (prevents WriteConflict)
         await session.commitTransaction();
         session.endSession();
+
+        // ✅ NOTIFY ADMINS
+        notifyAdminsOfTransaction({
+          title: '📺 Cable TV Purchase',
+          message: `${user.fullName} paid for ${serviceID.toUpperCase()} on ${billersCode} — ₦${totalAmount}`,
+          transactionType: 'Cable TV Subscription',
+          amount: totalAmount,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: reference,
+          status: 'Successful',
+          transactionId: newTransaction._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         // ✅ Calculate commission OUTSIDE transaction
         try {
@@ -15408,9 +15611,22 @@ app.post('/api/vtpass/airtime/purchase',
         }
       );
       
-      await session.commitTransaction();
+            await session.commitTransaction();
       
       console.log(`✅ [AIRTIME] COMPLETE: ${network} - ₦${amount} → Status: ${transactionStatus} | VTpass: ${interpretation.code}/${interpretation.innerStatus}`);
+
+      // ✅ NOTIFY ADMINS
+      notifyAdminsOfTransaction({
+        title: '📱 Airtime Purchase',
+        message: `${user.fullName} bought ₦${amount} ${network.toUpperCase()} airtime for ${phone} — ${transactionStatus}`,
+        transactionType: 'Airtime Purchase',
+        amount: amount,
+        userName: user.fullName,
+        userEmail: user.email,
+        reference: reference,
+        status: transactionStatus,
+        transactionId: newTransaction._id
+      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
       
       // ================================================
       // RETURN RESPONSE
@@ -15710,8 +15926,21 @@ app.post('/api/vtpass/data/purchase',
           console.error('Error creating notification:', notificationError);
         }
 
-        await session.commitTransaction();
+                await session.commitTransaction();
         console.log(`✅ [DATA] SUCCESS: ${network} - ${planName} to ${phone}`);
+
+        // ✅ NOTIFY ADMINS
+        notifyAdminsOfTransaction({
+          title: '📊 Data Purchase',
+          message: `${user.fullName} bought ${planName} for ${phone} (${network.toUpperCase()}) — ₦${amount}`,
+          transactionType: 'Data Purchase',
+          amount: amount,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: requestId,
+          status: 'Successful',
+          transactionId: newTransaction._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         return res.json({
           success: true,
@@ -16537,10 +16766,23 @@ app.post('/api/vtpass/electricity/purchase',
 
         await transaction.save({ session });
 
-        await calculateAndAddCommission(userId, amount, serviceID, session)
+               await calculateAndAddCommission(userId, amount, serviceID, session)
           .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
 
         await session.commitTransaction();
+
+        // ✅ NOTIFY ADMINS
+        notifyAdminsOfTransaction({
+          title: '💡 Electricity Purchase',
+          message: `${user.fullName} paid ₦${amount} for meter ${billersCode} — Token: ${formattedToken || 'See SMS'}`,
+          transactionType: 'Electricity Purchase',
+          amount: amount,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: requestId,
+          status: 'Successful',
+          transactionId: transaction._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         try {
           await Notification.create({
