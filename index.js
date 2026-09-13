@@ -1612,7 +1612,7 @@ const requireApproval = async (req, res, next) => {
       const settings = await Settings.findOne()
         .select('requireUserApproval')
         .lean();
-      approvalSystemEnabled = settings?.requireUserApproval !== false; // default true
+      approvalSystemEnabled = settings?.requireUserApproval !== false;
     } catch (settingsError) {
       console.error(
         '⚠️ [APPROVAL] Failed to read setting, defaulting to enabled:',
@@ -1623,6 +1623,9 @@ const requireApproval = async (req, res, next) => {
 
     // Toggle is OFF → everyone can transact, no approval needed
     if (!approvalSystemEnabled) {
+      console.log(
+        `✅ [APPROVAL] Toggle is OFF — skipping approval check for ${req.user?.email || 'unknown'} (${req.originalUrl})`
+      );
       return next();
     }
 
@@ -1682,7 +1685,10 @@ const requireApproval = async (req, res, next) => {
       });
     }
 
-    // ❌ Pending → block
+         // ❌ Pending → block
+    console.log(
+      `🚫 [APPROVAL] Blocked PENDING user: ${user._id} (${req.user?.email || 'unknown'}) from ${req.originalUrl}`
+    );
     return res.status(403).json({
       success: false,
       message:
@@ -4870,17 +4876,21 @@ app.post('/api/users/register', [
           // 6. Create user with referral tracking - NO VIRTUAL ACCOUNT CREATED HERE
     // In the registration endpoint, find where user is created
 // ✅ Read the global approval setting
+// ✅ Read the global approval setting
 let requireApproval = true;
 try {
   const settings = await Settings.findOne().select('requireUserApproval').lean();
-  requireApproval = settings?.requireUserApproval !== false; // default true
+  console.log(
+    `🔍 [REGISTER] Settings read: ${settings ? JSON.stringify({ requireUserApproval: settings.requireUserApproval }) : 'NULL (no settings document)'}`
+  );
+  requireApproval = settings?.requireUserApproval !== false;
 } catch (settingsError) {
   console.error('⚠️ Could not read approval setting, defaulting to true:', settingsError.message);
   requireApproval = true;
 }
 
 console.log(
-  `📝 [REGISTER] Approval system is ${requireApproval ? 'ENABLED' : 'DISABLED'} — new user will be ${requireApproval ? 'pending' : 'auto-approved'}`
+  `📝 [REGISTER] Approval system is ${requireApproval ? '✅ ENABLED' : '⚠️ DISABLED'} — new user will be ${requireApproval ? 'PENDING' : 'AUTO-APPROVED'}`
 );
 
 const user = new User({
@@ -10363,12 +10373,26 @@ app.get('/api/users/:userId', protect, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
     
-    const user = await User.findById(userId).select('-password');
+    const user = await User.findById(userId).select('-password').lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
-    res.json({ success: true, user });
+
+    // ✅ Safeguard: existing users without approvalStatus are treated as approved
+    const approvalStatus = user.approvalStatus || 'approved';
+    const rejectionReason = user.rejectionReason || null;
+
+    res.json({
+      success: true,
+      // Return both shapes so frontend gets it regardless
+      approvalStatus,
+      rejectionReason,
+      user: {
+        ...user,
+        approvalStatus,
+        rejectionReason,
+      },
+    });
   } catch (error) {
     console.error('Error fetching user:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
@@ -10906,6 +10930,30 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
     });
   }
 });
+
+
+// @desc    Public: check if approval system is ON (no auth needed)
+// @route   GET /api/approval-system-status
+// @access  Public
+app.get('/api/approval-system-status', async (req, res) => {
+  try {
+    const settings = await Settings.findOne()
+      .select('requireUserApproval')
+      .lean();
+    const enabled = settings?.requireUserApproval !== false;
+
+    res.json({
+      success: true,
+      requireUserApproval: enabled,
+    });
+  } catch (error) {
+    console.error('❌ Error fetching public approval status:', error);
+    // Fail-safe: return true (approval ON) if error
+    res.json({ success: true, requireUserApproval: true });
+  }
+});
+
+
 
 
 
