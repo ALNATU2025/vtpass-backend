@@ -385,6 +385,7 @@ userSchema.methods.hasPermission = function(permission) {
 
 
 // ✅ NEW: Method to check if user is approved
+// ✅ NEW: Method to check if user is approved
 userSchema.methods.isApproved = function() {
   // Admins are always approved
   if (this.isAdmin || this.isSuperAdmin || this.role === 'admin' || this.role === 'super_admin') {
@@ -394,12 +395,6 @@ userSchema.methods.isApproved = function() {
   const status = this.approvalStatus || 'approved';
   return status === 'approved';
 };
-
-// Method to check if user has any of the specified roles
-userSchema.methods.hasRole = function(roles) {
-
-
-
 
 // Method to check if user has any of the specified roles
 userSchema.methods.hasRole = function(roles) {
