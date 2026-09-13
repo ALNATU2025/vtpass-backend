@@ -1594,6 +1594,90 @@ const protect = async (req, res, next) => {
 
 
 
+
+
+// ==================== USER APPROVAL MIDDLEWARE ====================
+// ✅ Blocks ONLY newly-registered users whose account is pending or rejected.
+// ✅ Existing users (created before this feature) are automatically allowed
+//    because their `approvalStatus` field is undefined → treated as "approved".
+// ✅ Admins and super admins ALWAYS bypass.
+const requireApproval = async (req, res, next) => {
+  try {
+    const userId = req.user?._id;
+    if (!userId) {
+      return next();
+    }
+
+    // Admins always bypass
+    if (
+      req.user.isAdmin === true ||
+      req.user.role === 'admin' ||
+      req.user.role === 'super_admin'
+    ) {
+      return next();
+    }
+
+    // Fetch current approval status from DB (fresh, not from token)
+    const user = await User.findById(userId)
+      .select('approvalStatus isAdmin role')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Admin check again from DB (in case role changed)
+    if (
+      user.isAdmin === true ||
+      user.role === 'admin' ||
+      user.role === 'super_admin'
+    ) {
+      return next();
+    }
+
+    // ✅ CRITICAL: Existing users with NO approvalStatus field → treat as approved
+    // Only users with an EXPLICIT approvalStatus = 'pending' or 'rejected' are blocked
+    if (user.approvalStatus === undefined || user.approvalStatus === null) {
+      return next(); // Existing user → allow
+    }
+
+    // ✅ New users who have been approved → allow
+    if (user.approvalStatus === 'approved') {
+      return next();
+    }
+
+    // ❌ New users marked as rejected → block
+    if (user.approvalStatus === 'rejected') {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account has been rejected. Please contact support.',
+        code: 'ACCOUNT_REJECTED',
+        approvalStatus: 'rejected'
+      });
+    }
+
+    // ❌ New users marked as pending → block
+    return res.status(403).json({
+      success: false,
+      message: 'Your account is under approval. Please wait for admin approval before performing transactions.',
+      code: 'ACCOUNT_PENDING_APPROVAL',
+      approvalStatus: 'pending'
+    });
+  } catch (error) {
+    console.error('❌ [APPROVAL CHECK] Error:', error);
+    // Fail-open: don't lock users out because of internal errors
+    return next();
+  }
+};
+// ==================== END USER APPROVAL MIDDLEWARE ====================
+
+
+
+
 // After your protect middleware (around line ~250), add:
 
 // ==================== SERVICE AVAILABILITY MIDDLEWARE ====================
@@ -4775,13 +4859,19 @@ const user = new User({
   // ========== ROLE FIELDS - MUST BE STRINGS ==========
   role: 'user',
   roleLevel: 0,
-  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'], // ✅ STRINGS
+  permissions: ['view_profile', 'make_transactions', 'view_own_transactions'],
   // ==========================================
   isAdmin: false,
   isSuperAdmin: false,
   isActive: true,
   emailVerified: true,
-  virtualAccount: null
+  virtualAccount: null,
+
+  // ✅ NEW: Every new user starts as pending approval
+  approvalStatus: 'pending',
+  approvedBy: null,
+  approvedAt: null,
+  rejectionReason: null
 });
 
     const newUser = await user.save({ session });
@@ -4882,7 +4972,7 @@ try {
       success: true,
       message: 'Registration successful! Welcome to DalabaPay.',
       slogan: 'Smart Life, Fast Pay',
-      user: {
+           user: {
         _id: newUser._id,
         fullName: newUser.fullName,
         email: newUser.email,
@@ -4896,7 +4986,11 @@ try {
         transactionPinSet: !!newUser.transactionPin,
         biometricEnabled: newUser.biometricEnabled,
         emailVerified: newUser.emailVerified,
-        hasVirtualAccount: false
+        hasVirtualAccount: false,
+
+        // ✅ NEW: Include approval status
+        approvalStatus: newUser.approvalStatus || 'pending',
+        isApproved: (newUser.approvalStatus || 'pending') === 'approved'
       },
       token,
       refreshToken
@@ -5266,7 +5360,7 @@ app.post('/api/users/login', [
     console.log(`🎉 LOGIN SUCCESSFUL: ${email} | User ID: ${user._id}`);
     await logAuthAttempt(user._id, 'login', ipAddress, userAgent, true, 'Login successful');
     
-    res.json({
+        res.json({
       success: true,
       message: 'Login successful!',
       user: {
@@ -5279,6 +5373,10 @@ app.post('/api/users/login', [
         commissionBalance: user.commissionBalance,
         transactionPinSet: !!user.transactionPin,
         biometricEnabled: user.biometricEnabled,
+
+        // ✅ NEW: Include approval status
+        approvalStatus: user.approvalStatus || 'approved',
+        isApproved: (user.approvalStatus || 'approved') === 'approved'
       },
       token,
       refreshToken
@@ -6458,7 +6556,7 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
       message: 'PIN verified successfully',
       token: token,                    // 30-day access token
       refreshToken: refreshToken,      // 180-day refresh token
-      user: {
+          user: {
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
@@ -6468,7 +6566,11 @@ app.post('/api/auth/verify-pin-for-login', async (req, res) => {
         biometricEnabled: user.biometricEnabled || false,
         role: user.role || 'user',
         isAdmin: user.isAdmin || false,
-        isActive: user.isActive !== false
+        isActive: user.isActive !== false,
+
+        // ✅ NEW: Include approval status
+        approvalStatus: user.approvalStatus || 'approved',
+        isApproved: (user.approvalStatus || 'approved') === 'approved'
       }
     });
 
@@ -10768,6 +10870,154 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
 });
 
 
+
+
+// ==================== USER APPROVAL ENDPOINTS ====================
+
+// @desc    Get all users pending approval
+// @route   GET /api/admin/users/pending
+// @access  Private/Admin
+app.get('/api/admin/users/pending', adminProtect, async (req, res) => {
+  try {
+    const pendingUsers = await User.find({ approvalStatus: 'pending' })
+      .select('_id fullName email phone createdAt approvalStatus walletBalance isAdmin role')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      total: pendingUsers.length,
+      users: pendingUsers
+    });
+  } catch (error) {
+    console.error('❌ Error fetching pending users:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Approve a user
+// @route   POST /api/admin/users/:userId/approve
+// @access  Private/Admin
+app.post('/api/admin/users/:userId/approve', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.approvalStatus === 'approved') {
+      return res.status(400).json({
+        success: false,
+        message: 'User is already approved',
+        code: 'ALREADY_APPROVED'
+      });
+    }
+
+    user.approvalStatus = 'approved';
+    user.approvedBy = req.user._id;
+    user.approvedAt = new Date();
+    user.rejectionReason = null;
+    await user.save();
+
+    console.log(`✅ [APPROVAL] User ${user.email} approved by ${req.user.email}`);
+
+    try {
+      await Notification.create({
+        recipient: user._id,
+        title: 'Account Approved 🎉',
+        message: 'Your account has been approved! You can now perform transactions.',
+        type: 'account',
+        isRead: false,
+        metadata: {
+          event: 'account_approved',
+          approvedBy: req.user._id,
+          approvedAt: new Date()
+        }
+      });
+    } catch (notifErr) {
+      console.error('Notification error:', notifErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: `User ${user.fullName} approved successfully`,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        approvalStatus: user.approvalStatus,
+        approvedAt: user.approvedAt
+      }
+    });
+  } catch (error) {
+    console.error('❌ Approve user error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Reject a user
+// @route   POST /api/admin/users/:userId/reject
+// @access  Private/Admin
+app.post('/api/admin/users/:userId/reject', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reason } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.approvalStatus = 'rejected';
+    user.rejectionReason = reason || 'No reason provided';
+    user.approvedBy = req.user._id;
+    user.approvedAt = new Date();
+    await user.save();
+
+    console.log(`❌ [APPROVAL] User ${user.email} rejected by ${req.user.email}`);
+
+    try {
+      await Notification.create({
+        recipient: user._id,
+        title: 'Account Rejected ❌',
+        message: `Your account was rejected. Reason: ${reason || 'Contact support for more details.'}`,
+        type: 'account',
+        isRead: false,
+        metadata: {
+          event: 'account_rejected',
+          reason: reason || 'No reason provided',
+          rejectedBy: req.user._id
+        }
+      });
+    } catch (notifErr) {
+      console.error('Notification error:', notifErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: `User ${user.fullName} rejected`,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        approvalStatus: user.approvalStatus,
+        rejectionReason: user.rejectionReason
+      }
+    });
+  } catch (error) {
+    console.error('❌ Reject user error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================== END USER APPROVAL ENDPOINTS ====================
+
+
+
+
+
 // @desc    Get ALL users without pagination (Admin only - for transactions)
 // @route   GET /api/admin/all-users
 // @access  Private/Admin
@@ -10775,8 +11025,8 @@ app.get('/api/admin/all-users', adminProtect, async (req, res) => {
   try {
     console.log('📊 Fetching all users for admin (OPTIMIZED)');
     
-    const users = await User.find({})
-      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits')
+        const users = await User.find({})
+      .select('_id fullName email phone isAdmin isActive walletBalance commissionBalance createdAt customLimits approvalStatus approvedAt rejectionReason role')
       .lean()
       .maxTimeMS(8000);
     
@@ -11202,7 +11452,7 @@ app.get('/api/transactions/statistics', adminProtect, [
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
-app.post('/api/transfer', protect, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'),
+app.post('/api/transfer', protect, requireApproval, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'),
 checkGlobalPerMinuteLimit, // ✅ Global limit
 checkTransactionLimit('transfer'),
 checkPerMinuteLimit('transfer'), // ✅ Service-specific limit         
@@ -14037,6 +14287,7 @@ function normalizeTransactionStatus(status) {
 // ================================================
 app.post('/api/vtpass/tv/purchase', 
   protect, 
+  requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
   checkGlobalPerMinuteLimit,
@@ -14731,6 +14982,7 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
 // @access  Private
 app.post('/api/vtpass/airtime/purchase', 
   protect, 
+  requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit (max 5 per minute)
@@ -15086,6 +15338,7 @@ function generateVtpassRequestId() {
 // @access  Private
 app.post('/api/vtpass/data/purchase', 
   protect, 
+  requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isDataEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
@@ -15814,6 +16067,7 @@ app.post('/api/vtpass/validate-electricity', protect, [
 // @access  Private
 app.post('/api/vtpass/electricity/purchase', 
   protect, 
+  requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isElectricityEnabled'),
   checkGlobalPerMinuteLimit,
@@ -16987,6 +17241,7 @@ async function sendAdminLowBalanceAlert(serviceID, amount, vtpassBalance) {
 // @access  Private
 app.post('/api/vtpass/proxy', 
   protect, 
+  requireApproval,
   checkGlobalPerMinuteLimit,
   smartLimitCheck,
   checkPerMinuteLimit('proxy'),
@@ -18380,8 +18635,8 @@ app.post('/api/education/validate-profile', protect, [
 // @desc    Purchase education service (WAEC, JAMB, etc.)
 // @route   POST /api/education/purchase
 // @access  Private
-app.post('/api/education/purchase', protect, verifyTransactionAuth, 
-  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+app.post('/api/education/purchase', protect, requireApproval, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit,
   smartLimitCheck,
   checkTransactionLimit('education'),
   checkPerMinuteLimit('education'), // ✅ ADD THIS
@@ -19076,8 +19331,8 @@ function getFallbackStates() {
 // @desc    Purchase insurance with correct variation codes
 // @route   POST /api/insurance/purchase
 // @access  Private
-app.post('/api/insurance/purchase', protect, verifyTransactionAuth, 
-  checkGlobalPerMinuteLimit, // ✅ ADD THIS
+app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionAuth, 
+  checkGlobalPerMinuteLimit,
   smartLimitCheck, 
   checkTransactionLimit('insurance'), 
   checkPerMinuteLimit('insurance'), // ✅ ADD THIS
@@ -21510,6 +21765,7 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
 // @access  Private
 app.post('/api/international-airtime/purchase', 
   protect, 
+  requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
