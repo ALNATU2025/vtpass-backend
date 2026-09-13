@@ -3,9 +3,15 @@ const mongoose = require('mongoose');
 
 const appSettingsSchema = new mongoose.Schema({
   // ==================== SYSTEM SETTINGS ====================
+    // ==================== SYSTEM SETTINGS ====================
   isMaintenanceMode: { type: Boolean, default: false },
   maintenanceMessage: { type: String, default: '' },
   appVersion: { type: String, default: '1.0.0' },
+
+  // ✅ NEW: Global toggle for the user approval system
+  // - true  → new users start as "pending" (need admin approval)
+  // - false → new users start as "approved" (auto-approved, no gate)
+  requireUserApproval: { type: Boolean, default: true },
 
   // ==================== SERVICE AVAILABILITY TOGGLES ====================
   isAirtimeEnabled: { type: Boolean, default: true },
