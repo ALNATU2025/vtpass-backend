@@ -1601,8 +1601,31 @@ const protect = async (req, res, next) => {
 // ✅ Existing users (created before this feature) are automatically allowed
 //    because their `approvalStatus` field is undefined → treated as "approved".
 // ✅ Admins and super admins ALWAYS bypass.
+// ==================== USER APPROVAL MIDDLEWARE ====================
+// ✅ Blocks ONLY newly-registered users whose account is pending or rejected.
+// ✅ If the global toggle (requireUserApproval) is OFF, ALL checks are skipped.
 const requireApproval = async (req, res, next) => {
   try {
+    // ✅ STEP 0: Check global toggle first — if OFF, skip everything
+    let approvalSystemEnabled = true;
+    try {
+      const settings = await Settings.findOne()
+        .select('requireUserApproval')
+        .lean();
+      approvalSystemEnabled = settings?.requireUserApproval !== false; // default true
+    } catch (settingsError) {
+      console.error(
+        '⚠️ [APPROVAL] Failed to read setting, defaulting to enabled:',
+        settingsError.message
+      );
+      approvalSystemEnabled = true;
+    }
+
+    // Toggle is OFF → everyone can transact, no approval needed
+    if (!approvalSystemEnabled) {
+      return next();
+    }
+
     const userId = req.user?._id;
     if (!userId) {
       return next();
@@ -1639,18 +1662,17 @@ const requireApproval = async (req, res, next) => {
       return next();
     }
 
-    // ✅ CRITICAL: Existing users with NO approvalStatus field → treat as approved
-    // Only users with an EXPLICIT approvalStatus = 'pending' or 'rejected' are blocked
+    // ✅ Grandfather existing users with NO approvalStatus field
     if (user.approvalStatus === undefined || user.approvalStatus === null) {
-      return next(); // Existing user → allow
+      return next();
     }
 
-    // ✅ New users who have been approved → allow
+    // ✅ Explicit approved → allow
     if (user.approvalStatus === 'approved') {
       return next();
     }
 
-    // ❌ New users marked as rejected → block
+    // ❌ Rejected → block
     if (user.approvalStatus === 'rejected') {
       return res.status(403).json({
         success: false,
@@ -1660,19 +1682,21 @@ const requireApproval = async (req, res, next) => {
       });
     }
 
-    // ❌ New users marked as pending → block
+    // ❌ Pending → block
     return res.status(403).json({
       success: false,
-      message: 'Your account is under approval. Please wait for admin approval before performing transactions.',
+      message:
+        'Your account is under approval. Please wait for admin approval before performing transactions.',
       code: 'ACCOUNT_PENDING_APPROVAL',
       approvalStatus: 'pending'
     });
   } catch (error) {
     console.error('❌ [APPROVAL CHECK] Error:', error);
-    // Fail-open: don't lock users out because of internal errors
+    // Fail-open: don't lock users out due to internal errors
     return next();
   }
 };
+// ==================== END USER APPROVAL MIDDLEWARE ====================
 // ==================== END USER APPROVAL MIDDLEWARE ====================
 
 
@@ -4845,6 +4869,20 @@ app.post('/api/users/register', [
     // 6. Create user with referral tracking
           // 6. Create user with referral tracking - NO VIRTUAL ACCOUNT CREATED HERE
     // In the registration endpoint, find where user is created
+// ✅ Read the global approval setting
+let requireApproval = true;
+try {
+  const settings = await Settings.findOne().select('requireUserApproval').lean();
+  requireApproval = settings?.requireUserApproval !== false; // default true
+} catch (settingsError) {
+  console.error('⚠️ Could not read approval setting, defaulting to true:', settingsError.message);
+  requireApproval = true;
+}
+
+console.log(
+  `📝 [REGISTER] Approval system is ${requireApproval ? 'ENABLED' : 'DISABLED'} — new user will be ${requireApproval ? 'pending' : 'auto-approved'}`
+);
+
 const user = new User({
   fullName: fullName.trim(),
   email: normalizedEmail,
@@ -4867,10 +4905,10 @@ const user = new User({
   emailVerified: true,
   virtualAccount: null,
 
-  // ✅ NEW: Every new user starts as pending approval
-  approvalStatus: 'pending',
+  // ✅ Approval status depends on the global setting
+  approvalStatus: requireApproval ? 'pending' : 'approved',
   approvedBy: null,
-  approvedAt: null,
+  approvedAt: requireApproval ? null : new Date(),
   rejectionReason: null
 });
 
@@ -10868,6 +10906,74 @@ app.get('/api/admin/vtpass-alerts', protect, adminProtect, async (req, res) => {
     });
   }
 });
+
+
+
+// ==================== APPROVAL SETTING ENDPOINTS ====================
+
+// @desc    Get the current state of the user approval system
+// @route   GET /api/admin/approval-setting
+// @access  Private/Admin
+app.get('/api/admin/approval-setting', adminProtect, async (req, res) => {
+  try {
+    let settings = await Settings.findOne().select('requireUserApproval').lean();
+    const enabled = settings?.requireUserApproval !== false; // default: true
+
+    res.json({
+      success: true,
+      requireUserApproval: enabled,
+      message: enabled
+        ? 'Approval system is ON — new users must be approved.'
+        : 'Approval system is OFF — new users are auto-approved.'
+    });
+  } catch (error) {
+    console.error('❌ Error fetching approval setting:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @desc    Toggle the user approval system ON/OFF
+// @route   POST /api/admin/approval-setting
+// @access  Private/Admin
+app.post('/api/admin/approval-setting', adminProtect, async (req, res) => {
+  try {
+    const { requireUserApproval } = req.body;
+
+    if (typeof requireUserApproval !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'requireUserApproval must be a boolean'
+      });
+    }
+
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+
+    settings.requireUserApproval = requireUserApproval;
+    await settings.save();
+
+    console.log(
+      `✅ [APPROVAL SETTING] Approval system ${requireUserApproval ? 'ENABLED' : 'DISABLED'} by ${req.user.email}`
+    );
+
+    res.json({
+      success: true,
+      requireUserApproval,
+      message: requireUserApproval
+        ? 'Approval system enabled. New users will start as pending.'
+        : 'Approval system disabled. New users will be auto-approved.'
+    });
+  } catch (error) {
+    console.error('❌ Error updating approval setting:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================== END APPROVAL SETTING ENDPOINTS ====================
+
+
 
 
 
