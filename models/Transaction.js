@@ -73,11 +73,15 @@ const transactionSchema = new mongoose.Schema({
             'Refund Credit',
             'Commission used for service purchase',
             
-            // Other types
+                      // Other types
             'debit',
             'credit',
             'wallet_funding',
-            'virtual_account_topup'
+            'virtual_account_topup',
+
+            // ✅ NEW: Admin manual wallet actions (audited)
+            'Admin Wallet Credit',
+            'Admin Wallet Debit',
         ],
         required: true
     },
@@ -162,9 +166,9 @@ resolutionNote: String,
     metadata: metadataSchema,
     isCommission: { type: Boolean, default: false, index: true },
     service: { type: String, default: '', index: true },
-    authenticationMethod: {
+        authenticationMethod: {
         type: String,
-        enum: ['pin', 'biometric', 'none', 'paystack', 'manual'],
+        enum: ['pin', 'biometric', 'none', 'paystack', 'manual', 'admin'],
         default: 'none'
     },
     gateway: { type: String, default: 'paystack' },
