@@ -18,6 +18,18 @@ const metadataSchema = new mongoose.Schema({
     exchangeReference: { type: String },
     vtpassResponse: { type: mongoose.Schema.Types.Mixed },
     paystackData: { type: mongoose.Schema.Types.Mixed },
+
+    // ✅ NEW: Admin wallet action audit fields
+    // Must be declared here or Mongoose will drop them silently.
+    adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    adminName: { type: String, default: '' },
+    adminEmail: { type: String, default: '' },
+    reason: { type: String, default: '' },
+    reference: { type: String, default: '' },
+    note: { type: String, default: '' },
+    manualCredit: { type: Boolean, default: false },
+    manualDebit: { type: Boolean, default: false },
+
     verificationHistory: [{
         method: { type: String, enum: ['polling', 'webhook', 'callback', 'manual'] },
         timestamp: { type: Date, default: Date.now },
