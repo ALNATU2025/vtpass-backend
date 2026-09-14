@@ -36,6 +36,7 @@ const Settings = require('./models/AppSettings');
 const AuthLog = require('./models/AuthLog');
 const Alert = require('./models/Alert');
 const Referral = require('./models/Referral');
+const AdminNotification = require('./models/AdminNotification');
 
 
 
@@ -352,8 +353,53 @@ async function notifyAdminsOfTransaction({
 
     console.log(`📣 [ADMIN-NOTIFY] Notifying ${adminUsers.length} admin(s) about ${transactionType} - ₦${amount}`);
 
+      let severity = 'info';
+    const s = String(status || '').toLowerCase();
+    if (s === 'successful' || s === 'completed') severity = 'success';
+    else if (s === 'failed') severity = 'warning';
+
+    // ✅ HIGH-VALUE TRANSACTION → also fire "suspicious_activity"
+    const numericAmount = Number(amount || 0);
+    if (numericAmount >= 50000) {
+      notifyAdmins({
+        type: 'suspicious_activity',
+        title: '🔍 High-Value Transaction',
+        message: `${userName} made a ${transactionType} of ₦${numericAmount.toFixed(2)} (above ₦50,000 threshold).`,
+        severity: 'warning',
+        userName,
+        userEmail,
+        transactionId: transactionId || null,
+        transactionReference: reference,
+        transactionType,
+        amount: numericAmount,
+        status,
+        metadata: { threshold: 50000, reason: 'large_transaction' }
+      }).catch(err => console.error('⚠️ Suspicious-activity notify error:', err.message));
+    }
+
+    let adminNotif = null;
+    try {
+      adminNotif = await AdminNotification.create({
+        type: 'transaction_made',
+        title: notifTitle,
+        message: notifMessage,
+        severity,
+        userName,
+        userEmail,
+        transactionId: transactionId || null,
+        transactionReference: reference,
+        transactionType,
+        amount,
+        status,
+        isRead: false,
+        readBy: [],
+        metadata: { source: 'notifyAdminsOfTransaction' }
+      });
+    } catch (dbErr) {
+      console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
+    }
+
     for (const admin of adminUsers) {
-      // 1. Save in-app notification record
       try {
         await Notification.create({
           recipient: admin._id,
@@ -362,6 +408,7 @@ async function notifyAdminsOfTransaction({
           type: 'admin_transaction',
           isRead: false,
           metadata: {
+            adminNotificationId: adminNotif?._id || null,
             transactionId: transactionId || null,
             transactionType,
             amount,
@@ -373,10 +420,9 @@ async function notifyAdminsOfTransaction({
           }
         });
       } catch (dbErr) {
-        console.error(`⚠️ [ADMIN-NOTIFY] DB save failed for ${admin._id}:`, dbErr.message);
+        console.error(`⚠️ [ADMIN-NOTIFY] DB save failed:`, dbErr.message);
       }
 
-      // 2. Push notification to phone tray
       if (admin.fcmToken) {
         try {
           await sendPushNotification({
@@ -387,7 +433,7 @@ async function notifyAdminsOfTransaction({
             screen: 'admin_transactions',
             badgeCount: 0,
             data: {
-              transactionId: transactionId || '',
+              transactionId: transactionId ? transactionId.toString() : '',
               transactionType,
               amount: String(amount || 0),
               reference: reference || '',
@@ -396,13 +442,10 @@ async function notifyAdminsOfTransaction({
           });
           console.log(`📱 [ADMIN-NOTIFY] Push sent to ${admin.email}`);
         } catch (pushErr) {
-          console.error(`⚠️ [ADMIN-NOTIFY] Push failed for ${admin.email}:`, pushErr.message);
+          console.error(`⚠️ [ADMIN-NOTIFY] Push failed:`, pushErr.message);
         }
-      } else {
-        console.log(`⚠️ [ADMIN-NOTIFY] No FCM token for ${admin.email}`);
       }
 
-      // 3. Socket.IO — instant in-app alert
       if (global.io) {
         try {
           global.io.to(`user:${admin._id}`).emit('notification', {
@@ -420,18 +463,130 @@ async function notifyAdminsOfTransaction({
               status
             }
           });
-        } catch (socketErr) {
-          // Silent
-        }
+        } catch (socketErr) {}
       }
     }
   } catch (err) {
     console.error('❌ [ADMIN-NOTIFY] Error:', err.message);
   }
 }
+
+
+
 // ==================== END ADMIN TRANSACTION NOTIFIER ====================
 
+// ==================== ADMIN ACTIVITY NOTIFIER (Central) ====================
+async function notifyAdmins({
+  type,
+  title,
+  message,
+  severity = 'info',
+  userId = null,
+  userName = null,
+  userEmail = null,
+  userPhone = null,
+  transactionId = null,
+  transactionReference = null,
+  transactionType = null,
+  amount = null,
+  status = null,
+  metadata = {},
+}) {
+  try {
+    const adminUsers = await User.find({
+      $or: [
+        { isAdmin: true },
+        { isSuperAdmin: true },
+        { role: 'admin' },
+        { role: 'super_admin' }
+      ]
+    }).select('_id fcmToken email fullName');
 
+    if (!adminUsers || adminUsers.length === 0) {
+      console.log('ℹ️ [ADMIN-NOTIFY] No admins to notify');
+      return;
+    }
+
+    // 1) Save ONE AdminNotification record (shared)
+    let adminNotif = null;
+    try {
+      adminNotif = await AdminNotification.create({
+        type, title, message, severity,
+        userId, userName, userEmail, userPhone,
+        transactionId, transactionReference, transactionType,
+        amount, status, metadata,
+        isRead: false,
+        readBy: []
+      });
+    } catch (dbErr) {
+      console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
+    }
+
+    // 2) Per admin: personal Notification + push + socket
+    for (const admin of adminUsers) {
+      try {
+        await Notification.create({
+          recipient: admin._id,
+          title: title,
+          message: message,
+          type: 'admin_activity',
+          isRead: false,
+          metadata: {
+            adminNotificationId: adminNotif?._id || null,
+            activityType: type,
+            severity,
+            userId,
+            transactionId,
+            transactionReference,
+            screen: 'admin_notifications'
+          }
+        });
+      } catch (dbErr) {
+        console.error(`⚠️ [ADMIN-NOTIFY] Personal notif failed:`, dbErr.message);
+      }
+
+      if (admin.fcmToken) {
+        try {
+          await sendPushNotification({
+            userId: admin._id,
+            title: title,
+            message: message,
+            type: type,
+            screen: 'admin_notifications',
+            badgeCount: 0,
+            data: {
+              adminNotificationId: adminNotif?._id?.toString() || '',
+              activityType: type,
+              transactionId: transactionId?.toString() || '',
+              reference: transactionReference || '',
+              severity,
+            }
+          });
+        } catch (pushErr) {
+          console.error(`⚠️ [ADMIN-NOTIFY] Push failed:`, pushErr.message);
+        }
+      }
+
+      if (global.io) {
+        try {
+          global.io.to(`user:${admin._id}`).emit('admin_activity', {
+            _id: adminNotif?._id?.toString() || '',
+            type, title, message, severity,
+            userName, userEmail,
+            transactionReference, transactionType,
+            amount, status,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (socketErr) {}
+      }
+    }
+
+    console.log(`📣 [ADMIN-NOTIFY] ${type} → ${adminUsers.length} admin(s)`);
+  } catch (err) {
+    console.error('❌ [ADMIN-NOTIFY] Error:', err.message);
+  }
+}
+// ==================== END ADMIN ACTIVITY NOTIFIER ====================
 
 
 // ==================== COMMISSION STATS CACHE ====================
@@ -5150,13 +5305,33 @@ try {
       }
     }
 
-    // 12. Clear OTP after successful registration
+        // 12. Clear OTP after successful registration
     otpStore.delete(normalizedEmail);
 
     await session.commitTransaction();
     session.endSession();
 
     console.log(`🎉 [REGISTER] Registration completed for: ${newUser.email}`);
+
+    notifyAdmins({
+      type: 'new_user_registration',
+      title: '👤 New User Registered',
+      message: `${newUser.fullName} (${newUser.email}) just registered${referrerId ? ' via referral' : ''}.`,
+      severity: 'info',
+      userId: newUser._id,
+      userName: newUser.fullName,
+      userEmail: newUser.email,
+      userPhone: newUser.phone,
+      status: requireApproval ? 'pending_approval' : 'auto_approved',
+      metadata: {
+        referrerId: referrerId || null,
+        referrerName: referrerName || null,
+        referralCode: referralCode || null,
+        approvalStatus: newUser.approvalStatus || 'approved',
+      }
+    }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+
+    
     
     // 13. Return success response
     res.status(201).json({
@@ -8979,10 +9154,33 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
           screen: 'transaction_details'
         }
       });
-      console.log(`   ✅ User notified`);
+          console.log(`   ✅ User notified`);
     } catch (notifErr) {
       console.error('   ⚠️ Notification error:', notifErr.message);
     }
+
+    // ✅ NOTIFY ADMINS ABOUT STATUS CHANGE
+    notifyAdmins({
+      type: 'transaction_status_change',
+      title: `🔄 Transaction ${normalizedStatus}`,
+      message: `Transaction ${transaction.reference} (${transaction.type} · ₦${transaction.amount}) changed from ${oldStatus} to ${normalizedStatus}.`,
+      severity: normalizedStatus === 'Successful' || normalizedStatus === 'Completed'
+        ? 'success'
+        : (normalizedStatus === 'Failed' ? 'warning' : 'info'),
+      userId: transaction.userId,
+      transactionId: transaction._id,
+      transactionReference: transaction.reference,
+      transactionType: transaction.type,
+      amount: transaction.amount,
+      status: normalizedStatus,
+      metadata: {
+        oldStatus,
+        newStatus: normalizedStatus,
+        adminNote: adminNote || '',
+        changedBy: req.user._id,
+        changedByName: req.user.fullName,
+      }
+    }).catch(err => console.error('⚠️ Admin status notify error:', err.message));
 
     // ============================================
     // 7. RESPOND WITH FULL DATA
@@ -11323,7 +11521,78 @@ app.post('/api/admin/users/:userId/reject', adminProtect, async (req, res) => {
 // ==================== END USER APPROVAL ENDPOINTS ====================
 
 
+// ==================== ADMIN NOTIFICATION ENDPOINTS ====================
 
+app.get('/api/admin/notifications', adminProtect, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, type = 'all', severity = 'all' } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const maxLimit = Math.min(parseInt(limit), 200);
+
+    let query = {};
+    if (type && type !== 'all') query.type = type;
+    if (severity && severity !== 'all') query.severity = severity;
+
+    const [notifications, total, unreadCount] = await Promise.all([
+      AdminNotification.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(maxLimit)
+        .lean(),
+      AdminNotification.countDocuments(query),
+      AdminNotification.countDocuments({ isRead: false }),
+    ]);
+
+    res.json({
+      success: true,
+      notifications,
+      total,
+      unreadCount,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / maxLimit),
+    });
+  } catch (error) {
+    console.error('❌ [ADMIN-NOTIF] Fetch error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/admin/notifications/unread-count', adminProtect, async (req, res) => {
+  try {
+    const unreadCount = await AdminNotification.countDocuments({ isRead: false });
+    res.json({ success: true, unreadCount });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/admin/notifications/:id/read', adminProtect, async (req, res) => {
+  try {
+    const notif = await AdminNotification.findByIdAndUpdate(
+      req.params.id,
+      { isRead: true, $addToSet: { readBy: req.user._id } },
+      { new: true }
+    );
+    if (!notif) return res.status(404).json({ success: false, message: 'Notification not found' });
+    res.json({ success: true, notification: notif });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/admin/notifications/mark-all-read', adminProtect, async (req, res) => {
+  try {
+    const result = await AdminNotification.updateMany(
+      { isRead: false },
+      { isRead: true, $addToSet: { readBy: req.user._id } }
+    );
+    res.json({ success: true, modifiedCount: result.modifiedCount });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================== END ADMIN NOTIFICATION ENDPOINTS ====================
 
 
 // @desc    Get ALL users without pagination (Admin only - for transactions)
@@ -11605,7 +11874,7 @@ app.post('/api/users/fund', adminProtect, [
        await session.commitTransaction();
     console.log(`✅ Successfully funded user ${user.email}`);
 
-    // ✅ NOTIFY ADMINS
+       // ✅ NOTIFY ADMINS
     notifyAdminsOfTransaction({
       title: '💰 Wallet Funded',
       message: `${req.user.fullName} funded ${user.fullName}'s wallet with ₦${amount}`,
@@ -11617,6 +11886,26 @@ app.post('/api/users/fund', adminProtect, [
       status: 'Successful',
       transactionId: null
     }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+
+    notifyAdmins({
+      type: 'wallet_funded',
+      title: '💰 Wallet Funded (Admin)',
+      message: `Admin ${req.user.fullName} funded ${user.fullName}'s wallet with ₦${amount}.`,
+      severity: 'success',
+      userId: user._id,
+      userName: user.fullName,
+      userEmail: user.email,
+      userPhone: user.phone,
+      amount: amount,
+      status: 'Successful',
+      metadata: {
+        fundedBy: req.user._id,
+        fundedByName: req.user.fullName,
+        note: note,
+        balanceBefore,
+        balanceAfter,
+      }
+    }).catch(err => console.error('⚠️ Admin activity notify error:', err.message));
     
     res.json({ 
       success: true, 
@@ -11630,6 +11919,24 @@ app.post('/api/users/fund', adminProtect, [
     await session.abortTransaction();
     console.error('❌ Error funding user:', error);
     console.error('Error details:', error.message);
+
+    // ✅ NOTIFY ADMINS — FUNDING FAILED
+    notifyAdmins({
+      type: 'wallet_funding_failed',
+      title: '❌ Wallet Funding Failed',
+      message: `Admin ${req.user?.fullName || 'Unknown'} attempted to fund user ${userId} with ₦${amount} but it FAILED: ${error.message}`,
+      severity: 'critical',
+      userId: userId,
+      amount: amount,
+      status: 'Failed',
+      metadata: {
+        error: error.message,
+        attemptedBy: req.user?._id,
+        attemptedByName: req.user?.fullName,
+        note: note || null,
+      }
+    }).catch(err => console.error('⚠️ Admin failed-funding notify error:', err.message));
+
     res.status(500).json({ 
       success: false, 
       message: 'Internal Server Error',
@@ -17769,6 +18076,24 @@ app.post('/api/vtpass/proxy',
       
       await session.abortTransaction();
       console.log(`🚫 DUPLICATE PROXY CALL BLOCKED: ${uniqueRequestId} already processed - Refunded user`);
+
+            // ✅ ALERT ADMINS ABOUT DUPLICATE REQUEST_ID ATTEMPT
+      notifyAdmins({
+        type: 'duplicate_transaction_attempt',
+        title: '🚨 Duplicate Request ID Blocked',
+        message: `${req.user.fullName} tried reusing request_id ${uniqueRequestId}. Blocked.`,
+        severity: 'critical',
+        userId: req.user._id,
+        userName: req.user.fullName,
+        userEmail: req.user.email,
+        transactionReference: uniqueRequestId,
+        transactionType: serviceID,
+        amount: transactionAmount,
+        metadata: {
+          existingTransactionId: alreadyProcessed._id,
+          ip: req.ip,
+        }
+      }).catch(err => console.error('⚠️ Admin dup notify error:', err.message));
       
       return res.json({
         success: true,
@@ -17810,6 +18135,25 @@ app.post('/api/vtpass/proxy',
       
       await session.abortTransaction();
       console.log(`🚫 RECENT TRANSACTION BLOCKED: User ${userId} - Same recipient within 30 seconds - Refunded user`);
+
+            // ✅ ALERT ADMINS ABOUT DUPLICATE ATTEMPT
+      notifyAdmins({
+        type: 'duplicate_transaction_attempt',
+        title: '🚨 Duplicate Transaction Blocked',
+        message: `${req.user.fullName} tried a duplicate ${serviceID} transaction to ${phone || billersCode} within 30 seconds. Blocked.`,
+        severity: 'critical',
+        userId: req.user._id,
+        userName: req.user.fullName,
+        userEmail: req.user.email,
+        transactionType: serviceID,
+        amount: transactionAmount,
+        transactionReference: uniqueRequestId,
+        metadata: {
+          existingTransactionId: recentTransaction._id,
+          recipient: phone || billersCode,
+          ip: req.ip,
+        }
+      }).catch(err => console.error('⚠️ Admin dup notify error:', err.message));
       
       return res.status(409).json({
         success: false,
