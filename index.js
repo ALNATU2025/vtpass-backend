@@ -1087,6 +1087,46 @@ app.use(express.urlencoded({ extended: true }));
 //app.use(cors());
 
 
+// ============================================================
+// 🖼️ OPERATOR LOGO PROXY
+// Fetches VTpass operator logos server-side and serves them to the app.
+// Why: some mobile networks block vtpass.com directly.
+// ============================================================
+app.get('/api/operator-logo', async (req, res) => {
+  try {
+    const rawUrl = req.query.url?.toString() || '';
+
+       // ✅ Only allow trusted image hosts — prevent SSRF
+    const allowedPrefixes = [
+      'https://vtpass.com/resources/images/operators/',
+      'https://flagcdn.com/',
+    ];
+    const isAllowed = allowedPrefixes.some((p) => rawUrl.startsWith(p));
+    if (!isAllowed) {
+      return res.status(400).json({ success: false, message: 'Invalid URL' });
+    }
+
+    const response = await axios.get(rawUrl, {
+      responseType: 'arraybuffer',
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (DalabaPay-LogoProxy/1.0)',
+        'Accept': 'image/*,*/*;q=0.8',
+      },
+    });
+
+    const contentType = response.headers['content-type'] || 'image/png';
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=604800'); // 7 days
+    res.set('Access-Control-Allow-Origin', '*');
+    return res.send(Buffer.from(response.data));
+  } catch (err) {
+    console.error('❌ [LOGO-PROXY] Failed:', err.message);
+    // Return a small transparent placeholder so the UI shows the fallback icon
+    return res.status(502).json({ success: false, message: 'Logo unavailable' });
+  }
+});
+
 // ==================== SESSION ACTIVITY TRACKING ====================
 // Add this BEFORE your routes
 
