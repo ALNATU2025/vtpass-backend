@@ -1229,9 +1229,19 @@ app.all('/api/wallet/add-funds', (req, res) => {
 });
 
 // 🚨 Block ANY route containing these keywords
+// 🚨 Block ANY route containing these keywords (EXCEPT ADMIN ROUTES)
+// Admin routes are protected by adminProtect middleware — they are safe.
 app.use((req, res, next) => {
-  const blockedKeywords = ['paystack', 'paystack_funding', 'wallet/fund', 'wallet/credit', 'wallet/add'];
   const url = req.url.toLowerCase();
+
+  // ✅ CRITICAL: Skip this block for ALL admin routes
+  // Admin routes are already protected by adminProtect middleware
+  // which verifies the user is an admin from the DB.
+  if (url.startsWith('/api/admin/')) {
+    return next();
+  }
+
+  const blockedKeywords = ['paystack', 'paystack_funding', 'wallet/fund', 'wallet/credit', 'wallet/add'];
   
   for (const keyword of blockedKeywords) {
     if (url.includes(keyword)) {
