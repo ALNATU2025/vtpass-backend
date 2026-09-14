@@ -37,6 +37,7 @@ const AuthLog = require('./models/AuthLog');
 const Alert = require('./models/Alert');
 const Referral = require('./models/Referral');
 const AdminNotification = require('./models/AdminNotification');
+const AdminAuditLog = require('./models/AdminAuditLog');
 
 
 
@@ -298,6 +299,51 @@ function interpretVtpassResponse(vtpassData, endpointType = 'purchase') {
   return result;
 }
 // ==================== END MASTER HANDLER ====================
+
+
+
+
+// ==================== ADMIN AUDIT LOG HELPER ====================
+/**
+ * Log an admin action to the audit trail.
+ * Never throws — logging failures must not break the main operation.
+ */
+async function logAdminAction({
+  admin,
+  targetUser,
+  action,
+  amount = 0,
+  balanceBefore = 0,
+  balanceAfter = 0,
+  reason = '',
+  reference = '',
+  note = '',
+  metadata = {},
+}) {
+  try {
+    await AdminAuditLog.create({
+      adminId: admin._id,
+      adminName: admin.fullName || admin.name || 'Unknown Admin',
+      adminEmail: admin.email || '',
+      userId: targetUser._id,
+      userName: targetUser.fullName || 'Unknown User',
+      userEmail: targetUser.email || '',
+      action,
+      amount,
+      balanceBefore,
+      balanceAfter,
+      reason,
+      reference,
+      note,
+      metadata,
+    });
+    console.log(`📝 [AUDIT] ${action} logged for user ${targetUser.email}`);
+  } catch (err) {
+    console.error('❌ [AUDIT] Failed to save audit log:', err.message);
+  }
+}
+// ==================== END AUDIT LOG HELPER ====================
+
 
 
 
@@ -11376,6 +11422,300 @@ app.post('/api/admin/approval-setting', adminProtect, async (req, res) => {
 
 
 
+// ==================== ADMIN WALLET CREDIT/DEBIT (AUDITED) ====================
+
+// @desc    Manually credit a user's wallet (audited)
+// @route   POST /api/admin/users/:userId/wallet/credit
+// @access  Private/Admin
+app.post('/api/admin/users/:userId/wallet/credit', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount, reason, reference, note } = req.body;
+
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0 || isNaN(amt)) {
+      return res.status(400).json({ success: false, message: 'Amount must be a positive number' });
+    }
+    if (!reason || reason.trim().length < 3) {
+      return res.status(400).json({ success: false, message: 'Reason is required (min 3 characters)' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const balanceBefore = user.walletBalance || 0;
+    user.walletBalance = balanceBefore + amt;
+    await user.save();
+
+    const balanceAfter = user.walletBalance;
+
+    // Save a transaction record
+    try {
+      await Transaction.create({
+        userId: user._id,
+        type: 'Admin Wallet Credit',
+        amount: amt,
+        status: 'Successful',
+        description: `Manual wallet credit by admin (${req.user.fullName})`,
+        balanceBefore,
+        balanceAfter,
+        reference: reference || `ADMIN_CREDIT_${Date.now()}`,
+        isCommission: false,
+        authenticationMethod: 'admin',
+        metadata: {
+          adminId: req.user._id,
+          adminName: req.user.fullName,
+          reason: reason.trim(),
+          note: note || '',
+          manualCredit: true,
+        },
+      });
+    } catch (txErr) {
+      console.error('⚠️ [ADMIN CREDIT] Transaction save failed:', txErr.message);
+    }
+
+    // Audit log
+    await logAdminAction({
+      admin: req.user,
+      targetUser: user,
+      action: 'WALLET_CREDIT',
+      amount: amt,
+      balanceBefore,
+      balanceAfter,
+      reason: reason.trim(),
+      reference: reference || `CREDIT-${Date.now()}`,
+      note: note || '',
+    });
+
+    console.log(`✅ [ADMIN CREDIT] ${req.user.email} credited ₦${amt} to ${user.email}`);
+
+    return res.json({
+      success: true,
+      message: `Successfully credited ₦${amt.toFixed(2)} to ${user.fullName}`,
+      data: {
+        userId: user._id,
+        walletBalance: user.walletBalance,
+        balanceBefore,
+        balanceAfter,
+        amount: amt,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Admin credit error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Manually debit a user's wallet (audited)
+// @route   POST /api/admin/users/:userId/wallet/debit
+// @access  Private/Admin
+app.post('/api/admin/users/:userId/wallet/debit', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount, reason, reference, note } = req.body;
+
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0 || isNaN(amt)) {
+      return res.status(400).json({ success: false, message: 'Amount must be a positive number' });
+    }
+    if (!reason || reason.trim().length < 3) {
+      return res.status(400).json({ success: false, message: 'Reason is required (min 3 characters)' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const balanceBefore = user.walletBalance || 0;
+    if (balanceBefore < amt) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient balance. User has ₦${balanceBefore.toFixed(2)}, cannot debit ₦${amt.toFixed(2)}`,
+      });
+    }
+
+    user.walletBalance = balanceBefore - amt;
+    await user.save();
+
+    const balanceAfter = user.walletBalance;
+
+    // Save a transaction record
+    try {
+      await Transaction.create({
+        userId: user._id,
+        type: 'Admin Wallet Debit',
+        amount: amt,
+        status: 'Successful',
+        description: `Manual wallet debit by admin (${req.user.fullName})`,
+        balanceBefore,
+        balanceAfter,
+        reference: reference || `ADMIN_DEBIT_${Date.now()}`,
+        isCommission: false,
+        authenticationMethod: 'admin',
+        metadata: {
+          adminId: req.user._id,
+          adminName: req.user.fullName,
+          reason: reason.trim(),
+          note: note || '',
+          manualDebit: true,
+        },
+      });
+    } catch (txErr) {
+      console.error('⚠️ [ADMIN DEBIT] Transaction save failed:', txErr.message);
+    }
+
+    // Audit log
+    await logAdminAction({
+      admin: req.user,
+      targetUser: user,
+      action: 'WALLET_DEBIT',
+      amount: amt,
+      balanceBefore,
+      balanceAfter,
+      reason: reason.trim(),
+      reference: reference || `DEBIT-${Date.now()}`,
+      note: note || '',
+    });
+
+    console.log(`✅ [ADMIN DEBIT] ${req.user.email} debited ₦${amt} from ${user.email}`);
+
+    return res.json({
+      success: true,
+      message: `Successfully debited ₦${amt.toFixed(2)} from ${user.fullName}`,
+      data: {
+        userId: user._id,
+        walletBalance: user.walletBalance,
+        balanceBefore,
+        balanceAfter,
+        amount: amt,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Admin debit error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Get audit logs for a specific user
+// @route   GET /api/admin/users/:userId/audit-logs
+// @access  Private/Admin
+app.get('/api/admin/users/:userId/audit-logs', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const skip = (page - 1) * limit;
+
+    const [logs, total] = await Promise.all([
+      AdminAuditLog.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AdminAuditLog.countDocuments({ userId }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        logs,
+        total,
+        page,
+        pages: Math.ceil(total / limit),
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Get user audit logs error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Get all admin audit logs (admin-wide view)
+// @route   GET /api/admin/audit-logs
+// @access  Private/Admin
+app.get('/api/admin/audit-logs', adminProtect, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const skip = (page - 1) * limit;
+    const { action, adminId, userId } = req.query;
+
+    const filter = {};
+    if (action) filter.action = action;
+    if (adminId) filter.adminId = adminId;
+    if (userId) filter.userId = userId;
+
+    const [logs, total] = await Promise.all([
+      AdminAuditLog.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AdminAuditLog.countDocuments(filter),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        logs,
+        total,
+        page,
+        pages: Math.ceil(total / limit),
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Get audit logs error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Get full user details (info + audit logs + recent transactions)
+// @route   GET /api/admin/users/:userId/full-details
+// @access  Private/Admin
+app.get('/api/admin/users/:userId/full-details', adminProtect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('-password -pin -transactionPin').lean();
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const [transactions, auditLogs] = await Promise.all([
+      Transaction.find({ userId }).sort({ createdAt: -1 }).limit(20).lean(),
+      AdminAuditLog.find({ userId }).sort({ createdAt: -1 }).limit(20).lean(),
+    ]);
+
+    // Derive account status
+    let status = 'active';
+    if (user.approvalStatus === 'pending') status = 'pending';
+    else if (user.approvalStatus === 'rejected') status = 'rejected';
+    else if (user.isSuspended === true) status = 'suspended';
+    else if (user.isActive === false) status = 'inactive';
+
+    return res.json({
+      success: true,
+      data: {
+        user,
+        status,
+        transactions,
+        auditLogs,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Get user full details error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ==================== END ADMIN WALLET CREDIT/DEBIT ====================
+
+
 
 
 // ==================== USER APPROVAL ENDPOINTS ====================
@@ -11643,10 +11983,16 @@ app.put('/api/users/toggle-status/:userId', adminProtect, [
     if (req.user._id.toString() === userId && !isActive) {
       return res.status(400).json({ success: false, message: 'You cannot deactivate your own account' });
     }
-    
-    user.isActive = isActive;
+       user.isActive = isActive;
     await user.save();
-    
+
+    // ✅ Audit log for activation/deactivation
+    await logAdminAction({
+      admin: req.user,
+      targetUser: user,
+      action: isActive ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',
+      reason: isActive ? 'Account activated by admin' : 'Account deactivated by admin',
+    });
     res.json({ 
       success: true, 
       message: `User ${isActive ? 'activated' : 'deactivated'} successfully`,
