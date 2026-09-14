@@ -11684,21 +11684,46 @@ app.get('/api/admin/audit-logs', adminProtect, async (req, res) => {
   }
 });
 
-// @desc    Get full user details (info + audit logs + recent transactions)
+// @desc    Get full user details (info + audit logs + ALL transactions with pagination)
 // @route   GET /api/admin/users/:userId/full-details
 // @access  Private/Admin
 app.get('/api/admin/users/:userId/full-details', adminProtect, async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // ✅ Pagination params for transactions
+    const txPage = Math.max(1, parseInt(req.query.txPage) || 1);
+    const txLimit = Math.min(parseInt(req.query.txLimit) || 100, 500); // default 100, max 500
+    const txSkip = (txPage - 1) * txLimit;
+
+    // ✅ Pagination params for audit logs
+    const auditPage = Math.max(1, parseInt(req.query.auditPage) || 1);
+    const auditLimit = Math.min(parseInt(req.query.auditLimit) || 50, 200);
+    const auditSkip = (auditPage - 1) * auditLimit;
+
     const user = await User.findById(userId).select('-password -pin -transactionPin').lean();
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const [transactions, auditLogs] = await Promise.all([
-      Transaction.find({ userId }).sort({ createdAt: -1 }).limit(20).lean(),
-      AdminAuditLog.find({ userId }).sort({ createdAt: -1 }).limit(20).lean(),
+    const [
+      transactions,
+      totalTransactions,
+      auditLogs,
+      totalAuditLogs,
+    ] = await Promise.all([
+      Transaction.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(txSkip)
+        .limit(txLimit)
+        .lean(),
+      Transaction.countDocuments({ userId }),
+      AdminAuditLog.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(auditSkip)
+        .limit(auditLimit)
+        .lean(),
+      AdminAuditLog.countDocuments({ userId }),
     ]);
 
     // Derive account status
@@ -11715,6 +11740,21 @@ app.get('/api/admin/users/:userId/full-details', adminProtect, async (req, res) 
         status,
         transactions,
         auditLogs,
+        // ✅ Pagination metadata
+        pagination: {
+          transactions: {
+            total: totalTransactions,
+            page: txPage,
+            limit: txLimit,
+            totalPages: Math.ceil(totalTransactions / txLimit) || 1,
+          },
+          auditLogs: {
+            total: totalAuditLogs,
+            page: auditPage,
+            limit: auditLimit,
+            totalPages: Math.ceil(totalAuditLogs / auditLimit) || 1,
+          },
+        },
       },
     });
   } catch (err) {
