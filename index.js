@@ -5990,19 +5990,40 @@ app.get('/api/users/session-health', protect, async (req, res) => {
 
 
 
-// @desc    Logout user
+// @desc    Logout user — DOES NOT invalidate token
+//          so PIN/Biometric re-login continues to work
 // @route   POST /api/users/logout
 // @access  Private
 app.post('/api/users/logout', protect, async (req, res) => {
   try {
-    // Invalidate refresh token
-    req.user.refreshToken = null;
-    await req.user.save();
+    const userId = req.user?._id || req.user?.id;
+
+    // Best-effort: record logout timestamp WITHOUT using req.user.save()
+    // (req.user may be a lean object — .save() would throw)
+    if (userId) {
+      try {
+        await User.updateOne(
+          { _id: userId },
+          { $set: { lastLogout: new Date() } }
+        );
+      } catch (dbErr) {
+        console.error('⚠️ Logout DB update failed (non-fatal):', dbErr.message);
+      }
+    }
+
+
     
-    res.json({ success: true, message: 'Logout successful' });
+
+    // ✅ INTENTIONALLY DO NOT invalidate refreshToken here.
+    // The client keeps token/userId so PIN & Biometric can log back in.
+    return res.json({
+      success: true,
+      message: 'Logout successful (session retained for PIN/Biometric)',
+    });
   } catch (error) {
     console.error('Logout error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    // Even on error, return success so the client can proceed
+    return res.json({ success: true, message: 'Logout successful' });
   }
 });
 
