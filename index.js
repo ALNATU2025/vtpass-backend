@@ -23051,9 +23051,31 @@ app.post('/api/international-airtime/purchase',
       
       const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
+          // ================================================
+      // 🔥 CALL VTPASS API TO GET EXACT NAIRA AMOUNT
+      // ================================================
+      console.log('📡 Calling VTpass API...');
+      console.log('🌐 Endpoint: /api/pay');
+      console.log('⏰ Time:', new Date().toISOString());
+      console.log('📤 VTPASS PAYLOAD:', JSON.stringify(vtpassPayload, null, 2));
+
+      const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
+
       console.log('📡 ========== VTPASS RESPONSE RECEIVED ==========');
       console.log('📡 Success:', vtpassResult.success);
+      console.log('📡 Status Code:', vtpassResult.status);
       console.log('📡 Full Response:', JSON.stringify(vtpassResult, null, 2));
+
+      // ✅ DETAILED BREAKDOWN
+      const vtpassCode = vtpassResult.data?.code?.toString() || vtpassResult.data?.response_description?.toString() || 'UNKNOWN';
+      const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
+
+      console.log('🔍 VTpass Code:', vtpassCode);
+      console.log('🔍 VTpass Description:', vtpassDesc);
+      console.log('🔍 VTpass content:', JSON.stringify(vtpassResult.data?.content, null, 2));
+      console.log('🔍 VTpass amount field:', vtpassResult.data?.amount);
+      console.log('🔍 VTpass Amount field:', vtpassResult.data?.Amount);
+      console.log('🔍 VTpass transactions:', JSON.stringify(vtpassResult.data?.content?.transactions, null, 2));
       console.log('📡 ==============================================');
 
       // ================================================
