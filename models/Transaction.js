@@ -177,9 +177,24 @@ resolutionNote: String,
     retryCount: { type: Number, default: 0, max: 3 },
     lastVerifiedAt: Date,
     verificationAttempts: { type: Number, default: 0 },
-    failureReason: String,
+      failureReason: String,
     canRetry: { type: Boolean, default: false },
-    nextRetryAt: Date
+    nextRetryAt: Date,
+
+    // ✅ NEW: Admin audit fields for manual credit/debit
+    isAdminAction: { type: Boolean, default: false, index: true },
+    adminId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true
+    },
+    adminName: { type: String, default: '' },
+    adminEmail: { type: String, default: '' },
+    adminReason: { type: String, default: '' },
+    adminNote: { type: String, default: '' },
+    adminReference: { type: String, default: '' },
+    adminIp: { type: String, default: '' },
 }, {
     timestamps: true,
     versionKey: false
