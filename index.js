@@ -1096,9 +1096,13 @@ app.get('/api/operator-logo', async (req, res) => {
   try {
     const rawUrl = req.query.url?.toString() || '';
 
-       // ✅ Only allow trusted image hosts — prevent SSRF
+    if (!rawUrl || !rawUrl.startsWith('http')) {
+      return res.status(400).json({ success: false, message: 'Invalid URL' });
+    }
+
     const allowedPrefixes = [
       'https://vtpass.com/resources/images/operators/',
+      'https://vtpass.com/resources/images/flags/',
       'https://flagcdn.com/',
     ];
     const isAllowed = allowedPrefixes.some((p) => rawUrl.startsWith(p));
@@ -1110,20 +1114,26 @@ app.get('/api/operator-logo', async (req, res) => {
       responseType: 'arraybuffer',
       timeout: 10000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (DalabaPay-LogoProxy/1.0)',
+        'User-Agent': 'Mozilla/5.0 (DalabaPay-ImageProxy/1.0)',
         'Accept': 'image/*,*/*;q=0.8',
       },
     });
 
     const contentType = response.headers['content-type'] || 'image/png';
     res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=604800'); // 7 days
+    res.set('Cache-Control', 'public, max-age=604800');
     res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
     return res.send(Buffer.from(response.data));
   } catch (err) {
-    console.error('❌ [LOGO-PROXY] Failed:', err.message);
-    // Return a small transparent placeholder so the UI shows the fallback icon
-    return res.status(502).json({ success: false, message: 'Logo unavailable' });
+    console.error(`❌ [IMG-PROXY] Failed for ${req.query.url}:`, err.message);
+    const transparentPng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+      'base64'
+    );
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).send(transparentPng);
   }
 });
 
