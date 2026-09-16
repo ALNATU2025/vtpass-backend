@@ -23425,55 +23425,8 @@ app.post('/api/international-airtime/purchase',
         });
       }
 
-        // No adjustment needed — exact match
-        await session.commitTransaction();
-        session.endSession();
-
-        // Commission (outside session)
-        try {
-          await calculateAndAddCommission(userId, debitAmountNaira, 'airtime');
-        } catch (commErr) {
-          console.log('⚠️ Commission error:', commErr.message);
-        }
-
-        // Notification
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "International Airtime Purchase Successful 🌍",
-            message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${debitAmountNaira.toFixed(2)}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phoneNumber, amount, currency, countryCode, nairaAmount: debitAmountNaira, newBalance: balanceAfter }
-          });
-        } catch (notifError) {
-          console.error('❌ Notification error:', notifError);
-        }
-
-        console.log(`✅ [INTL-AIRTIME] SUCCESS: ₦${debitAmountNaira.toFixed(2)} debited`);
-
-        return res.json({
-          success: true,
-          message: `International airtime purchase successful! ${currency} ${amount} sent to ${phoneNumber}.`,
-          transactionId: requestId,
-          reference: requestId,
-          status: 'Successful',
-          newBalance: balanceAfter,
-          foreignAmount: amount,
-          currency: currency,
-          nairaAmount: debitAmountNaira,
-          nairaEquivalent: debitAmountNaira,
-          exchangeRate: exchangeRateUsed,
-          phoneNumber: phoneNumber,
-          countryCode: countryCode,
-          userDebited: true,
-          amountDebited: debitAmountNaira,
-          vtpassResponse: vtpassResult.data,
-          vtpassCode: interpretation.code,
-          vtpassDescription: interpretation.description
-        });
-      }
-
+       
+         
       // ================================================
       // 🔄 PENDING — Keep debit, create pending transaction
       // (User is debited, we'll requery later)
