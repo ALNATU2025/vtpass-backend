@@ -23152,30 +23152,41 @@ app.post('/api/international-airtime/purchase',
         ? parseFloat(req.body.variationRate)
         : 0;
       
-      let debitAmountNaira = 0;
+        let debitAmountNaira = 0;
       let exchangeRateUsed = 0;
       
       if (estimatedNairaAmount > 0) {
-        // Frontend calculated it (for fixed price)
+        // Frontend calculated it (for fixed price) — NEW APP
         debitAmountNaira = estimatedNairaAmount;
         exchangeRateUsed = debitAmountNaira / amount;
         console.log(`💰 Using frontend estimated Naira amount: ₦${debitAmountNaira.toFixed(2)}`);
       } else if (variationRate > 0) {
-        // Frontend sent the rate (for flexible price)
+        // Frontend sent the rate (for flexible price) — NEW APP
         debitAmountNaira = amount * variationRate;
         exchangeRateUsed = variationRate;
         console.log(`💰 Using variation rate: 1 ${currency} = ₦${variationRate} → ₦${debitAmountNaira.toFixed(2)}`);
+      } else if (String(currency).toUpperCase() === 'NGN' && amount > 0) {
+        // ✅ BACKWARD COMPATIBILITY — OLD APP (Play Store)
+        // Old app sends `amount` in NGN without a separate estimatedNairaAmount.
+        // For NGN, `amount` IS the Naira amount. Safe to debit directly.
+        debitAmountNaira = amount;
+        exchangeRateUsed = 1;
+        console.log(`💰 [OLD-APP FALLBACK] NGN currency — debiting amount directly: ₦${debitAmountNaira.toFixed(2)}`);
       } else {
-        // ❌ NO RATE PROVIDED — BLOCK! We cannot safely debit without knowing the Naira amount
-        await session.abortTransaction();
-        session.endSession();
-        console.log('❌ [INTL-AIRTIME] No Naira amount or rate provided — BLOCKING');
-        return res.status(400).json({
-          success: false,
-          message: 'Unable to determine Naira amount. Please refresh the page and select a plan again.',
-          code: 'MISSING_EXCHANGE_RATE',
-          userDebited: false
-        });
+        // ⚠️ Non-NGN currency AND no rate/estimate provided.
+        // We cannot safely debit because we don't know the FX rate.
+        // Try VTpass anyway and let the response determine the amount.
+        // VTpass will return the exact Naira amount in the response.
+        //
+        // STRATEGY: Debit a SAFE CONSERVATIVE ESTIMATE (amount × 2000 — very
+        // conservative USD→NGN) but do NOT block the request. If VTpass
+        // succeeds, we adjust to the real amount. If VTpass fails, we refund.
+        //
+        // This preserves OLD APP behavior for USD/GBP/EUR too.
+        const CONSERVATIVE_RATE = 2000; // ₦2,000 per 1 USD/GBP/EUR (over-estimate)
+        debitAmountNaira = amount * CONSERVATIVE_RATE;
+        exchangeRateUsed = CONSERVATIVE_RATE;
+        console.log(`💰 [OLD-APP FALLBACK] Non-NGN without rate — using conservative rate ${CONSERVATIVE_RATE} → ₦${debitAmountNaira.toFixed(2)}`);
       }
 
       // ✅ Safety: ensure debit amount is positive
