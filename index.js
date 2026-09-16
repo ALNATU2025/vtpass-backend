@@ -2235,6 +2235,7 @@ function invalidateTransactionLimitsCache() {
 
 // ==================== CHECK TRANSACTION LIMIT - FIXED VERSION ====================
 // ==================== CHECK TRANSACTION LIMIT - COMPLETE FIX ====================
+// ==================== CHECK TRANSACTION LIMIT - COMPLETE FIX ====================
 const checkTransactionLimit = (serviceType) => {
   return async (req, res, next) => {
     try {
@@ -2249,88 +2250,89 @@ const checkTransactionLimit = (serviceType) => {
       // ================================================
       let limitKey = serviceType;
       
-     const serviceKeyMap = {
-  // ===== AIRTIME =====
-  'airtime': 'airtime',
-  'airtime_purchase': 'airtime',
-  'mtn': 'airtime',
-  'airtel': 'airtime',
-  'glo': 'airtime',
-  'etisalat': 'airtime',
-  '9mobile': 'airtime',
-  'mtn-airtime': 'airtime',
-  'airtel-airtime': 'airtime',
-  'glo-airtime': 'airtime',
-  'etisalat-airtime': 'airtime',
-  '9mobile-airtime': 'airtime',
-  
-  // ===== DATA =====
-  'data': 'data',
-  'data_purchase': 'data',
-  'mtn-data': 'data',
-  'airtel-data': 'data',
-  'glo-data': 'data',
-  'etisalat-data': 'data',
-  '9mobile-data': 'data',
-  'glo-sme-data': 'data',
-  
-  // ===== CABLE TV =====
-  'cable': 'cable',
-  'cableTv': 'cable',
-  'cabletv': 'cable',
-  'cable-tv': 'cable',
-  'tv': 'cable',
-  'dstv': 'cable',
-  'gotv': 'cable',
-  'startimes': 'cable',
-  'showmax': 'cable',
-  
-  // ===== ELECTRICITY =====
-  'electricity': 'electricity',
-  'electric': 'electricity',
-  'ikeja-electric': 'electricity',
-  'eko-electric': 'electricity',
-  'abuja-electric': 'electricity',
-  'ibadan-electric': 'electricity',
-  'enugu-electric': 'electricity',
-  'kano-electric': 'electricity',
-  'ph-electric': 'electricity',
-  'portharcourt-electric': 'electricity',
-  'jos-electric': 'electricity',
-  'kaduna-electric': 'electricity',
-  'benin-electric': 'electricity',
-  'aba-electric': 'electricity',
-  'yola-electric': 'electricity',
-  
-  // ===== TRANSFER =====
-  'transfer': 'transfer',
-  'peer_transfer': 'transfer',
-  'wallet_transfer': 'transfer',
-  'send_money': 'transfer',
-  
-  // ===== INTERNATIONAL AIRTIME ✅ FIXED =====
-  'international_airtime': 'international_airtime',
-  'int_airtime': 'international_airtime',
-  'foreign-airtime': 'international_airtime',
-  'internationalAirtime': 'international_airtime', // ✅ ADD THIS
-  'international-airtime': 'international_airtime', // ✅ ADD THIS
-  
-  // ===== EDUCATION =====
-  'education': 'education',
-  'waec': 'education',
-  'waec-registration': 'education',
-  'jamb': 'education',
-  'jamb-registration': 'education',
-  'neco': 'education',
-  'nabteb': 'education',
-  
-  // ===== INSURANCE =====
-  'insurance': 'insurance',
-  'ui-insure': 'insurance',
-  
-  // ===== PROXY / DEFAULT =====
-  'proxy': 'proxy',
-};      
+      const serviceKeyMap = {
+        // ===== AIRTIME =====
+        'airtime': 'airtime',
+        'airtime_purchase': 'airtime',
+        'mtn': 'airtime',
+        'airtel': 'airtime',
+        'glo': 'airtime',
+        'etisalat': 'airtime',
+        '9mobile': 'airtime',
+        'mtn-airtime': 'airtime',
+        'airtel-airtime': 'airtime',
+        'glo-airtime': 'airtime',
+        'etisalat-airtime': 'airtime',
+        '9mobile-airtime': 'airtime',
+        
+        // ===== DATA =====
+        'data': 'data',
+        'data_purchase': 'data',
+        'mtn-data': 'data',
+        'airtel-data': 'data',
+        'glo-data': 'data',
+        'etisalat-data': 'data',
+        '9mobile-data': 'data',
+        'glo-sme-data': 'data',
+        
+        // ===== CABLE TV =====
+        'cable': 'cable',
+        'cableTv': 'cable',
+        'cabletv': 'cable',
+        'cable-tv': 'cable',
+        'tv': 'cable',
+        'dstv': 'cable',
+        'gotv': 'cable',
+        'startimes': 'cable',
+        'showmax': 'cable',
+        
+        // ===== ELECTRICITY =====
+        'electricity': 'electricity',
+        'electric': 'electricity',
+        'ikeja-electric': 'electricity',
+        'eko-electric': 'electricity',
+        'abuja-electric': 'electricity',
+        'ibadan-electric': 'electricity',
+        'enugu-electric': 'electricity',
+        'kano-electric': 'electricity',
+        'ph-electric': 'electricity',
+        'portharcourt-electric': 'electricity',
+        'jos-electric': 'electricity',
+        'kaduna-electric': 'electricity',
+        'benin-electric': 'electricity',
+        'aba-electric': 'electricity',
+        'yola-electric': 'electricity',
+        
+        // ===== TRANSFER =====
+        'transfer': 'transfer',
+        'peer_transfer': 'transfer',
+        'wallet_transfer': 'transfer',
+        'send_money': 'transfer',
+        
+        // ===== INTERNATIONAL AIRTIME ✅ FIXED =====
+        'international_airtime': 'international_airtime',
+        'int_airtime': 'international_airtime',
+        'foreign-airtime': 'international_airtime',
+        'internationalAirtime': 'international_airtime',
+        'international-airtime': 'international_airtime',
+        
+        // ===== EDUCATION =====
+        'education': 'education',
+        'waec': 'education',
+        'waec-registration': 'education',
+        'jamb': 'education',
+        'jamb-registration': 'education',
+        'neco': 'education',
+        'nabteb': 'education',
+        
+        // ===== INSURANCE =====
+        'insurance': 'insurance',
+        'ui-insure': 'insurance',
+        
+        // ===== PROXY / DEFAULT =====
+        'proxy': 'proxy',
+      };      
+      
       if (serviceKeyMap[limitKey]) {
         limitKey = serviceKeyMap[limitKey];
       }
@@ -2356,7 +2358,7 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`👤 User ${userId} customLimits:`, JSON.stringify(customLimits));
       }
       
-             // ================================================
+      // ================================================
       // CHECK PER-TRANSACTION LIMIT (DYNAMIC)
       // ✅ 0 means UNLIMITED
       // ================================================
@@ -2396,7 +2398,7 @@ const checkTransactionLimit = (serviceType) => {
         });
       }
       
-          // ================================================
+      // ================================================
       // CHECK DAILY LIMIT (DYNAMIC)
       // ✅ 0 means UNLIMITED
       // ================================================
@@ -2463,7 +2465,7 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`✅ Daily limit for ${limitKey} is UNLIMITED — skipping check`);
       }
 
-      console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-txn: ₦${perTxnLimit}, Daily: ${dailyLabel})`);
+      console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-txn: ₦${perTxLimit}, Daily: ${dailyLabel})`);
       next();      
     } catch (error) {
       console.error('❌ Limit check error:', error);
