@@ -2151,10 +2151,11 @@ const checkServiceEnabled = (serviceKey) => {
 // ================================================
 
 // ================================================
-// 📊 TRANSACTION LIMITS - COMPLETE
+// 📊 TRANSACTION LIMITS - DYNAMIC (Reads from Settings DB)
 // ================================================
 
-const TRANSACTION_LIMITS = {
+// Default fallbacks (used ONLY if DB has no limits set)
+const DEFAULT_TRANSACTION_LIMITS = {
   daily: {
     airtime: 5000,
     data: 10000,
@@ -2181,6 +2182,56 @@ const TRANSACTION_LIMITS = {
     default: 50000
   }
 };
+
+// In-memory cache for transaction limits (fast access)
+let cachedTransactionLimits = null;
+let transactionLimitsCacheTime = 0;
+const TRANSACTION_LIMITS_CACHE_TTL = 30000; // 30 seconds
+
+/**
+ * Get transaction limits from DB (with cache)
+ * Returns { daily: {...}, perTransaction: {...} }
+ */
+async function getTransactionLimits() {
+  const now = Date.now();
+  
+  // Return cached if fresh
+  if (cachedTransactionLimits && (now - transactionLimitsCacheTime) < TRANSACTION_LIMITS_CACHE_TTL) {
+    return cachedTransactionLimits;
+  }
+  
+  try {
+    const settings = await Settings.findOne().lean();
+    
+    if (settings && settings.transactionLimits) {
+      // Merge DB values with defaults (in case some keys are missing)
+      const dbLimits = settings.transactionLimits;
+      
+      cachedTransactionLimits = {
+        daily: { ...DEFAULT_TRANSACTION_LIMITS.daily, ...(dbLimits.daily || {}) },
+        perTransaction: { ...DEFAULT_TRANSACTION_LIMITS.perTransaction, ...(dbLimits.perTransaction || {}) }
+      };
+    } else {
+      cachedTransactionLimits = DEFAULT_TRANSACTION_LIMITS;
+    }
+    
+    transactionLimitsCacheTime = now;
+    return cachedTransactionLimits;
+    
+  } catch (error) {
+    console.error('❌ Error loading transaction limits from DB:', error.message);
+    return DEFAULT_TRANSACTION_LIMITS;
+  }
+}
+
+/**
+ * Invalidate the cache (call this after admin updates limits)
+ */
+function invalidateTransactionLimitsCache() {
+  cachedTransactionLimits = null;
+  transactionLimitsCacheTime = 0;
+  console.log('🔄 Transaction limits cache invalidated');
+}
 
 // ==================== CHECK TRANSACTION LIMIT - FIXED VERSION ====================
 // ==================== CHECK TRANSACTION LIMIT - COMPLETE FIX ====================
@@ -2305,11 +2356,12 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`👤 User ${userId} customLimits:`, JSON.stringify(customLimits));
       }
       
+           // ================================================
+      // CHECK PER-TRANSACTION LIMIT (DYNAMIC)
       // ================================================
-      // CHECK PER-TRANSACTION LIMIT
-      // ================================================
-      let perTxLimit = TRANSACTION_LIMITS.perTransaction[limitKey] || 
-                       TRANSACTION_LIMITS.perTransaction.default;
+      const dynamicLimits = await getTransactionLimits();
+      let perTxLimit = dynamicLimits.perTransaction[limitKey] || 
+                       dynamicLimits.perTransaction.default;
       
       // Check if user has custom limit for this service
       const serviceLimit = customLimits[limitKey];
@@ -2336,11 +2388,11 @@ const checkTransactionLimit = (serviceType) => {
         });
       }
       
+           // ================================================
+      // CHECK DAILY LIMIT (DYNAMIC)
       // ================================================
-      // CHECK DAILY LIMIT
-      // ================================================
-      let dailyLimit = TRANSACTION_LIMITS.daily[limitKey] || 
-                       TRANSACTION_LIMITS.daily.default;
+      let dailyLimit = dynamicLimits.daily[limitKey] || 
+                       dynamicLimits.daily.default;
       
       if (serviceLimit && typeof serviceLimit === 'object') {
         if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
@@ -8906,27 +8958,19 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
   }
 });
 
-
-// ==================== GET DEFAULT LIMITS ====================
-// @desc    Get default transaction limits
+// ==================== GET DEFAULT LIMITS (DYNAMIC) ====================
+// @desc    Get current system-wide default transaction limits
 // @route   GET /api/admin/default-limits
 // @access  Private/Admin
 app.get('/api/admin/default-limits', adminProtect, async (req, res) => {
   try {
-    // Check if user is admin
-    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required'
-      });
-    }
+    const limits = await getTransactionLimits();
     
-    // Return the default limits from TRANSACTION_LIMITS
     res.json({
       success: true,
       data: {
-        perTransaction: TRANSACTION_LIMITS.perTransaction,
-        daily: TRANSACTION_LIMITS.daily
+        perTransaction: limits.perTransaction,
+        daily: limits.daily
       },
       timestamp: new Date().toISOString()
     });
@@ -8935,6 +8979,90 @@ app.get('/api/admin/default-limits', adminProtect, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch default limits'
+    });
+  }
+});
+
+// ==================== UPDATE DEFAULT LIMITS ====================
+// @desc    Update system-wide default transaction limits
+// @route   PUT /api/admin/default-limits
+// @access  Private/Admin
+app.put('/api/admin/default-limits', adminProtect, async (req, res) => {
+  try {
+    const { perTransaction, daily } = req.body;
+    
+    if (!perTransaction && !daily) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provide at least one of: perTransaction, daily'
+      });
+    }
+    
+    // Load existing or create new settings
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+    
+    // Initialize transactionLimits if missing
+    if (!settings.transactionLimits) {
+      settings.transactionLimits = {
+        daily: { ...DEFAULT_TRANSACTION_LIMITS.daily },
+        perTransaction: { ...DEFAULT_TRANSACTION_LIMITS.perTransaction }
+      };
+    }
+    
+    // ✅ Merge per-transaction limits
+    if (perTransaction && typeof perTransaction === 'object') {
+      for (const [key, value] of Object.entries(perTransaction)) {
+        const numVal = parseFloat(value);
+        if (!isNaN(numVal) && numVal > 0) {
+          settings.transactionLimits.perTransaction[key] = numVal;
+        }
+      }
+      settings.markModified('transactionLimits.perTransaction');
+    }
+    
+    // ✅ Merge daily limits
+    if (daily && typeof daily === 'object') {
+      for (const [key, value] of Object.entries(daily)) {
+        const numVal = parseFloat(value);
+        if (!isNaN(numVal) && numVal > 0) {
+          settings.transactionLimits.daily[key] = numVal;
+        }
+      }
+      settings.markModified('transactionLimits.daily');
+    }
+    
+    settings.markModified('transactionLimits');
+    await settings.save();
+    
+    // ✅ Invalidate cache so next request uses new values
+    invalidateTransactionLimitsCache();
+    
+    // ✅ Also clear any other settings cache
+    cache.del('app-settings');
+    
+    console.log(`✅ [LIMITS] Default limits updated by ${req.user.email}`);
+    console.log(`   Per-Transaction:`, JSON.stringify(settings.transactionLimits.perTransaction));
+    console.log(`   Daily:`, JSON.stringify(settings.transactionLimits.daily));
+    
+    res.json({
+      success: true,
+      message: 'Transaction limits updated successfully',
+      data: {
+        perTransaction: settings.transactionLimits.perTransaction,
+        daily: settings.transactionLimits.daily
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error updating default limits:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update default limits',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -20768,8 +20896,9 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     const customLimits = user.customLimits || {};
     const serviceLimit = customLimits['insurance'] || {};
     
-    let perTxLimit = TRANSACTION_LIMITS.perTransaction.insurance || 50000;
-    let dailyLimit = TRANSACTION_LIMITS.daily.insurance || 100000;
+       const dynamicLimits = await getTransactionLimits();
+    let perTxLimit = dynamicLimits.perTransaction.insurance || 50000;
+    let dailyLimit = dynamicLimits.daily.insurance || 100000;
     
     if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
       perTxLimit = parseFloat(serviceLimit.perTransaction);
