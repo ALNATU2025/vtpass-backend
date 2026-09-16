@@ -35,9 +35,40 @@ const appSettingsSchema = new mongoose.Schema({
   isTransferFeePercentage: { type: Boolean, default: false },
   vtpassCommission: { type: Number, default: 0 },
 
-  // ==================== TRANSACTION LIMITS ====================
+    // ==================== TRANSACTION LIMITS (LEGACY) ====================
   minTransactionAmount: { type: Number, default: 100.0 },
   maxTransactionAmount: { type: Number, default: 1000000.0 },
+
+  // ==================== TRANSACTION LIMITS (DYNAMIC — EDITABLE FROM ADMIN) ====================
+  // These are the system-wide default limits used by checkTransactionLimit middleware.
+  // Admins can edit them via PUT /api/admin/default-limits
+  transactionLimits: {
+    daily: {
+      airtime:               { type: Number, default: 5000 },
+      data:                  { type: Number, default: 10000 },
+      electricity:           { type: Number, default: 100000 },
+      cable:                 { type: Number, default: 500000 },
+      transfer:              { type: Number, default: 100000 },
+      international_airtime: { type: Number, default: 50000 },
+      education:             { type: Number, default: 100000 },
+      insurance:             { type: Number, default: 100000 },
+      proxy:                 { type: Number, default: 50000 },
+      walletFunding:         { type: Number, default: 1000000 },
+      default:               { type: Number, default: 100000 },
+    },
+    perTransaction: {
+      airtime:               { type: Number, default: 1000 },
+      data:                  { type: Number, default: 10000 },
+      electricity:           { type: Number, default: 50000 },
+      cable:                 { type: Number, default: 100000 },
+      transfer:              { type: Number, default: 50000 },
+      international_airtime: { type: Number, default: 10000 },
+      education:             { type: Number, default: 50000 },
+      insurance:             { type: Number, default: 50000 },
+      proxy:                 { type: Number, default: 50000 },
+      default:               { type: Number, default: 50000 },
+    },
+  },
 
   // ==================== USER MANAGEMENT DEFAULTS ====================
   newUserDefaultWalletBalance: { type: Number, default: 0.0 },
