@@ -2356,26 +2356,34 @@ const checkTransactionLimit = (serviceType) => {
         console.log(`👤 User ${userId} customLimits:`, JSON.stringify(customLimits));
       }
       
-           // ================================================
+             // ================================================
       // CHECK PER-TRANSACTION LIMIT (DYNAMIC)
+      // ✅ 0 means UNLIMITED
       // ================================================
       const dynamicLimits = await getTransactionLimits();
-      let perTxLimit = dynamicLimits.perTransaction[limitKey] || 
-                       dynamicLimits.perTransaction.default;
+      let perTxLimit = dynamicLimits.perTransaction[limitKey];
+      if (perTxLimit === undefined || perTxLimit === null) {
+        perTxLimit = dynamicLimits.perTransaction.default;
+      }
       
       // Check if user has custom limit for this service
       const serviceLimit = customLimits[limitKey];
       if (serviceLimit && typeof serviceLimit === 'object') {
-        // Check perTransaction
-        if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
+        // Check perTransaction — accept 0 (unlimited) too, but only
+        // override if it's a valid number
+        if (serviceLimit.perTransaction !== undefined && 
+            serviceLimit.perTransaction !== null &&
+            !isNaN(parseFloat(serviceLimit.perTransaction))) {
           perTxLimit = parseFloat(serviceLimit.perTransaction);
-          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit for ${limitKey}: ₦${perTxLimit}`);
+          console.log(`🔧 User ${userId} has CUSTOM per-transaction limit for ${limitKey}: ${perTxLimit === 0 ? 'UNLIMITED' : '₦' + perTxLimit}`);
         }
       }
       
-      console.log(`📊 Per-transaction limit for ${limitKey}: ₦${perTxLimit}`);
+      const perTxLabel = perTxLimit === 0 ? 'UNLIMITED' : `₦${perTxLimit}`;
+      console.log(`📊 Per-transaction limit for ${limitKey}: ${perTxLabel}`);
       
-      if (amount > perTxLimit) {
+      // ✅ If perTxLimit === 0, skip the check (unlimited)
+      if (perTxLimit > 0 && amount > perTxLimit) {
         console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
         return res.status(400).json({
           success: false,
@@ -2383,66 +2391,80 @@ const checkTransactionLimit = (serviceType) => {
           code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
           limit: perTxLimit,
           requested: amount,
-          isCustomLimit: customLimits[limitKey]?.perTransaction ? true : false,
+          isCustomLimit: customLimits[limitKey]?.perTransaction !== undefined,
           service: limitKey
         });
       }
       
-           // ================================================
+          // ================================================
       // CHECK DAILY LIMIT (DYNAMIC)
+      // ✅ 0 means UNLIMITED
       // ================================================
-      let dailyLimit = dynamicLimits.daily[limitKey] || 
-                       dynamicLimits.daily.default;
-      
+      let dailyLimit = dynamicLimits.daily[limitKey];
+      if (dailyLimit === undefined || dailyLimit === null) {
+        dailyLimit = dynamicLimits.daily.default;
+      }
+
       if (serviceLimit && typeof serviceLimit === 'object') {
-        if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
+        if (serviceLimit.dailyCap !== undefined &&
+            serviceLimit.dailyCap !== null &&
+            !isNaN(parseFloat(serviceLimit.dailyCap))) {
           dailyLimit = parseFloat(serviceLimit.dailyCap);
-          console.log(`🔧 User ${userId} has CUSTOM daily limit for ${limitKey}: ₦${dailyLimit}`);
+          console.log(
+            `🔧 User ${userId} has CUSTOM daily limit for ${limitKey}: ${
+              dailyLimit === 0 ? 'UNLIMITED' : '₦' + dailyLimit
+            }`
+          );
         }
       }
-      
-      console.log(`📊 Daily limit for ${limitKey}: ₦${dailyLimit}`);
-      
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      
-      const serviceRegex = new RegExp(limitKey, 'i');
-      
-      const todayTotal = await Transaction.aggregate([
-        {
-          $match: {
-            userId: new mongoose.Types.ObjectId(userId),
-            type: { $regex: serviceRegex },
-            status: { $regex: /success|completed|Successful/i },
-            createdAt: { $gte: today }
-          }
-        },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]);
-      
-      const dailyTotal = todayTotal[0]?.total || 0;
-      
-      console.log(`📊 Today's total for ${limitKey}: ₦${dailyTotal}`);
-      
-      if (dailyTotal + amount > dailyLimit) {
-        const remaining = Math.max(0, dailyLimit - dailyTotal);
-        console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
-        return res.status(400).json({
-          success: false,
-          message: `Daily ${limitKey} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
-          code: 'DAILY_LIMIT_EXCEEDED',
-          dailyLimit: dailyLimit,
-          dailyTotal: dailyTotal,
-          requested: amount,
-          remaining: remaining,
-          isCustomLimit: customLimits[limitKey]?.dailyCap ? true : false,
-          service: limitKey
-        });
+
+      const dailyLabel = dailyLimit === 0 ? 'UNLIMITED' : `₦${dailyLimit}`;
+      console.log(`📊 Daily limit for ${limitKey}: ${dailyLabel}`);
+
+      // ✅ If dailyLimit === 0, skip the check entirely
+      if (dailyLimit > 0) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const serviceRegex = new RegExp(limitKey, 'i');
+
+        const todayTotal = await Transaction.aggregate([
+          {
+            $match: {
+              userId: new mongoose.Types.ObjectId(userId),
+              type: { $regex: serviceRegex },
+              status: { $regex: /success|completed|Successful/i },
+              createdAt: { $gte: today }
+            }
+          },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+
+        const dailyTotal = todayTotal[0]?.total || 0;
+
+        console.log(`📊 Today's total for ${limitKey}: ₦${dailyTotal}`);
+
+        if (dailyTotal + amount > dailyLimit) {
+          const remaining = Math.max(0, dailyLimit - dailyTotal);
+          console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
+          return res.status(400).json({
+            success: false,
+            message: `Daily ${limitKey} limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
+            code: 'DAILY_LIMIT_EXCEEDED',
+            dailyLimit: dailyLimit,
+            dailyTotal: dailyTotal,
+            requested: amount,
+            remaining: remaining,
+            isCustomLimit: customLimits[limitKey]?.dailyCap !== undefined,
+            service: limitKey
+          });
+        }
+      } else {
+        console.log(`✅ Daily limit for ${limitKey} is UNLIMITED — skipping check`);
       }
-      
-      console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-txn: ₦${perTxLimit}, Daily: ₦${dailyTotal} → ₦${dailyTotal + amount})`);
-      next();
-      
+
+      console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-txn: ₦${perTxnLimit}, Daily: ${dailyLabel})`);
+      next();      
     } catch (error) {
       console.error('❌ Limit check error:', error);
       console.error('❌ Error stack:', error.stack);
@@ -8895,19 +8917,31 @@ app.put('/api/admin/users/:userId', adminProtect, async (req, res) => {
       
       console.log('📦 Raw customLimits received:', JSON.stringify(updateData.customLimits, null, 2));
       
-      // 🔥 FIX: Process each service
-      for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
+         for (const [service, limits] of Object.entries(updateData.customLimits || {})) {
         if (validServices.includes(service) && limits && typeof limits === 'object') {
-          const perTransaction = parseFloat(limits.perTransaction) || 0;
-          const dailyCap = parseFloat(limits.dailyCap) || 0;
+          // Accept 0 (unlimited) — only skip if truly missing
+          const rawPer = limits.perTransaction;
+          const rawDaily = limits.dailyCap;
           
-          // 🔥 FIX: Save if EITHER limit is set (> 0)
-          if (perTransaction > 0 || dailyCap > 0) {
+          const perTransaction = (rawPer === null || rawPer === undefined || rawPer === '') 
+            ? null 
+            : (parseFloat(rawPer) >= 0 ? parseFloat(rawPer) : null);
+          
+          const dailyCap = (rawDaily === null || rawDaily === undefined || rawDaily === '') 
+            ? null 
+            : (parseFloat(rawDaily) >= 0 ? parseFloat(rawDaily) : null);
+          
+          // Save if at least one side is a valid number (including 0)
+          if (perTransaction !== null || dailyCap !== null) {
             cleanedLimits[service] = {
-              perTransaction: perTransaction,
-              dailyCap: dailyCap
+              perTransaction: perTransaction ?? 0,
+              dailyCap: dailyCap ?? 0
             };
-            console.log(`✅ Added custom limits for ${service}: perTransaction=${perTransaction}, dailyCap=${dailyCap}`);
+            console.log(
+              `✅ Added custom limits for ${service}: ` +
+              `perTransaction=${perTransaction === 0 ? 'UNLIMITED' : '₦' + perTransaction}, ` +
+              `dailyCap=${dailyCap === 0 ? 'UNLIMITED' : '₦' + dailyCap}`
+            );
           }
         }
       }
@@ -9012,23 +9046,35 @@ app.put('/api/admin/default-limits', adminProtect, async (req, res) => {
       };
     }
     
-    // ✅ Merge per-transaction limits
+      // ✅ Merge per-transaction limits — 0 means UNLIMITED
     if (perTransaction && typeof perTransaction === 'object') {
       for (const [key, value] of Object.entries(perTransaction)) {
+        // Allow explicit null / empty to SKIP (don't overwrite)
+        // Allow 0 to mean UNLIMITED
+        if (value === null || value === undefined || value === '') continue;
+
         const numVal = parseFloat(value);
-        if (!isNaN(numVal) && numVal > 0) {
+        if (!isNaN(numVal) && numVal >= 0) {
           settings.transactionLimits.perTransaction[key] = numVal;
+          console.log(
+            `   ⚙️  ${key}: ${numVal === 0 ? 'UNLIMITED' : '₦' + numVal} (per-transaction)`
+          );
         }
       }
       settings.markModified('transactionLimits.perTransaction');
     }
     
-    // ✅ Merge daily limits
+    // ✅ Merge daily limits — 0 means UNLIMITED
     if (daily && typeof daily === 'object') {
       for (const [key, value] of Object.entries(daily)) {
+        if (value === null || value === undefined || value === '') continue;
+
         const numVal = parseFloat(value);
-        if (!isNaN(numVal) && numVal > 0) {
+        if (!isNaN(numVal) && numVal >= 0) {
           settings.transactionLimits.daily[key] = numVal;
+          console.log(
+            `   ⚙️  ${key}: ${numVal === 0 ? 'UNLIMITED' : '₦' + numVal} (daily)`
+          );
         }
       }
       settings.markModified('transactionLimits.daily');
@@ -20893,24 +20939,41 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     // We now know the real amount, so we can check limits here.
     // If exceeded, return error WITHOUT calling VTpass.
     // ================================================
-    const customLimits = user.customLimits || {};
+       const customLimits = user.customLimits || {};
     const serviceLimit = customLimits['insurance'] || {};
-    
-       const dynamicLimits = await getTransactionLimits();
-    let perTxLimit = dynamicLimits.perTransaction.insurance || 50000;
-    let dailyLimit = dynamicLimits.daily.insurance || 100000;
-    
-    if (serviceLimit.perTransaction && serviceLimit.perTransaction > 0) {
+
+    const dynamicLimits = await getTransactionLimits();
+
+    // ✅ 0 means UNLIMITED — do NOT use `||` fallback
+    let perTxLimit = dynamicLimits.perTransaction.insurance;
+    if (perTxLimit === undefined || perTxLimit === null) perTxLimit = 50000;
+
+    let dailyLimit = dynamicLimits.daily.insurance;
+    if (dailyLimit === undefined || dailyLimit === null) dailyLimit = 100000;
+
+    if (serviceLimit.perTransaction !== undefined &&
+        serviceLimit.perTransaction !== null &&
+        !isNaN(parseFloat(serviceLimit.perTransaction))) {
       perTxLimit = parseFloat(serviceLimit.perTransaction);
-      console.log(`🔧 Custom per-tx limit for insurance: ₦${perTxLimit}`);
+      console.log(
+        `🔧 Custom per-tx limit for insurance: ${
+          perTxLimit === 0 ? 'UNLIMITED' : '₦' + perTxLimit
+        }`
+      );
     }
-    if (serviceLimit.dailyCap && serviceLimit.dailyCap > 0) {
+    if (serviceLimit.dailyCap !== undefined &&
+        serviceLimit.dailyCap !== null &&
+        !isNaN(parseFloat(serviceLimit.dailyCap))) {
       dailyLimit = parseFloat(serviceLimit.dailyCap);
-      console.log(`🔧 Custom daily limit for insurance: ₦${dailyLimit}`);
+      console.log(
+        `🔧 Custom daily limit for insurance: ${
+          dailyLimit === 0 ? 'UNLIMITED' : '₦' + dailyLimit
+        }`
+      );
     }
-    
-    // --- Check per-transaction limit ---
-    if (amount > perTxLimit) {
+
+    // --- Per-transaction check ---
+    if (perTxLimit > 0 && amount > perTxLimit) {
       await session.abortTransaction();
       session.endSession();
       console.log(`🚫 PER-TRANSACTION LIMIT EXCEEDED: ₦${amount} > ₦${perTxLimit}`);
@@ -20920,48 +20983,54 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         code: 'PER_TRANSACTION_LIMIT_EXCEEDED',
         limit: perTxLimit,
         requested: amount,
-        isCustomLimit: !!(serviceLimit.perTransaction > 0),
+        isCustomLimit: serviceLimit.perTransaction !== undefined,
         service: 'insurance',
       });
+    } else if (perTxLimit === 0) {
+      console.log(`✅ Insurance per-transaction limit is UNLIMITED`);
     }
-    
-    // --- Check daily limit ---
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const todayTotalAgg = await Transaction.aggregate([
-      {
-        $match: {
-          userId: new mongoose.Types.ObjectId(userId),
-          type: { $regex: /insurance/i },
-          status: { $regex: /success|completed/i },
-          createdAt: { $gte: today },
+
+    // --- Daily check ---
+    if (dailyLimit > 0) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const todayTotalAgg = await Transaction.aggregate([
+        {
+          $match: {
+            userId: new mongoose.Types.ObjectId(userId),
+            type: { $regex: /insurance/i },
+            status: { $regex: /success|completed/i },
+            createdAt: { $gte: today },
+          },
         },
-      },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]);
-    
-    const dailyTotal = todayTotalAgg[0]?.total || 0;
-    
-    if (dailyTotal + amount > dailyLimit) {
-      await session.abortTransaction();
-      session.endSession();
-      const remaining = Math.max(0, dailyLimit - dailyTotal);
-      console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
-      return res.status(400).json({
-        success: false,
-        message: `Daily insurance limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
-        code: 'DAILY_LIMIT_EXCEEDED',
-        dailyLimit: dailyLimit,
-        dailyTotal: dailyTotal,
-        requested: amount,
-        remaining: remaining,
-        isCustomLimit: !!(serviceLimit.dailyCap > 0),
-        service: 'insurance',
-      });
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+
+      const dailyTotal = todayTotalAgg[0]?.total || 0;
+
+      if (dailyTotal + amount > dailyLimit) {
+        await session.abortTransaction();
+        session.endSession();
+        const remaining = Math.max(0, dailyLimit - dailyTotal);
+        console.log(`🚫 DAILY LIMIT EXCEEDED: ₦${dailyTotal + amount} > ₦${dailyLimit}`);
+        return res.status(400).json({
+          success: false,
+          message: `Daily insurance limit of ₦${dailyLimit.toFixed(2)} exceeded. Today: ₦${dailyTotal.toFixed(2)}. Remaining: ₦${remaining.toFixed(2)}.`,
+          code: 'DAILY_LIMIT_EXCEEDED',
+          dailyLimit: dailyLimit,
+          dailyTotal: dailyTotal,
+          requested: amount,
+          remaining: remaining,
+          isCustomLimit: serviceLimit.dailyCap !== undefined,
+          service: 'insurance',
+        });
+      }
+    } else {
+      console.log(`✅ Insurance daily limit is UNLIMITED — skipping daily check`);
     }
-    
-    console.log(`✅ LIMIT CHECK PASSED: ₦${amount} (Per-tx: ₦${perTxLimit}, Daily: ₦${dailyTotal} → ₦${dailyTotal + amount})`);
+
+    console.log(`✅ LIMIT CHECK PASSED: ₦${amount}`);
 
     // ================================================
     // Balance check
