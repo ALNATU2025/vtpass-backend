@@ -23267,7 +23267,6 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
 app.post('/api/international-airtime/purchase', 
   protect, 
   requireApproval,
-  verifyTransactionAuth,
   checkServiceEnabled('isAirtimeEnabled'),
   checkGlobalPerMinuteLimit,
   smartLimitCheck,
