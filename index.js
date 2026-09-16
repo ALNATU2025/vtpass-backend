@@ -23296,120 +23296,134 @@ app.post('/api/international-airtime/purchase',
         isFailed: interpretation.isFailed
       });
 
-      // ================================================
-      // ✅ DELIVERED — Keep debit, extract actual Naira amount
+           // ================================================
+      // ✅ DELIVERED — Keep the FULL debit as-is
+      //
+      // POLICY:
+      //   1. User confirmed the Naira amount shown on the frontend
+      //      (computed from VTpass's variation_rate or charged_amount —
+      //      NOT hardcoded by us).
+      //   2. We debited that exact amount up-front.
+      //   3. VTpass delivers the foreign airtime and charges DalabaPay
+      //      a LOWER amount (after their internal commission kickback).
+      //   4. We do NOT adjust the user's balance.
+      //   5. The difference = DalabaPay's FX margin + VTpass commission.
+      //
+      // The user only ever sees the Naira amount they agreed to pay.
       // ================================================
       if (interpretation.isDelivered && interpretation.status === 'Successful') {
-        // Try to extract the ACTUAL Naira amount from VTpass response
-        let actualNairaAmount = debitAmountNaira; // Start with what we debited
-        let actualExchangeRate = exchangeRateUsed;
+        // Extract VTpass's actual cost for logging/analytics ONLY — do NOT adjust balance
+        let vtpassActualCost = debitAmountNaira;
 
-        // Extract from VTpass response
         if (vtpassResult.data?.amount) {
           const extracted = parseFloat(vtpassResult.data.amount);
-          if (extracted > 0) {
-            actualNairaAmount = extracted;
-          }
+          if (extracted > 0) vtpassActualCost = extracted;
         }
-        if (actualNairaAmount === debitAmountNaira && vtpassResult.data?.content?.transactions?.amount) {
+        if (vtpassActualCost === debitAmountNaira && vtpassResult.data?.content?.transactions?.amount) {
           const extracted = parseFloat(vtpassResult.data.content.transactions.amount);
-          if (extracted > 0) {
-            actualNairaAmount = extracted;
-          }
+          if (extracted > 0) vtpassActualCost = extracted;
         }
-        if (actualNairaAmount === debitAmountNaira && vtpassResult.data?.content?.transactions?.total_amount) {
+        if (vtpassActualCost === debitAmountNaira && vtpassResult.data?.content?.transactions?.total_amount) {
           const extracted = parseFloat(vtpassResult.data.content.transactions.total_amount);
-          if (extracted > 0) {
-            actualNairaAmount = extracted;
-          }
+          if (extracted > 0) vtpassActualCost = extracted;
         }
 
-        // If VTpass returned a different amount, adjust the balance
-        if (actualNairaAmount !== debitAmountNaira && actualNairaAmount > 0) {
-          const adjustment = debitAmountNaira - actualNairaAmount;
-          user.walletBalance += adjustment;
-          await user.save({ session });
-          
-          console.log(`💰 Amount adjustment: Debited ₦${debitAmountNaira.toFixed(2)}, Actual ₦${actualNairaAmount.toFixed(2)}, Adjusted by ₦${adjustment.toFixed(2)}`);
-          
-          // Update balanceAfter for the transaction record
-          const newBalanceAfter = user.walletBalance;
-          
-          const newTransaction = new Transaction({
-            userId: userId,
-            amount: actualNairaAmount,
-            type: 'International Airtime Purchase',
-            status: 'Successful',
-            description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${amount}`,
-            balanceBefore: balanceBefore,
-            balanceAfter: newBalanceAfter,
-            reference: requestId,
-            isCommission: false,
-            authenticationMethod: req.authenticationMethod || 'pin',
-            gateway: 'DalabaPay App',
+        // ✅ DalabaPay profit = what we charged user − what VTpass charged us
+        const profitMargin = debitAmountNaira - vtpassActualCost;
+
+        console.log(`💰 [INTL-AIRTIME] Charged user: ₦${debitAmountNaira.toFixed(2)}`);
+        console.log(`💰 [INTL-AIRTIME] VTpass cost: ₦${vtpassActualCost.toFixed(2)}`);
+        console.log(`💰 [INTL-AIRTIME] DalabaPay profit: ₦${profitMargin.toFixed(2)}`);
+
+        // ✅ DO NOT adjust user balance — the full debit stands.
+
+        const newTransaction = new Transaction({
+          userId: userId,
+          amount: debitAmountNaira,       // ✅ What the user agreed to pay
+          type: 'International Airtime Purchase',
+          status: 'Successful',
+          description: `International airtime for ${phoneNumber} (${countryCode}) - ${currency} ${amount}`,
+          balanceBefore: balanceBefore,
+          balanceAfter: balanceAfter,     // ✅ Real post-debit balance
+          reference: requestId,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phoneNumber,
+            countryCode,
+            operatorId,
+            productTypeId,
+            variationCode,
+            currency,
+            originalAmount: amount,
+            nairaAmount: debitAmountNaira,       // What we charged the user
+            vtpassActualCost: vtpassActualCost,  // What VTpass charged us (analytics)
+            profitMargin: profitMargin,          // DalabaPay margin
+            exchangeRate: exchangeRateUsed,
+            vtpassResponse: vtpassResult.data,
+            userDebited: true,
+            debitAmount: debitAmountNaira,
+            vtpassDelivered: true,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            vtpassDescription: interpretation.description
+          }
+        });
+
+        await newTransaction.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        // Commission (outside session)
+        try {
+          await calculateAndAddCommission(userId, debitAmountNaira, 'airtime');
+        } catch (commErr) {
+          console.log('⚠️ Commission error:', commErr.message);
+        }
+
+        // Notification
+        try {
+          await Notification.create({
+            recipient: userId,
+            title: "International Airtime Purchase Successful 🌍",
+            message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${debitAmountNaira.toFixed(2)}`,
+            type: 'transaction',
+            isRead: false,
             metadata: {
-              phoneNumber, countryCode, operatorId, productTypeId, variationCode,
-              currency, originalAmount: amount, nairaAmount: actualNairaAmount,
-              exchangeRate: actualExchangeRate,
-              vtpassResponse: vtpassResult.data,
-              userDebited: true, debitAmount: actualNairaAmount,
-              vtpassDelivered: true,
-              vtpassCode: interpretation.code,
-              vtpassInnerStatus: interpretation.innerStatus,
-              vtpassAction: interpretation.action,
-              vtpassDescription: interpretation.description,
-              adjustmentMade: adjustment
+              phoneNumber, amount, currency, countryCode,
+              nairaAmount: debitAmountNaira,
+              newBalance: balanceAfter
             }
           });
-
-          await newTransaction.save({ session });
-          await session.commitTransaction();
-          session.endSession();
-
-          // Commission (outside session)
-          try {
-            await calculateAndAddCommission(userId, actualNairaAmount, 'airtime');
-          } catch (commErr) {
-            console.log('⚠️ Commission error:', commErr.message);
-          }
-
-          // Notification
-          try {
-            await Notification.create({
-              recipient: userId,
-              title: "International Airtime Purchase Successful 🌍",
-              message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${actualNairaAmount.toFixed(2)}`,
-              type: 'transaction',
-              isRead: false,
-              metadata: { phoneNumber, amount, currency, countryCode, nairaAmount: actualNairaAmount, newBalance: newBalanceAfter }
-            });
-          } catch (notifError) {
-            console.error('❌ Notification error:', notifError);
-          }
-
-          console.log(`✅ [INTL-AIRTIME] SUCCESS (with adjustment): ₦${actualNairaAmount.toFixed(2)} debited`);
-
-          return res.json({
-            success: true,
-            message: `International airtime purchase successful! ${currency} ${amount} sent to ${phoneNumber}.`,
-            transactionId: newTransaction._id.toString(),
-            reference: requestId,
-            status: 'Successful',
-            newBalance: newBalanceAfter,
-            foreignAmount: amount,
-            currency: currency,
-            nairaAmount: actualNairaAmount,
-            nairaEquivalent: actualNairaAmount,
-            exchangeRate: actualExchangeRate,
-            phoneNumber: phoneNumber,
-            countryCode: countryCode,
-            userDebited: true,
-            amountDebited: actualNairaAmount,
-            vtpassResponse: vtpassResult.data,
-            vtpassCode: interpretation.code,
-            vtpassDescription: interpretation.description
-          });
+        } catch (notifError) {
+          console.error('❌ Notification error:', notifError);
         }
+
+        console.log(`✅ [INTL-AIRTIME] SUCCESS: ₦${debitAmountNaira.toFixed(2)} charged (profit: ₦${profitMargin.toFixed(2)})`);
+
+        return res.json({
+          success: true,
+          message: `International airtime purchase successful! ${currency} ${amount} sent to ${phoneNumber}.`,
+          transactionId: newTransaction._id.toString(),
+          reference: requestId,
+          status: 'Successful',
+          newBalance: balanceAfter,
+          foreignAmount: amount,
+          currency: currency,
+          nairaAmount: debitAmountNaira,
+          nairaEquivalent: debitAmountNaira,
+          exchangeRate: exchangeRateUsed,
+          phoneNumber: phoneNumber,
+          countryCode: countryCode,
+          userDebited: true,
+          amountDebited: debitAmountNaira,
+          vtpassResponse: vtpassResult.data,
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description
+        });
+      }
 
         // No adjustment needed — exact match
         await session.commitTransaction();
