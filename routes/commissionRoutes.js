@@ -513,14 +513,15 @@ router.post('/withdraw', protect, withdrawLimiter, async (req, res) => {
     const walletAfter = user.walletBalance;
 
     // ---------- 5. DEBIT transaction (commission side) ----------
+      // ---------- 5. DEBIT transaction (commission side) ----------
     const debitRef = `COMM_WD_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
     const debitTx = new Transaction({
       userId,
       amount: withdrawalAmount,
-      type: 'Commission Withdrawal',
+      type: 'Commission Withdrawal',                  // ✅ valid enum
       status: 'Successful',
-      description: 'Commission withdrawal to main wallet',
+      description: `Commission withdrawal to main wallet (Ref: ${debitRef})`,
       balanceBefore: commissionBefore,
       balanceAfter: commissionAfter,
       reference: debitRef,
@@ -536,23 +537,25 @@ router.post('/withdraw', protect, withdrawLimiter, async (req, res) => {
     await debitTx.save({ session });
 
     // ---------- 6. CREDIT transaction (wallet side) ----------
+      // ---------- 6. CREDIT transaction (wallet side) ----------
     const creditRef = `WALLET_CR_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
     const creditTx = new Transaction({
       userId,
       amount: withdrawalAmount,
-      type: 'Commission Withdrawal Credit',
+      type: 'Refund Credit',                          // ✅ valid enum — used for wallet credits
       status: 'Successful',
-      description: 'Credit from commission withdrawal',
+      description: `Credit from commission withdrawal (Ref: ${creditRef})`,
       balanceBefore: walletBefore,
       balanceAfter: walletAfter,
       reference: creditRef,
       isCommission: false,
       gateway: 'DalaBaPay App',
       metadata: {
-        source: 'commission',
+        source: 'commission_withdrawal',
         withdrawal: true,
-        linkedDebitRef: debitRef
+        linkedDebitRef: debitRef,
+        label: 'Commission Withdrawal Credit'
       }
     });
     await creditTx.save({ session });
