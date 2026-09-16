@@ -1,10 +1,12 @@
 // routes/commissionRoutes.js
+// routes/commissionRoutes.js
 const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const Notification = require('../models/Notification');
 const { protect } = require('../middleware/authMiddleware');
 const { verifyTransactionAuth } = require('../middleware/transactionAuthMiddleware');
 
@@ -438,75 +440,174 @@ router.get('/balance', protect, async (req, res) => {
 // @desc    Withdraw commission to main wallet
 // @route   POST /api/commission/withdraw
 // @access  Private
-router.post('/withdraw', protect, withdrawLimiter, verifyTransactionAuth, async (req, res) => {
+// ✅ HARDENED: works for BOTH new app (sends PIN/biometric) AND old published app (only sends amount)
+router.post('/withdraw', protect, withdrawLimiter, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { amount } = req.body;
     const userId = req.user._id;
-    
-    // Validate amount
-    if (!amount || isNaN(amount) || amount <= 0) {
+
+    // ---------- 1. Validate amount ----------
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Please enter a valid amount'
       });
     }
-    
-    // Convert to number
+
     const withdrawalAmount = parseFloat(amount);
-    
-    // Check minimum withdrawal
+
     if (withdrawalAmount < 500) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Minimum withdrawal amount is ₦500'
       });
     }
-    
-    // Check maximum withdrawal (optional)
+
     if (withdrawalAmount > 50000) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Maximum withdrawal amount is ₦50,000'
       });
     }
-    
-    const user = await User.findById(userId);
+
+    // ---------- 2. Load user INSIDE session ----------
+    const user = await User.findById(userId).session(session);
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    // Check if user has enough commission balance
-    if (user.commissionBalance < withdrawalAmount) {
+
+    // ---------- 3. Read balances ----------
+    const commissionBefore = parseFloat(user.commissionBalance || 0);
+    const walletBefore = parseFloat(user.walletBalance || 0);
+
+    if (commissionBefore < withdrawalAmount) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
-        message: `Insufficient commission balance. Available: ${formatCurrency(user.commissionBalance)}`
+        message: `Insufficient commission balance. Available: ${formatCurrency(commissionBefore)}`
       });
     }
-    
-    // Process withdrawal
-    const result = await user.withdrawCommissionToWallet(withdrawalAmount);
-    
-    res.json({
-      success: true,
-      message: result.message,
-      data: {
-        newCommissionBalance: result.newCommissionBalance,
-        newWalletBalance: result.newWalletBalance,
-        formattedNewCommissionBalance: formatCurrency(result.newCommissionBalance),
-        formattedNewWalletBalance: formatCurrency(result.newWalletBalance),
-        commissionTransactionId: result.commissionTransactionId,
-        walletTransactionId: result.walletTransactionId,
-        amountWithdrawn: withdrawalAmount,
-        formattedAmountWithdrawn: formatCurrency(withdrawalAmount)
+
+    // ---------- 4. Move money ----------
+    user.commissionBalance = commissionBefore - withdrawalAmount;
+    user.walletBalance = walletBefore + withdrawalAmount;
+
+    await user.save({ session });
+
+    const commissionAfter = user.commissionBalance;
+    const walletAfter = user.walletBalance;
+
+    // ---------- 5. DEBIT transaction (commission side) ----------
+    const debitRef = `COMM_WD_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+    const debitTx = new Transaction({
+      userId,
+      amount: withdrawalAmount,
+      type: 'Commission Withdrawal',
+      status: 'Successful',
+      description: 'Commission withdrawal to main wallet',
+      balanceBefore: commissionBefore,
+      balanceAfter: commissionAfter,
+      reference: debitRef,
+      isCommission: true,
+      commissionAction: 'debit',
+      gateway: 'DalaBaPay App',
+      metadata: {
+        withdrawal: true,
+        target: 'wallet',
+        source: 'commission_balance'
       }
     });
-    
+    await debitTx.save({ session });
+
+    // ---------- 6. CREDIT transaction (wallet side) ----------
+    const creditRef = `WALLET_CR_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+    const creditTx = new Transaction({
+      userId,
+      amount: withdrawalAmount,
+      type: 'Commission Withdrawal Credit',
+      status: 'Successful',
+      description: 'Credit from commission withdrawal',
+      balanceBefore: walletBefore,
+      balanceAfter: walletAfter,
+      reference: creditRef,
+      isCommission: false,
+      gateway: 'DalaBaPay App',
+      metadata: {
+        source: 'commission',
+        withdrawal: true,
+        linkedDebitRef: debitRef
+      }
+    });
+    await creditTx.save({ session });
+
+    // ---------- 7. Commit ----------
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(`✅ [COMMISSION WITHDRAW] ₦${withdrawalAmount} moved → wallet. New wallet: ₦${walletAfter}`);
+
+    // ---------- 8. Notify user (outside session) ----------
+    try {
+      await Notification.create({
+        recipient: userId,
+        title: 'Commission Withdrawn ✅',
+        message: `₦${withdrawalAmount.toFixed(2)} moved from commission to your main wallet. New wallet balance: ₦${walletAfter.toFixed(2)}`,
+        type: 'transaction',
+        isRead: false,
+        metadata: {
+          amount: withdrawalAmount,
+          newWalletBalance: walletAfter,
+          newCommissionBalance: commissionAfter
+        }
+      });
+    } catch (nErr) {
+      console.error('⚠️ Notification error:', nErr.message);
+    }
+
+    // ---------- 9. Respond ----------
+    return res.json({
+      success: true,
+      message: `Successfully withdrew ${formatCurrency(withdrawalAmount)} to your wallet.`,
+      data: {
+        newCommissionBalance: commissionAfter,
+        newWalletBalance: walletAfter,
+        formattedNewCommissionBalance: formatCurrency(commissionAfter),
+        formattedNewWalletBalance: formatCurrency(walletAfter),
+        amountWithdrawn: withdrawalAmount,
+        formattedAmountWithdrawn: formatCurrency(withdrawalAmount),
+        commissionTransactionId: debitTx._id,
+        walletTransactionId: creditTx._id
+      },
+      // flat fields for old app compatibility
+      newCommissionBalance: commissionAfter,
+      newWalletBalance: walletAfter,
+      amount: withdrawalAmount
+    });
+
   } catch (error) {
-    console.error('❌ Commission withdrawal processing error:', error);
-    res.status(400).json({
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    session.endSession();
+    console.error('❌ Commission withdrawal error:', error);
+    return res.status(500).json({
       success: false,
       message: error.message || 'Failed to process withdrawal'
     });
