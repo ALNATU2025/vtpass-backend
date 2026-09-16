@@ -81,6 +81,7 @@ const transactionSchema = new mongoose.Schema({
             'International-airtime Commission Credit',  // ✅ ADD THIS
             'International-data Commission Credit',     // ✅ ADD THIS
             'Commission Withdrawal',
+            'Commission Withdrawal Credit',           // ✅ ADD THIS
             'Commission Debit',
             'Refund Credit',
             'Commission used for service purchase',
