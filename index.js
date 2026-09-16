@@ -3776,33 +3776,34 @@ const verifyBiometricAuth = async (req, res, next) => {
       });
     }
 
-    // ✅ CHECK 5: Client MUST send biometricCredentialId after successful local biometric
-    // ✅ CHECK 5: Client MUST send biometricCredentialId after successful local biometric
-const clientCredentialId = req.body.biometricCredentialId;
+       // ✅ CHECK 5 (SOFTENED): Credential ID is OPTIONAL for mobile-app biometric flow.
+    // The Flutter app verifies biometric on-device and authenticates the request via JWT.
+    // We only enforce credential matching when BOTH the user has a stored credential
+    // AND the client sends one (WebAuthn / web flow).
+    const clientCredentialId = req.body.biometricCredentialId;
 
-if (!clientCredentialId) {
-  await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, false, 'Missing biometricCredentialId from client');
-  console.log('❌ [BIOMETRIC AUTH] Client did not send biometricCredentialId');
-  return res.status(400).json({
-    success: false,
-    message: 'Biometric credential missing. Please re-authenticate with biometric.',
-    code: 'BIOMETRIC_CREDENTIAL_MISSING'
-  });
-}
+    if (clientCredentialId && user.biometricCredentialId) {
+      // Both present → they MUST match
+      if (clientCredentialId !== user.biometricCredentialId) {
+        await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, false, 'Biometric credential mismatch');
+        console.log('❌ [BIOMETRIC AUTH] Credential mismatch');
+        return res.status(401).json({
+          success: false,
+          message: 'Biometric authentication failed. Please try again or use your PIN.',
+          code: 'BIOMETRIC_MISMATCH'
+        });
+      }
+      console.log('✅ [BIOMETRIC AUTH] Credential ID matched stored credential');
+    } else if (clientCredentialId) {
+      // Client sent a credential but user has none stored — trust the device auth
+      console.log('ℹ️ [BIOMETRIC AUTH] Client sent credential, but user has none stored — trusting device auth');
+    } else {
+      // Mobile app flow — no credential ID. This is NORMAL for Android/iOS biometrics.
+      console.log('✅ [BIOMETRIC AUTH] Mobile-app flow — no credential ID required, trusting device biometric + JWT');
+    }
 
-// ✅ CHECK 6: Credential must match what's stored on user account
-if (user.biometricCredentialId && clientCredentialId !== user.biometricCredentialId) {
-  await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, false, 'Biometric credential mismatch');
-  console.log('❌ [BIOMETRIC AUTH] Credential mismatch');
-  return res.status(401).json({
-    success: false,
-    message: 'Biometric authentication failed. Please try again or use your PIN.',
-    code: 'BIOMETRIC_MISMATCH'
-  });
-}
-
-// ✅ ALL CHECKS PASSED
-console.log('✅ [BIOMETRIC AUTH] Identity verified successfully');
+    // ✅ ALL CHECKS PASSED
+    console.log('✅ [BIOMETRIC AUTH] Identity verified successfully');
     await logAuthAttempt(userId, 'biometric_attempt', ipAddress, userAgent, true, 'Biometric verified successfully');
 
     req.authenticationMethod = 'biometric';
