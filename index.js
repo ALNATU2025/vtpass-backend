@@ -16749,7 +16749,6 @@ function generateVtpassRequestId() {
 app.post('/api/vtpass/data/purchase', 
   protect, 
   requireApproval,
-  verifyTransactionAuth, 
   checkServiceEnabled('isDataEnabled'),
   checkGlobalPerMinuteLimit, // ✅ Global limit
   smartLimitCheck, 
