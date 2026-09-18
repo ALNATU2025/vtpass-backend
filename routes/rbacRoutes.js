@@ -13,14 +13,37 @@ const { protect } = require('../middleware/authMiddleware');
  * @access  Private
  */
 router.post('/', protect, [
+ router.post('/', protect, [
   body('operation').isString().notEmpty().withMessage('Operation is required'),
-  body('targetUserId').optional().isString().withMessage('Invalid user ID'),
-  body('role').optional().isString().withMessage('Invalid role'),
-  body('permissions').optional().isArray().withMessage('Permissions must be an array'),
-  body('resource').optional().isString().withMessage('Invalid resource'),
-  body('action').optional().isString().withMessage('Invalid action'),
-  body('checkPermission').optional().isString().withMessage('Invalid permission'),
-  body('resourceId').optional().isString().withMessage('Invalid resource ID')
+  // ✅ Allow null AND undefined — only validate if it's actually a non-null value
+  body('targetUserId')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid user ID'),
+  body('role')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid role'),
+  body('permissions')
+    .optional({ nullable: true, checkFalsy: true })
+    .isArray()
+    .withMessage('Permissions must be an array'),
+  body('resource')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid resource'),
+  body('action')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid action'),
+  body('checkPermission')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid permission'),
+  body('resourceId')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('Invalid resource ID')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -314,9 +337,12 @@ router.post('/', protect, [
     // ================================================
     // OPERATION 5: Get user's role and permissions
     // ================================================
-    if (operation === 'get_user_role') {
-      // ✅ FIX: If no targetUserId, use current user's ID
-      const userId = targetUserId || currentUser._id;
+       if (operation === 'get_user_role') {
+      // ✅ Handle both null and undefined targetUserId
+      const userId =
+        targetUserId && targetUserId !== 'null' && targetUserId !== ''
+          ? targetUserId
+          : currentUser._id;
       
       // Users can only view their own role unless admin
       if (userId.toString() !== currentUser._id.toString() && !isAdmin) {
@@ -371,7 +397,10 @@ router.post('/', protect, [
         });
       }
 
-      const userId = targetUserId || currentUser._id;
+            const userId =
+        targetUserId && targetUserId !== 'null' && targetUserId !== ''
+          ? targetUserId
+          : currentUser._id;
       
       if (userId.toString() !== currentUser._id.toString() && !isAdmin) {
         return res.status(403).json({
@@ -591,7 +620,10 @@ router.post('/', protect, [
         });
       }
 
-      const userId = targetUserId || currentUser._id;
+            const userId =
+        targetUserId && targetUserId !== 'null' && targetUserId !== ''
+          ? targetUserId
+          : currentUser._id;
       
       if (userId.toString() !== currentUser._id.toString() && !isAdmin) {
         return res.status(403).json({
