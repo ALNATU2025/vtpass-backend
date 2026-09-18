@@ -935,6 +935,62 @@ const agent = new https.Agent({
   timeout: 60000
 });
 axios.defaults.httpsAgent = agent;
+
+
+
+// ==================== AXIOS RETRY + LONGER TIMEOUT FOR VTPASS ====================
+// VTpass /merchant-verify can occasionally take 30-60s during peak hours.
+// We add automatic retries on ECONNABORTED / ETIMEDOUT / ECONNRESET so users
+// do not see raw "timeout of 30000ms exceeded" errors.
+// ============================================================================
+const RETRYABLE_NETWORK_CODES = [
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN'
+];
+
+function isRetryableNetworkError(error) {
+  if (!error) return false;
+  const code = error.code || error.errno || '';
+  if (RETRYABLE_NETWORK_CODES.includes(code)) return true;
+  if (error.message && /timeout of \d+ms exceeded/i.test(error.message)) return true;
+  return false;
+}
+
+/**
+ * axios wrapper with automatic retry for network errors.
+ * Does NOT retry on 4xx business errors (those are handled by VTpass response codes).
+ */
+async function axiosWithRetry(config, { maxRetries = 2, baseDelayMs = 1500 } = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      return await axios(config);
+    } catch (error) {
+      lastError = error;
+
+      const shouldRetry = isRetryableNetworkError(error);
+      const isLastAttempt = attempt === maxRetries + 1;
+
+      // Do NOT retry 4xx business errors (they mean VTpass already answered)
+      if (!shouldRetry || isLastAttempt) {
+        throw error;
+      }
+
+      const delay = baseDelayMs * attempt; // 1.5s, 3s
+      console.log(`🔁 [RETRY] ${error.code || 'NETWORK'} on ${config.url || config.url || 'request'} — attempt ${attempt}/${maxRetries + 1}, retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
+// ==================== END AXIOS RETRY HELPER ====================
+
+
 // 4. ADD AUTO-RECOVERY FOR DEAD CONNECTIONS
 setInterval(() => {
   if (mongoose.connection.readyState !== 1) {
@@ -3908,6 +3964,14 @@ const callVtpassApi = async (endpoint, data = {}, headers = {}, method = 'POST')
     let response;
     const fullUrl = `${vtpassConfig.baseUrl}${endpoint}`;
     
+        // ✅ Endpoint-specific timeout: /merchant-verify needs more time
+    const requestTimeoutMs = endpoint === '/merchant-verify' ? 45000 : 30000;
+
+    // ✅ Retry config: only retry network failures, not business errors
+    const retryConfig = endpoint === '/merchant-verify'
+      ? { maxRetries: 2, baseDelayMs: 2000 } // 3 total attempts for verification
+      : { maxRetries: 1, baseDelayMs: 1500 }; // 2 total attempts for others
+
     if (isGetRequest) {
       // ✅ GET REQUEST
       const queryParams = new URLSearchParams();
@@ -3922,20 +3986,24 @@ const callVtpassApi = async (endpoint, data = {}, headers = {}, method = 'POST')
       const urlWithQuery = queryParams.toString() ? `${fullUrl}?${queryParams.toString()}` : fullUrl;
       
       console.log(`📡 GET Request to: ${urlWithQuery}`);
+      console.log(`📡 Timeout: ${requestTimeoutMs}ms | Max retries: ${retryConfig.maxRetries}`);
       console.log(`📡 Headers: api-key: ${vtpassConfig.apiKey ? '***' : 'MISSING'}, secret-key: ${vtpassConfig.secretKey ? '***' : 'MISSING'}`);
       
-      response = await axios.get(urlWithQuery, {
+      response = await axiosWithRetry({
+        method: 'get',
+        url: urlWithQuery,
         headers: {
           'Content-Type': 'application/json',
           'api-key': vtpassConfig.apiKey,
           'secret-key': vtpassConfig.secretKey,
           ...headers,
         },
-        timeout: 30000
-      });
+        timeout: requestTimeoutMs
+      }, retryConfig);
     } else {
       // ✅ POST REQUEST
       console.log(`📡 POST Request to: ${fullUrl}`);
+      console.log(`📡 Timeout: ${requestTimeoutMs}ms | Max retries: ${retryConfig.maxRetries}`);
       console.log(`📡 Headers: api-key: ${vtpassConfig.apiKey ? '***' : 'MISSING'}, secret-key: ${vtpassConfig.secretKey ? '***' : 'MISSING'}`);
       console.log(`📡 Payload:`, JSON.stringify(data, null, 2));
       
@@ -3946,15 +4014,18 @@ const callVtpassApi = async (endpoint, data = {}, headers = {}, method = 'POST')
         console.log(`📡 FORCING LIVE URL for /pay: ${targetUrl}`);
       }
       
-      response = await axios.post(targetUrl, data, {
+      response = await axiosWithRetry({
+        method: 'post',
+        url: targetUrl,
+        data: data,
         headers: {
           'Content-Type': 'application/json',
           'api-key': vtpassConfig.apiKey,
           'secret-key': vtpassConfig.secretKey,
           ...headers,
         },
-        timeout: 30000
-      });
+        timeout: requestTimeoutMs
+      }, retryConfig);
     }
     
     console.log(`✅ VTPass API call to ${endpoint} successful.`);
@@ -15503,6 +15574,8 @@ app.delete('/api/virtual-account/:userId', adminProtect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 });
+
+
 // VTpass endpoints
 // @desc    Verify smartcard number
 // @route   POST /api/vtpass/validate-smartcard
@@ -15688,7 +15761,64 @@ app.post('/api/vtpass/tv/purchase',
 
     const userId = req.user._id;
     const reference = generateRequestId();
-    const totalAmount = parseFloat(amount) * parseInt(quantity);
+  // ============================================
+// ✅ FIX: Resolve the REAL bouquet price from
+// VTpass variations before computing totalAmount.
+//
+//  • CHANGE mode → use the variation_code's fixed
+//                  price from VTpass (ignore frontend amount)
+//  • RENEW  mode → use the frontend amount
+//                  (= Renewal_Amount from merchant-verify)
+// ============================================
+let bouquetUnitPrice = parseFloat(amount);
+
+if (subscription_type === 'change' || action === 'change') {
+  try {
+    const varCacheKey = `cable-variations-${serviceID}`;
+    let variationList = cache.get(varCacheKey);
+
+    if (!variationList) {
+      console.log(`📡 [CABLE] Fetching live variations for ${serviceID} to resolve real price...`);
+      const varResponse = await axios.get(
+        `https://vtpass.com/api/service-variations?serviceID=${serviceID}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': process.env.VTPASS_API_KEY,
+            'secret-key': process.env.VTPASS_SECRET_KEY,
+          },
+          timeout: 15000
+        }
+      );
+      if (varResponse.data?.response_description === '000') {
+        variationList = varResponse.data.content?.variations
+                     || varResponse.data.content?.varations
+                     || [];
+        cache.set(varCacheKey, variationList, 3600);
+      }
+    }
+
+    if (Array.isArray(variationList) && variationList.length > 0) {
+      const match = variationList.find(
+        v => v.variation_code?.toString() === variationCode?.toString()
+      );
+      if (match) {
+        const realPrice = parseFloat(match.variation_amount);
+        if (!isNaN(realPrice) && realPrice > 0) {
+          bouquetUnitPrice = realPrice;
+          console.log(`✅ [CABLE] Resolved bouquet price: ₦${bouquetUnitPrice} for ${variationCode}`);
+        }
+      } else {
+        console.log(`⚠️ [CABLE] variation_code "${variationCode}" not found in VTpass list — using frontend amount ₦${bouquetUnitPrice}`);
+      }
+    }
+  } catch (priceErr) {
+    console.log(`⚠️ [CABLE] Could not fetch variations: ${priceErr.message} — using frontend amount ₦${bouquetUnitPrice}`);
+  }
+}
+
+const totalAmount = bouquetUnitPrice * parseInt(quantity);
+console.log(`💰 [CABLE] FINAL debit amount: ₦${totalAmount} (unit: ₦${bouquetUnitPrice} × ${quantity})`);
 
     try {
       // ============================================
@@ -15806,18 +15936,32 @@ app.post('/api/vtpass/tv/purchase',
       // ============================================
       // STEP 6: Build VTpass payload (per official docs)
       // ============================================
-      const vtpassPayload = {
-        request_id: reference,
-        serviceID: serviceID,
-        billersCode: billersCode,
-        variation_code: variationCode,
-        amount: Number(totalAmount),
-        phone: phone,
-        subscription_type: vtpassSubscriptionType,
-        quantity: parseInt(quantity)
-      };
+     // ============================================
+// ✅ FIX: Build VTpass payload correctly.
+//
+//  • CHANGE → DO NOT send `amount` (VTpass uses variation_code's price)
+//  • RENEW  → SEND `amount` = the Renewal_Amount
+// ============================================
+const vtpassPayload = {
+  request_id: reference,
+  serviceID: serviceID,
+  billersCode: billersCode,
+  variation_code: variationCode,
+  phone: phone,
+  subscription_type: vtpassSubscriptionType,
+  quantity: parseInt(quantity)
+};
 
-      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
+if (vtpassSubscriptionType === 'renew') {
+  // Renew → send the amount (Renewal_Amount from merchant-verify)
+  vtpassPayload.amount = Number(totalAmount);
+  console.log(`💰 [CABLE] RENEW — sending amount: ₦${totalAmount}`);
+} else {
+  // Change → omit amount, VTpass uses variation_code's fixed price
+  console.log(`💰 [CABLE] CHANGE — omitting amount, VTpass uses variation_code price`);
+}
+
+console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
 
       // ============================================
       // STEP 7: Call VTpass
