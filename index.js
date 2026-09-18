@@ -254,6 +254,8 @@ function interpretVtpassResponse(vtpassData, endpointType = 'purchase') {
   // 011, 012, 013, 015, 016, 017, 021-028, 031, 032, 034, 035, 085, 087
   // ================================================
   const explicitFailCodes = [
+    '010', // ✅ ADDED — variation code does not exist
+    '020', // ✅ ADDED — biller confirmed (verification-only; treat as failed for purchases)
     '011', // invalid arguments
     '012', // product doesn't exist
     '013', // below minimum
@@ -3963,15 +3965,24 @@ const callVtpassApi = async (endpoint, data = {}, headers = {}, method = 'POST')
     console.error('📡 Error Type:', error.code || 'UNKNOWN');
     console.error('📡 Error Message:', error.message);
     
-    if (error.response) {
+        if (error.response) {
       console.error('📡 Server responded with non-2xx status:', error.response.status);
       console.error('📡 Response headers:', error.response.headers);
       console.error('📡 Response data:', JSON.stringify(error.response.data, null, 2));
+      // ✅ CRITICAL: VTpass returns HTTP 4xx for legitimate business errors
+      // (011 INVALID ARGUMENTS, 012 PRODUCT DOESN'T EXIST, etc.)
+      // We MUST return the VTpass body inside `data` so interpretVtpassResponse()
+      // can read the real code. Without this, every VTpass 4xx is treated as
+      // "UNKNOWN" and the user is debited with no recovery.
       return {
         success: false,
         status: error.response.status,
-        message: error.response.data.message || error.response.data.response_description || 'Error from VTPass API',
-        details: error.response.data
+        message: error.response.data?.response_description
+              || error.response.data?.message
+              || 'Error from VTPass API',
+        details: error.response.data,
+        data: error.response.data,        // ✅ ADD — makes interpretVtpassResponse work
+        isVtpassError: true               // ✅ ADD — flag for route handlers
       };
     } else if (error.request) {
       console.error('📡 No response received from VTPass API');
@@ -4777,119 +4788,109 @@ const awardIndirectReferralBonus = async (referredUserId, mongooseSession = null
 
 
 // CALCULATE COMMISSION - UPDATED RATES PER SERVICE TYPE
-const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSession = null, isUsingCommission = false) => {
+// ==================== CALCULATE COMMISSION - NO SESSION, FIRE-AND-FORGET NOTIFICATIONS ====================
+// ✅ CRITICAL: This function must NEVER be called inside a MongoDB transaction.
+//    It writes to User (commissionBalance) and Transaction (commission credit).
+//    Always call it AFTER the main transaction has committed.
+// ========================================================================================================
+const calculateAndAddCommission = async (userId, amount, serviceType, isUsingCommission = false) => {
   try {
-    // 🔥 CRITICAL FIX: Skip commission if user paid with commission
+    // Skip commission if user paid with commission
     if (isUsingCommission) {
       console.log(`⚠️ SKIPPING COMMISSION: User paid with commission balance`);
       return 0;
     }
 
-    // Handle case where serviceType might be an object
+    // Handle serviceType as string or object
     let serviceTypeString;
-    
     if (typeof serviceType === 'string') {
       serviceTypeString = serviceType;
     } else if (serviceType && typeof serviceType === 'object') {
-      // Try to extract service type from object
-      if (serviceType.serviceID) {
-        serviceTypeString = serviceType.serviceID;
-      } else if (serviceType.serviceType) {
-        serviceTypeString = serviceType.serviceType;
-      } else if (serviceType.network) {
-        serviceTypeString = serviceType.network;
-      } else {
-        serviceTypeString = 'unknown';
-      }
-    } else if (serviceType === undefined || serviceType === null) {
-      // If serviceType is not provided at all
-      console.warn('⚠️ Commission called without serviceType parameter');
-      serviceTypeString = 'unknown';
+      serviceTypeString = serviceType.serviceID || serviceType.serviceType || serviceType.network || 'unknown';
     } else {
       serviceTypeString = 'unknown';
     }
-    
-    console.log(`🎯 COMMISSION CALCULATION CALLED: serviceType="${serviceTypeString}" | Amount=₦${amount} | UsingCommission=${isUsingCommission}`);
-    
-    // ========== SKIP COMMISSION FOR TRANSFERS ==========
-    // Wallet-to-wallet transfers do not earn commission
-    if (serviceTypeString.toLowerCase().includes('transfer') || 
-        serviceTypeString.toLowerCase() === 'transfer' || 
-        serviceTypeString.toLowerCase() === 'peer_transfer' ||
-        serviceTypeString.toLowerCase().includes('peer') ||
-        serviceTypeString.toLowerCase().includes('wallet_transfer') ||
-        serviceTypeString.toLowerCase().includes('send_money')) {
-      console.log(`⚠️ SKIPPING COMMISSION: Wallet-to-wallet transfers do not earn commission`);
+
+    console.log(`🎯 COMMISSION: serviceType="${serviceTypeString}" | Amount=₦${amount}`);
+
+    const lowerType = serviceTypeString.toLowerCase().trim();
+
+    // Skip transfers (no commission)
+    if (
+      lowerType.includes('transfer') ||
+      lowerType === 'peer_transfer' ||
+      lowerType.includes('peer') ||
+      lowerType.includes('wallet_transfer') ||
+      lowerType.includes('send_money')
+    ) {
+      console.log(`⚠️ SKIPPING COMMISSION: Transfers do not earn commission`);
       return 0;
     }
-    // ==================================================
-    
-    // Use session if provided, otherwise query normally
-    const settingsQuery = Settings.findOne();
-    if (mongooseSession) {
-      settingsQuery.session(mongooseSession);
-    }
-    const settings = await settingsQuery;
-    
-    // Determine commission rate based on service type - UPDATED RATES
-    let rate = 0.003; // Default 0.3% for other services
-    
-    // Get specific commission rates from settings
+
+    // Load settings (NO session)
+    const settings = await Settings.findOne();
+
+    // Determine rate
+    let rate = 0.003; // default 0.3%
+
     if (settings) {
-      // Check for specific service type rates first
-      const lowerType = serviceTypeString.toLowerCase().trim();
-      
-      console.log('🔍 Commission calculation for service:', lowerType);
-      
-      // ========== UPDATED COMMISSION RATES ==========
-      // Note: Transfer rates are commented out since transfers don't earn commission
-      
-      // 1. AIRTIME SERVICES - 0.5%
-      if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
-           lowerType.includes('glo') || lowerType.includes('etisalat') || 
-           lowerType.includes('9mobile')) && !lowerType.includes('data')) {
-        rate = settings.airtimeCommissionRate || 0.005; // 0.5% for airtime
-        console.log('✅ Airtime commission rate:', rate, '(0.5%)');
-      } 
-      // 2. DATA SERVICES - 0.5%
+      // 1. AIRTIME — 0.5%
+      if (
+        (lowerType.includes('mtn') ||
+          lowerType.includes('airtel') ||
+          lowerType.includes('glo') ||
+          lowerType.includes('etisalat') ||
+          lowerType.includes('9mobile')) &&
+        !lowerType.includes('data')
+      ) {
+        rate = settings.airtimeCommissionRate || 0.005;
+        console.log('✅ Airtime rate:', rate);
+      }
+      // 2. DATA — 0.5%
       else if (lowerType.includes('data')) {
-        rate = typeof settings.dataCommissionRate !== 'undefined' 
-          ? settings.dataCommissionRate 
-          : 0.005; // 0.5% for data
-        console.log('✅ Data commission rate:', rate, '(0.5%)');
-      } 
-      // 3. ELECTRICITY SERVICES - 0.4%
-      else if (lowerType.includes('electric') || 
-               lowerType.includes('ikeja') || 
-               lowerType.includes('eko') || 
-               lowerType.includes('abuja') || 
-               lowerType.includes('ibadan') || 
-               lowerType.includes('enugu') || 
-               lowerType.includes('kano') || 
-               lowerType.includes('ph')) {
-        rate = settings.electricityCommissionRate || 0.004; // 0.4% for electricity
-        console.log('✅ Electricity commission rate:', rate, '(0.4%)');
-      } 
-      // 4. CABLE TV SERVICES - 0.5%
-      else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
-               lowerType.includes('startimes') || lowerType === 'tv') {
-        rate = settings.cableTvCommissionRate || 0.005; // 0.5% for cable TV
-        console.log('✅ Cable TV commission rate:', rate, '(0.5%)');
-      } 
-      // 5. EDUCATION SERVICES - 0.5%
+        rate = typeof settings.dataCommissionRate !== 'undefined'
+          ? settings.dataCommissionRate
+          : 0.005;
+        console.log('✅ Data rate:', rate);
+      }
+      // 3. ELECTRICITY — 0.4%
+      else if (
+        lowerType.includes('electric') ||
+        lowerType.includes('ikeja') ||
+        lowerType.includes('eko') ||
+        lowerType.includes('abuja') ||
+        lowerType.includes('ibadan') ||
+        lowerType.includes('enugu') ||
+        lowerType.includes('kano') ||
+        lowerType.includes('ph')
+      ) {
+        rate = settings.electricityCommissionRate || 0.004;
+        console.log('✅ Electricity rate:', rate);
+      }
+      // 4. CABLE TV — 0.5%
+      else if (
+        lowerType.includes('dstv') ||
+        lowerType.includes('gotv') ||
+        lowerType.includes('startimes') ||
+        lowerType === 'tv'
+      ) {
+        rate = settings.cableTvCommissionRate || 0.005;
+        console.log('✅ Cable TV rate:', rate);
+      }
+      // 5. EDUCATION — 0.5%
       else if (lowerType.includes('education')) {
-        rate = settings.educationCommissionRate || 0.005; // 0.5% for education
-        console.log('✅ Education commission rate:', rate, '(0.5%)');
-      } 
-      // 6. INSURANCE SERVICES - 0.4%
+        rate = settings.educationCommissionRate || 0.005;
+        console.log('✅ Education rate:', rate);
+      }
+      // 6. INSURANCE — 0.4%
       else if (lowerType.includes('insurance')) {
-        rate = settings.insuranceCommissionRate || 0.004; // 0.4% for insurance
-        console.log('✅ Insurance commission rate:', rate, '(0.4%)');
-      } 
-      // 7. DEFAULT - 0.3%
+        rate = settings.insuranceCommissionRate || 0.004;
+        console.log('✅ Insurance rate:', rate);
+      }
+      // 7. DEFAULT — 0.3%
       else {
-        rate = settings.commissionRate || 0.003; // Default commission rate 0.3%
-        console.log('✅ Default commission rate:', rate, '(0.3%)');
+        rate = settings.commissionRate || 0.003;
+        console.log('✅ Default rate:', rate);
       }
     }
 
@@ -4900,29 +4901,21 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
     }
 
     let commissionAmount = cleanAmount * rate;
-    
-    console.log(`💰 Commission calculation: ${cleanAmount} × ${rate} = ${commissionAmount}`);
-    console.log(`💰 Rate percentage: ${(rate * 100).toFixed(2)}%`);
-    
-    // Check if commission is 100% (rate = 1)
+
+    // Guard against 100% rate misconfiguration
     if (rate === 1 || Math.abs(rate - 1) < 0.00001) {
-      console.error('❌ ERROR: Commission rate is 100%! This is wrong.');
-      console.error('❌ Using fallback rate of 0.5%');
+      console.error('❌ Commission rate is 100%! Using fallback 0.5%');
       commissionAmount = cleanAmount * 0.005;
+      rate = 0.005;
     }
-    
+
     if (commissionAmount <= 0) {
       console.log('⚠️ Commission amount too small');
       return 0;
     }
 
-    // Get user with session if provided
-    const userQuery = User.findById(userId);
-    if (mongooseSession) {
-      userQuery.session(mongooseSession);
-    }
-    const user = await userQuery;
-    
+    // Fetch user (NO session)
+    const user = await User.findById(userId);
     if (!user) {
       console.log('❌ User not found for commission');
       return 0;
@@ -4932,98 +4925,81 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
 
     const balanceBefore = user.commissionBalance;
     user.commissionBalance += commissionAmount;
-    
-    // Save with session if provided
-    if (mongooseSession) {
-      await user.save({ session: mongooseSession });
-    } else {
-      await user.save();
-    }
+    await user.save(); // ← NO session, ever
 
-    const lowerType = serviceTypeString.toLowerCase().trim();
-    console.log(`🔍 Processing commission for service type: "${lowerType}"`);
-
+    // Determine commission label + source
     let description = '';
     let source = '';
     let commissionType = 'Commission Credit';
 
-    // ========== DETERMINE COMMISSION TYPE ==========
-    // Note: Transfer commission type is commented out since transfers don't earn commission
-    
-    // 1. AIRTIME COMMISSION - 0.5%
-    if ((lowerType.includes('mtn') || lowerType.includes('airtel') || 
-         lowerType.includes('glo') || lowerType.includes('etisalat') || 
-         lowerType.includes('9mobile')) && 
-        !lowerType.includes('data')) {
+    if (
+      (lowerType.includes('mtn') ||
+        lowerType.includes('airtel') ||
+        lowerType.includes('glo') ||
+        lowerType.includes('etisalat') ||
+        lowerType.includes('9mobile')) &&
+      !lowerType.includes('data')
+    ) {
       description = `Airtime Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Airtime';
       commissionType = 'Airtime Commission Credit';
-      console.log('✅ Commission type determined: Airtime (0.5%)');
-    }
-    // 2. DATA COMMISSION - 0.5%
-    else if (lowerType.includes('data')) {
+    } else if (lowerType.includes('data')) {
       description = `Data Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Data';
       commissionType = 'Data Commission Credit';
-      console.log('✅ Commission type determined: Data (0.5%)');
-    }
-    // 3. CABLE TV COMMISSION - 0.5%
-    else if (lowerType.includes('dstv') || lowerType.includes('gotv') || 
-             lowerType.includes('startimes') || lowerType === 'tv') {
+    } else if (
+      lowerType.includes('dstv') ||
+      lowerType.includes('gotv') ||
+      lowerType.includes('startimes') ||
+      lowerType === 'tv'
+    ) {
       description = `Cable TV Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Cable TV';
       commissionType = 'Cable TV Commission Credit';
-      console.log('✅ Commission type determined: Cable TV (0.5%)');
-    }
-    // 4. ELECTRICITY COMMISSION - 0.4%
-    else if (lowerType.includes('electric') || 
-             lowerType.includes('ikeja') || 
-             lowerType.includes('eko') || 
-             lowerType.includes('abuja') || 
-             lowerType.includes('ibadan') || 
-             lowerType.includes('enugu') || 
-             lowerType.includes('kano') || 
-             lowerType.includes('ph')) {
+    } else if (
+      lowerType.includes('electric') ||
+      lowerType.includes('ikeja') ||
+      lowerType.includes('eko') ||
+      lowerType.includes('abuja') ||
+      lowerType.includes('ibadan') ||
+      lowerType.includes('enugu') ||
+      lowerType.includes('kano') ||
+      lowerType.includes('ph')
+    ) {
       description = `Electricity Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Electricity';
       commissionType = 'Electricity Commission Credit';
-      console.log('✅ Commission type determined: Electricity (0.4%)');
-    }
-    // 5. EDUCATION COMMISSION - 0.5%
-    else if (lowerType.includes('education') || 
-             lowerType.includes('waec') || 
-             lowerType.includes('jamb') || 
-             lowerType.includes('exam') || 
-             lowerType.includes('result')) {
+    } else if (
+      lowerType.includes('education') ||
+      lowerType.includes('waec') ||
+      lowerType.includes('jamb') ||
+      lowerType.includes('exam') ||
+      lowerType.includes('result')
+    ) {
       description = `Education Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Education';
       commissionType = 'Education Commission Credit';
-      console.log('✅ Commission type determined: Education (0.5%)');
-    }
-    // 6. INSURANCE COMMISSION - 0.4%
-    else if (lowerType.includes('insurance') || 
-             lowerType.includes('insure') || 
-             lowerType.includes('ui-insure') || 
-             lowerType.includes('motor') || 
-             lowerType.includes('vehicle')) {
+    } else if (
+      lowerType.includes('insurance') ||
+      lowerType.includes('insure') ||
+      lowerType.includes('ui-insure') ||
+      lowerType.includes('motor') ||
+      lowerType.includes('vehicle')
+    ) {
       description = `Insurance Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = 'Insurance';
       commissionType = 'Insurance Commission Credit';
-      console.log('✅ Commission type determined: Insurance (0.4%)');
-    }
-    // 7. DEFAULT COMMISSION - 0.3%
-    else {
-      const formattedType = serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
+    } else {
+      const formattedType =
+        serviceTypeString.charAt(0).toUpperCase() + serviceTypeString.slice(1);
       description = `${formattedType} Commission Credit (₦${commissionAmount.toFixed(2)})`;
       source = formattedType;
       commissionType = `${formattedType} Commission Credit`;
-      console.log(`⚠️ Default commission type used: ${formattedType} (0.3%)`);
     }
 
-    console.log(`✅ Commission determined: ${description} | Source: ${source} | Rate: ${(rate * 100).toFixed(2)}%`);
-    console.log(`💰 Final commission amount: ₦${commissionAmount.toFixed(2)}`);
+    console.log(`✅ Commission: ${description} | Rate: ${(rate * 100).toFixed(2)}%`);
 
-    // Create commission transaction
+    // Create commission transaction (NO session)
     await createTransaction(
       userId,
       commissionAmount,
@@ -5032,47 +5008,40 @@ const calculateAndAddCommission = async (userId, amount, serviceType, mongooseSe
       description,
       balanceBefore,
       user.commissionBalance,
-      mongooseSession,
-      true, // isCommission = true
+      null, // ← NO session
+      true, // isCommission
       'none',
       null,
-      {}, // metadata
-      { 
+      {},
+      {
         commissionSource: source,
         originalService: lowerType,
         commissionRate: rate,
         commissionPercentage: (rate * 100).toFixed(2) + '%',
         originalAmount: cleanAmount,
-        commissionAmount: commissionAmount
+        commissionAmount: commissionAmount,
       }
     );
 
-    // Also create a notification for the user about commission earned
-    try {
-      await Notification.create({
-        recipient: userId,
-        title: "Commission Earned 💰",
-        message: `You earned ₦${commissionAmount.toFixed(2)} commission from ${source} service`,
-        type: 'commission_earned',
-        isRead: false,
-        metadata: {
-          commissionAmount: commissionAmount,
-          source: source,
-          originalAmount: cleanAmount,
-          ratePercentage: (rate * 100).toFixed(2)
-        }
-      });
-    } catch (notifError) {
-      console.error('Commission notification error:', notifError);
-    }
+    // ✅ FIRE-AND-FORGET: Notification (never await, never block caller)
+    Notification.create({
+      recipient: userId,
+      title: 'Commission Earned 💰',
+      message: `You earned ₦${commissionAmount.toFixed(2)} commission from ${source} service`,
+      type: 'commission_earned',
+      isRead: false,
+      metadata: {
+        commissionAmount,
+        source,
+        originalAmount: cleanAmount,
+        ratePercentage: (rate * 100).toFixed(2),
+      },
+    }).catch((err) => console.log('⚠️ Commission notif error:', err.message));
 
-    console.log(`💰 COMMISSION ADDED: ${description} → Source: ${source} (₦${commissionAmount.toFixed(2)})`);
+    console.log(`💰 COMMISSION ADDED: ${source} → ₦${commissionAmount.toFixed(2)}`);
     return commissionAmount;
-
   } catch (error) {
-    console.error('❌ COMMISSION CALCULATION ERROR:', error);
-    console.error('Error details:', error.message);
-    console.error('Error stack:', error.stack);
+    console.error('❌ COMMISSION ERROR:', error.message);
     return 0;
   }
 };
@@ -15665,58 +15634,46 @@ function normalizeTransactionStatus(status) {
 
 
 // ================================================
-// @desc    Pay for Cable TV subscription – RENEW & CHANGE BOUQUET (FULL DEBUG)
+// @desc    Pay for Cable TV subscription – RENEW & CHANGE BOUQUET
 // @route   POST /api/vtpass/tv/purchase
 // @access  Private
+// ✅ FIXED: No multi-doc transaction → no write conflict → 3-8s response
 // ================================================
+
 app.post('/api/vtpass/tv/purchase', 
   protect, 
   requireApproval,
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
-  checkGlobalPerMinuteLimit,
   smartLimitCheck,
-  checkTransactionLimit('cable'),
-  checkPerMinuteLimit('cabletv'),
-  preventRaceCondition({ 
-    windowMs: 30000,
+    preventRaceCondition({ 
+    windowMs: 30000,              // ✅ 30s window after SUCCESS
     maxRequests: 1,
     keyPrefix: 'cabletv',
-    excludeStatuses: ['Failed']
+    excludeStatuses: ['Failed'],
+    pendingRetryMs: 90000,        // ✅ Allow retry after 90s if previous is PENDING
+    successBlockMs: 60000         // ✅ Block 60s after SUCCESS
   }),
-  userServiceRateLimiter('cabletv', 2, 60000),
   [
     body('serviceID').notEmpty().withMessage('Service ID is required'),
     body('billersCode').notEmpty().withMessage('Billers code is required'),
     body('variationCode').notEmpty().withMessage('Variation code is required'),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
     body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
-    body('subscription_type').optional().isIn(['renew', 'change']).withMessage('Subscription type must be renew or change'),
-    body('quantity').optional().isInt({ min: 1, max: 12 }).withMessage('Quantity must be between 1 and 12'),
-    body('currentPackage').optional().isString().withMessage('Current package must be a string'),
-    body('action').optional().isIn(['renew', 'change']).withMessage('Action must be renew or change')
+    body('subscription_type').optional().isIn(['renew', 'change']),
+    body('quantity').optional().isInt({ min: 1, max: 12 }),
+    body('currentPackage').optional().isString(),
+    body('action').optional().isIn(['renew', 'change'])
   ], 
   async (req, res) => {
-    // ============================================
-    // STEP 0: VALIDATE AND LOG REQUEST
-    // ============================================
-    console.log('📺 ==================== CABLE TV PURCHASE ====================');
-    console.log('📦 Request Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('👤 User ID:', req.user?._id?.toString());
-    console.log('📧 User Email:', req.user?.email);
-    console.log('🔐 Auth Method:', req.authenticationMethod || 'unknown');
-    console.log('⏰ Time:', new Date().toISOString());
+    console.log('📺 ===== CABLE TV PURCHASE =====');
+    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Validation errors:', JSON.stringify(errors.array(), null, 2));
       return res.status(400).json({ success: false, message: errors.array()[0].msg });
     }
 
-    // ============================================
-    // STEP 1: EXTRACT REQUEST PARAMETERS
-    // ============================================
     const { 
       serviceID, 
       billersCode, 
@@ -15731,158 +15688,21 @@ app.post('/api/vtpass/tv/purchase',
 
     const userId = req.user._id;
     const reference = generateRequestId();
-
-    console.log('📊 ========== EXTRACTED PARAMETERS ==========');
-    console.log('🆔 Reference:', reference);
-    console.log('📊 Service ID:', serviceID);
-    console.log('🔢 Smartcard/Billers Code:', billersCode);
-    console.log('📦 Variation Code:', variationCode);
-    console.log('💰 Amount:', amount);
-    console.log('📞 Phone:', phone);
-    console.log('🔄 Subscription Type (body):', subscription_type);
-    console.log('📦 Quantity:', quantity);
-    console.log('📦 Current Package:', currentPackage);
-    console.log('🎯 Action (explicit):', action);
-    console.log('📊 ============================================');
-
-    // ============================================
-    // STEP 2: CHECK VTPASS CONFIGURATION
-    // ============================================
-    console.log('🔧 ========== VTPASS CONFIGURATION ==========');
-    console.log('🔑 API Key configured:', !!process.env.VTPASS_API_KEY);
-    console.log('🔑 Secret Key configured:', !!process.env.VTPASS_SECRET_KEY);
-    console.log('🔑 Base URL:', vtpassConfig.baseUrl);
-    console.log('🔑 API Key length:', process.env.VTPASS_API_KEY?.length || 0);
-    console.log('🔑 Secret Key length:', process.env.VTPASS_SECRET_KEY?.length || 0);
-    console.log('🔧 ============================================');
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    const totalAmount = parseFloat(amount) * parseInt(quantity);
 
     try {
       // ============================================
-      // STEP 3: GET USER
+      // STEP 1: Fetch user (NO session)
       // ============================================
-      const user = await User.findById(userId).session(session);
+      const user = await User.findById(userId);
       if (!user) {
-        await session.abortTransaction();
-        console.log('❌ User not found for ID:', userId);
         return res.status(404).json({ success: false, message: 'User not found' });
       }
 
-      console.log('👤 USER FOUND:', {
-        _id: user._id.toString(),
-        email: user.email,
-        fullName: user.fullName,
-        walletBalance: user.walletBalance,
-        isActive: user.isActive
-      });
-
       // ============================================
-      // STEP 4: VERIFY SMARTCARD FIRST
+      // STEP 2: Balance check (NO session)
       // ============================================
-      console.log('🔍 ========== VERIFYING SMARTCARD ==========');
-      let customerName = '';
-      let currentBouquet = '';
-      let renewalAmount = 0;
-      let dueDate = '';
-      let customerNumber = '';
-      let verifiedCurrentBouquet = '';
-
-      try {
-        const verifyPayload = {
-          serviceID: serviceID,
-          billersCode: billersCode
-        };
-        console.log('📤 Verify Payload:', JSON.stringify(verifyPayload, null, 2));
-
-        const verifyResult = await callVtpassApi('/merchant-verify', verifyPayload);
-
-        console.log('📡 ========== MERCHANT VERIFY RESPONSE ==========');
-        console.log('📡 Success:', verifyResult.success);
-        console.log('📡 Status:', verifyResult.status);
-        console.log('📡 Full Response:', JSON.stringify(verifyResult, null, 2));
-        console.log('📡 ==============================================');
-
-        if (verifyResult.success && verifyResult.data?.code === '000') {
-          const content = verifyResult.data.content || {};
-          customerName = content.Customer_Name || 'N/A';
-          verifiedCurrentBouquet = content.Current_Bouquet || 'N/A';
-          renewalAmount = parseFloat(content.Renewal_Amount || 0);
-          dueDate = content.Due_Date || 'N/A';
-          customerNumber = content.Customer_Number || billersCode;
-
-          console.log('✅ SMARTCARD VERIFIED SUCCESSFULLY:');
-          console.log('   👤 Customer Name:', customerName);
-          console.log('   📺 Current Bouquet:', verifiedCurrentBouquet);
-          console.log('   💰 Renewal Amount: ₦', renewalAmount);
-          console.log('   📅 Due Date:', dueDate);
-        } else {
-          console.log('⚠️ Smartcard verification returned non-000 code');
-          console.log('   Code:', verifyResult.data?.code);
-          console.log('   Message:', verifyResult.data?.response_description || verifyResult.message);
-        }
-      } catch (verifyError) {
-        console.error('❌ ERROR during smartcard verification:', verifyError.message);
-        console.error('   Stack:', verifyError.stack);
-      }
-      console.log('🔍 ============================================');
-
-      // ============================================
-      // STEP 5: DETERMINE IF PACKAGE CHANGE
-      // ============================================
-      console.log('🔄 ========== DETERMINING PACKAGE CHANGE ==========');
-      let isPackageChange = false;
-      let packageChangeDetails = null;
-
-      // Method 1: Check explicit 'action' field
-      if (action === 'change') {
-        isPackageChange = true;
-        console.log('✅ PACKAGE CHANGE via action="change"');
-      } 
-      // Method 2: Check subscription_type
-      else if (subscription_type === 'change') {
-        isPackageChange = true;
-        console.log('✅ PACKAGE CHANGE via subscription_type="change"');
-      }
-      // Method 3: Check if currentPackage differs from variationCode
-      else if (currentPackage && variationCode && currentPackage !== variationCode) {
-        isPackageChange = true;
-        console.log(`✅ PACKAGE CHANGE: ${currentPackage} → ${variationCode}`);
-      }
-      // Method 4: Default - renewal
-      else {
-        console.log('📺 RENEWAL: Using subscription_type="renew"');
-        isPackageChange = false;
-      }
-
-      console.log('📊 Final isPackageChange:', isPackageChange);
-      
-      const vtpassSubscriptionType = isPackageChange ? 'change' : 'renew';
-      console.log('📤 VTpass subscription_type:', vtpassSubscriptionType);
-
-      if (isPackageChange) {
-        packageChangeDetails = {
-          from: currentPackage || verifiedCurrentBouquet || 'Unknown',
-          to: variationCode,
-          toPrice: amount
-        };
-        console.log('📦 Package Change Details:', JSON.stringify(packageChangeDetails, null, 2));
-      }
-      console.log('🔄 ============================================');
-
-      // ============================================
-      // STEP 6: CHECK BALANCE
-      // ============================================
-      const totalAmount = parseFloat(amount) * parseInt(quantity);
-      console.log('💰 ========== BALANCE CHECK ==========');
-      console.log('💰 Total Amount: ₦' + totalAmount);
-      console.log('💰 Wallet Balance: ₦' + user.walletBalance);
-      console.log('💰 Balance Sufficient:', user.walletBalance >= totalAmount);
-
       if (user.walletBalance < totalAmount) {
-        await session.abortTransaction();
-        console.log('❌ INSUFFICIENT BALANCE');
         return res.status(400).json({ 
           success: false, 
           message: `Insufficient balance. Required: ₦${totalAmount}, Available: ₦${user.walletBalance.toFixed(2)}`,
@@ -15891,48 +15711,100 @@ app.post('/api/vtpass/tv/purchase',
       }
 
       // ============================================
-      // STEP 7: DUPLICATE CHECK
+      // STEP 3: Duplicate check (60s — matches race limiter)
       // ============================================
-      console.log('🔍 ========== DUPLICATE CHECK ==========');
-      const thirtySecondsAgo = new Date(Date.now() - 30000);
+      const sixtySecondsAgo = new Date(Date.now() - 60000);
       const existingTransaction = await Transaction.findOne({
         userId: userId,
         type: 'Cable TV Subscription',
         status: 'Successful',
         'metadata.smartcardNumber': billersCode,
-        createdAt: { $gte: thirtySecondsAgo }
-      }).session(session);
+        createdAt: { $gte: sixtySecondsAgo }
+      });
 
       if (existingTransaction) {
-        await session.abortTransaction();
-        console.log(`🚫 DUPLICATE BLOCKED: Smartcard ${billersCode} within 30 seconds`);
-        console.log('   Existing Transaction ID:', existingTransaction._id);
-        console.log('   Existing Created At:', existingTransaction.createdAt);
+        console.log(`🚫 DUPLICATE BLOCKED: ${billersCode} within 60s`);
         return res.status(409).json({
           success: false,
-          message: 'A transaction for this smartcard was just processed. Please wait 30 seconds.',
+          message: 'A transaction for this smartcard was just processed. Please wait 60 seconds.',
           code: 'RECENT_TRANSACTION_EXISTS',
-          alreadyProcessed: true
+          alreadyProcessed: true,
+          existingTransactionId: existingTransaction._id
         });
       }
-      console.log('✅ No duplicate found');
 
       // ============================================
-      // STEP 8: DEBIT USER WALLET
+      // STEP 4: Determine renew vs change
       // ============================================
-      console.log('💰 ========== DEBIT USER ==========');
-      const balanceBefore = user.walletBalance;
-      user.walletBalance -= totalAmount;
-      const balanceAfter = user.walletBalance;
-      await user.save({ session });
+           // ============================================
+      // STEP 4: Determine renew vs change — BULLETPROOF
+      //
+      // VTpass rules (from official docs):
+      //  • RENEW  → variation_code MUST equal the customer's CURRENT bouquet
+      //  • CHANGE → variation_code is any NEW bouquet
+      //
+      // We enforce this HERE so the endpoint works no matter what the
+      // frontend sends. Three auto-correction rules:
+      //   1. action='change' + same variation → force 'renew'
+      //   2. action='renew'  + different variation → force 'change'
+      //   3. neither action nor currentPackage sent → use frontend's intent
+      // ============================================
+      const normalizedAction = String(action || subscription_type || 'renew').toLowerCase().trim();
+      const normalizedCurrent = String(currentPackage || '').trim().toLowerCase();
+      const normalizedVariation = String(variationCode || '').trim().toLowerCase();
 
-      console.log(`💰 WALLET DEBITED: ₦${totalAmount}`);
-      console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
-      console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
+      let isPackageChange;
 
-            // ============================================
-      // STEP 9: BUILD VTPASS PAYLOAD (per VTpass docs)
-      // ExtraView is baked into the variation_code — no flag needed
+      if (normalizedAction === 'change') {
+        // User explicitly chose CHANGE
+        if (normalizedCurrent && normalizedCurrent === normalizedVariation) {
+          // Same bouquet — it's actually a renew
+          isPackageChange = false;
+          console.log(`⚠️ [CABLE] action=change but variation == current → auto-switch to RENEW`);
+        } else {
+          isPackageChange = true;
+        }
+      } else {
+        // action = 'renew' (default)
+        if (normalizedCurrent && normalizedVariation && normalizedCurrent !== normalizedVariation) {
+          // Different bouquet — it's actually a change
+          isPackageChange = true;
+          console.log(`⚠️ [CABLE] action=renew but variation != current → auto-switch to CHANGE`);
+          console.log(`   current="${normalizedCurrent}" requested="${normalizedVariation}"`);
+        } else {
+          isPackageChange = false;
+        }
+      }
+
+      const vtpassSubscriptionType = isPackageChange ? 'change' : 'renew';
+      console.log(`📤 [CABLE] FINAL Mode: ${vtpassSubscriptionType.toUpperCase()}`);
+      console.log(`   action received: ${normalizedAction}`);
+      console.log(`   currentPackage: ${currentPackage || '(none)'}`);
+      console.log(`   variationCode: ${variationCode}`);
+
+      // ============================================
+      // STEP 5: ATOMIC DEBIT (no session, single update)
+      // ============================================
+      const debitedUser = await User.findOneAndUpdate(
+        { _id: userId, walletBalance: { $gte: totalAmount } },
+        { $inc: { walletBalance: -totalAmount } },
+        { new: true }
+      );
+
+      if (!debitedUser) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Insufficient balance (concurrent update detected)',
+          code: 'INSUFFICIENT_BALANCE'
+        });
+      }
+
+      const balanceBefore = debitedUser.walletBalance + totalAmount;
+      const balanceAfter = debitedUser.walletBalance;
+      console.log(`💰 DEBITED ₦${totalAmount} | Before: ₦${balanceBefore} | After: ₦${balanceAfter}`);
+
+      // ============================================
+      // STEP 6: Build VTpass payload (per official docs)
       // ============================================
       const vtpassPayload = {
         request_id: reference,
@@ -15946,30 +15818,15 @@ app.post('/api/vtpass/tv/purchase',
       };
 
       console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
-      console.log('📤 Action:', isPackageChange ? 'BOUQUET CHANGE' : 'BOUQUET RENEWAL');
-   
-
-      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
-      console.log('📤 Action:', isPackageChange ? 'CHANGE BOUQUET' : 'RENEW BOUQUET');
-      console.log('📤 Subscription Type:', vtpassSubscriptionType);
-      console.log('📤 ============================================');
 
       // ============================================
-      // STEP 10: CALL VTPASS /pay ENDPOINT
+      // STEP 7: Call VTpass
       // ============================================
-      console.log('📡 ========== CALLING VTPASS /pay ==========');
-      console.log('📡 Endpoint: /pay');
-      console.log('📡 Base URL:', vtpassConfig.baseUrl);
-      console.log('📡 Full URL:', vtpassConfig.baseUrl + '/pay');
-      console.log('📡 Payload:', JSON.stringify(vtpassPayload, null, 2));
-      console.log('📡 Time:', new Date().toISOString());
-
       let vtpassResult;
       try {
         vtpassResult = await callVtpassApi('/pay', vtpassPayload);
       } catch (apiError) {
-        console.error('❌ VTPASS API CALL THREW EXCEPTION:', apiError.message);
-        console.error('   Stack:', apiError.stack);
+        console.error('❌ VTpass call threw:', apiError.message);
         vtpassResult = {
           success: false,
           message: apiError.message || 'API call failed',
@@ -15978,52 +15835,40 @@ app.post('/api/vtpass/tv/purchase',
         };
       }
 
-      console.log('📡 ========== VTPASS /pay RESPONSE ==========');
-      console.log('📡 Success:', vtpassResult.success);
-      console.log('📡 Status:', vtpassResult.status);
-      console.log('📡 Full Response:', JSON.stringify(vtpassResult, null, 2));
-      console.log('📡 ============================================');
+            console.log('📡 VTpass Response:', JSON.stringify(vtpassResult, null, 2));
 
-      const vtpassCode = vtpassResult.data?.code?.toString() || 'UNKNOWN';
-      const vtpassDesc = vtpassResult.data?.response_description || vtpassResult.message || 'Unknown error';
+      // ✅ SAFE BODY EXTRACTION — handles all cases:
+      //   • Success from axios  → body in `vtpassResult.data`
+      //   • Axios 4xx error     → body in `vtpassResult.data` (thanks to callVtpassApi fix)
+      //   • Network error       → body is null → interpretVtpassResponse handles gracefully
+      const vtpassBody = vtpassResult.data || vtpassResult.details || null;
 
-      console.log('🔍 VTpass Code:', vtpassCode);
-      console.log('🔍 VTpass Description:', vtpassDesc);
-
+      const interpretation = interpretVtpassResponse(vtpassBody, 'purchase');
       const packageName = getPackageNameFromVariationCode(variationCode, serviceID);
-      console.log('📦 Package Name:', packageName);
+
+      console.log(`🎯 code=${interpretation.code} innerStatus=${interpretation.innerStatus} status=${interpretation.status} action=${interpretation.action}`);
 
       // ============================================
-      // STEP 11: HANDLE RESPONSE
+      // STEP 8: ✅ SUCCESS
       // ============================================
-      console.log('🔄 ========== HANDLING RESPONSE ==========');
-
-      // ✅ SUCCESS
-      if (vtpassResult.success && vtpassCode === '000') {
-        console.log('✅ VTPASS SUCCESS - Transaction completed');
-
+      if (interpretation.isDelivered && interpretation.status === 'Successful') {
         let formattedToken = null;
-        const rawToken = vtpassResult.data.purchased_code || vtpassResult.data.token || null;
+        const rawToken = vtpassResult.data?.purchased_code || vtpassResult.data?.token;
         if (rawToken) {
           formattedToken = rawToken.toString()
-            .replace('Token : ', '')
-            .replace('Token:', '')
-            .replace('TOKEN : ', '')
-            .replace('TOKEN:', '')
-            .trim();
+            .replace('Token : ', '').replace('Token:', '')
+            .replace('TOKEN : ', '').replace('TOKEN:', '').trim();
           if (formattedToken && !formattedToken.includes(' ') && formattedToken.length >= 16) {
             formattedToken = formattedToken.replace(/(.{4})/g, '$1 ').trim();
           }
         }
 
-        const customerNameFromVtpass = vtpassResult.data.customerName || 
-                                       vtpassResult.data.content?.Customer_Name || 
-                                       customerName || 'N/A';
-        const customerAddress = vtpassResult.data.customerAddress || 
-                               vtpassResult.data.content?.Address || 'N/A';
+        const customerNameFromVtpass = vtpassResult.data?.customerName || 
+                                       vtpassResult.data?.content?.Customer_Name || 'N/A';
+        const customerAddress = vtpassResult.data?.customerAddress || 
+                               vtpassResult.data?.content?.Address || 'N/A';
 
-        // ✅ CREATE TRANSACTION RECORD
-        const newTransaction = new Transaction({
+        const newTransaction = await Transaction.create({
           userId: userId,
           amount: totalAmount,
           type: 'Cable TV Subscription',
@@ -16036,39 +15881,37 @@ app.post('/api/vtpass/tv/purchase',
           authenticationMethod: req.authenticationMethod || 'pin',
           gateway: 'DalabaPay App',
           metadata: {
-            phone: phone,
-            smartcardNumber: billersCode,
-            billersCode: billersCode,
-            variation_code: variationCode,
-            packageName: packageName,
-            selectedPackage: variationCode,
-            serviceID: serviceID,
+            phone, smartcardNumber: billersCode, billersCode,
+            variation_code: variationCode, packageName,
+            selectedPackage: variationCode, serviceID,
             vtpassResponse: vtpassResult.data,
-            userDebited: true,
-            debitAmount: totalAmount,
-            vtpassDelivered: true,
+            userDebited: true, debitAmount: totalAmount, vtpassDelivered: true,
             token: formattedToken,
             customerName: customerNameFromVtpass,
             customerAddress: customerAddress,
-            isPackageChange: isPackageChange,
-            packageChangeDetails: packageChangeDetails,
-            quantity: quantity,
+            isPackageChange, quantity,
             subscription_type: vtpassSubscriptionType,
-            renewalAmount: renewalAmount,
-            currentBouquet: verifiedCurrentBouquet,
-            vtpassCode: vtpassCode,
-            vtpassDescription: vtpassDesc,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
             action: isPackageChange ? 'change' : 'renew'
           }
         });
 
-        await newTransaction.save({ session });
+        // ⚡ Fire-and-forget: commission (outside any transaction)
+        calculateAndAddCommission(userId, totalAmount, 'tv')
+          .catch(err => console.log('⚠️ Commission error:', err.message));
 
-                // ✅ Commit BEFORE commission (prevents WriteConflict)
-        await session.commitTransaction();
-        session.endSession();
+        // ⚡ Fire-and-forget: notification
+        Notification.create({
+          recipient: userId,
+          title: isPackageChange ? 'TV Package Changed Successfully 📺' : 'TV Subscription Renewed 📺',
+          message: `${serviceID.toUpperCase()} ${isPackageChange ? 'package changed' : 'renewed'} for ${billersCode}. New balance: ₦${balanceAfter.toFixed(2)}`,
+          type: 'transaction',
+          isRead: false,
+          metadata: { serviceID, smartcardNumber: billersCode, amount: totalAmount, packageName, newBalance: balanceAfter }
+        }).catch(err => console.log('⚠️ Notif error:', err.message));
 
-        // ✅ NOTIFY ADMINS
+        // ⚡ Fire-and-forget: admin notify
         notifyAdminsOfTransaction({
           title: '📺 Cable TV Purchase',
           message: `${user.fullName} paid for ${serviceID.toUpperCase()} on ${billersCode} — ₦${totalAmount}`,
@@ -16079,46 +15922,9 @@ app.post('/api/vtpass/tv/purchase',
           reference: reference,
           status: 'Successful',
           transactionId: newTransaction._id
-        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+        }).catch(err => console.log('⚠️ Admin notify error:', err.message));
 
-        // ✅ Calculate commission OUTSIDE transaction
-        try {
-          await calculateAndAddCommission(userId, totalAmount, 'tv')
-            .catch(err => console.log('⚠️ Commission error:', err.message));
-        } catch (commError) {
-          console.log('⚠️ Commission calculation error:', commError.message);
-        }
-
-        // ✅ Create notification
-        try {
-          const actionMessage = isPackageChange 
-            ? `Package changed from ${packageChangeDetails.from} to ${packageChangeDetails.to}` 
-            : `Subscription renewed successfully`;
-
-          await Notification.create({
-            recipient: userId,
-            title: isPackageChange ? 'TV Package Changed Successfully 📺' : 'TV Subscription Renewed 📺',
-            message: `${serviceID.toUpperCase()} ${actionMessage} for ${billersCode}. New balance: ₦${balanceAfter.toFixed(2)}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: {
-              serviceID: serviceID,
-              smartcardNumber: billersCode,
-              amount: totalAmount,
-              packageName: packageName,
-              newBalance: balanceAfter,
-              userDebited: true,
-              isPackageChange: isPackageChange,
-              packageChangeDetails: packageChangeDetails,
-              quantity: quantity
-            }
-          });
-          console.log('✅ Notification created');
-        } catch (notifError) {
-          console.error('❌ Notification error:', notifError.message);
-        }
-
-        console.log(`✅ CABLE TV SUCCESS: ${serviceID} - ${packageName} - Action: ${isPackageChange ? 'CHANGE' : 'RENEW'}`);
+        console.log(`✅ CABLE TV SUCCESS: ${serviceID} - ${packageName} - ${isPackageChange ? 'CHANGE' : 'RENEW'}`);
 
         return res.json({
           success: true,
@@ -16127,7 +15933,7 @@ app.post('/api/vtpass/tv/purchase',
           vtpassResponse: vtpassResult.data,
           newBalance: balanceAfter,
           message: isPackageChange 
-            ? `Package changed from ${packageChangeDetails.from} to ${packageChangeDetails.to} successfully!` 
+            ? `Package changed to ${packageName} successfully!` 
             : 'TV subscription renewed successfully!',
           forceSuccessDialog: true,
           userDebited: true,
@@ -16136,139 +15942,193 @@ app.post('/api/vtpass/tv/purchase',
           customerName: customerNameFromVtpass,
           customerAddress: customerAddress,
           isPackageChange: isPackageChange,
-          packageChangeDetails: packageChangeDetails,
-          renewalAmount: renewalAmount,
-          currentBouquet: verifiedCurrentBouquet,
+          packageName: packageName,
           action: isPackageChange ? 'change' : 'renew'
         });
       }
 
       // ============================================
-      // STEP 12: HANDLE FAILURE - USER ALREADY DEBITED
+      // STEP 9: 🔄 PENDING — keep debit, create pending record
       // ============================================
-      console.log(`❌ VTPASS ERROR: Code ${vtpassCode} - ${vtpassDesc}`);
-      console.log(`❌ User already debited ₦${totalAmount}, service not delivered`);
+      if (interpretation.isPending || interpretation.action === 'ADMIN_ALERT_KEEP_PENDING') {
+        const pendingTx = await Transaction.create({
+          userId: userId,
+          amount: totalAmount,
+          type: 'Cable TV Subscription',
+          status: 'Pending',
+          description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode} - PENDING`,
+          balanceBefore: balanceBefore,
+          balanceAfter: balanceAfter,
+          reference: reference,
+          isCommission: false,
+          authenticationMethod: req.authenticationMethod || 'pin',
+          gateway: 'DalabaPay App',
+          metadata: {
+            phone, smartcardNumber: billersCode, billersCode,
+            variation_code: variationCode, packageName, serviceID,
+            vtpassResponse: vtpassResult.data,
+            userDebited: true, debitAmount: totalAmount,
+            vtpassCode: interpretation.code,
+            vtpassInnerStatus: interpretation.innerStatus,
+            vtpassAction: interpretation.action,
+            needsRequery: interpretation.needsRequery,
+            isPackageChange,
+            pendingSince: new Date(),
+            action: isPackageChange ? 'change' : 'renew'
+          }
+        });
 
-      const failedTransaction = new Transaction({
+        Notification.create({
+          recipient: userId,
+          title: 'TV Purchase Pending ⏳',
+          message: `Your ${serviceID.toUpperCase()} purchase is being processed. We'll confirm shortly.`,
+          type: 'transaction_pending',
+          isRead: false
+        }).catch(() => {});
+
+        console.log(`🔄 CABLE TV PENDING: ${reference}`);
+        return res.status(200).json({
+          success: true,
+          pending: true,
+          message: 'Your TV purchase is being processed. We\'ll notify you once confirmed.',
+          transactionId: pendingTx._id.toString(),
+          status: 'Pending',
+          newBalance: balanceAfter,
+          userDebited: true,
+          amountDebited: totalAmount,
+          isPending: true
+        });
+      }
+
+      // ============================================
+      // STEP 10: ❌ REFUND_USER (code 091 — VTpass not processed)
+      // ============================================
+      if (interpretation.isFailed && interpretation.action === 'REFUND_USER') {
+        const refundedUser = await User.findByIdAndUpdate(
+          userId, 
+          { $inc: { walletBalance: totalAmount } }, 
+          { new: true }
+        );
+        const refundedBalance = refundedUser.walletBalance;
+
+        const failedTx = await Transaction.create({
+          userId: userId,
+          amount: totalAmount,
+          type: 'Cable TV Subscription',
+          status: 'Failed',
+          description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode} - FAILED (REFUNDED)`,
+          balanceBefore: balanceBefore,
+          balanceAfter: refundedBalance,
+          reference: reference,
+          isCommission: false,
+          gateway: 'DalabaPay App',
+          isFailed: true,
+          shouldShowAsFailed: true,
+          failureReason: interpretation.description,
+          metadata: {
+            phone, smartcardNumber: billersCode, variation_code: variationCode,
+            serviceID, vtpassResponse: vtpassResult.data,
+            userDebited: false, refunded: true, refundAmount: totalAmount,
+            vtpassCode: interpretation.code,
+            vtpassDescription: interpretation.description,
+            isPackageChange
+          }
+        });
+
+        await Transaction.create({
+          userId,
+          type: 'Refund Credit',
+          amount: totalAmount,
+          status: 'Successful',
+          description: `Refund for failed TV purchase ${reference}`,
+          balanceBefore: balanceAfter,
+          balanceAfter: refundedBalance,
+          reference: `REFUND_${reference}_${Date.now()}`,
+          metadata: { originalTransactionId: failedTx._id, autoRefund: true }
+        });
+
+        Notification.create({
+          recipient: userId,
+          title: 'TV Purchase Failed — Refunded 💰',
+          message: `Your TV purchase of ₦${totalAmount} failed. Refund credited to your wallet.`,
+          type: 'transaction',
+          isRead: false
+        }).catch(() => {});
+
+        console.log(`💰 CABLE TV REFUNDED: ${reference}`);
+        return res.status(400).json({
+          success: false,
+          message: `TV purchase failed. ₦${totalAmount.toFixed(2)} has been refunded to your wallet.`,
+          transactionId: failedTx._id.toString(),
+          status: 'Failed',
+          newBalance: refundedBalance,
+          userDebited: false,
+          refunded: true
+        });
+      }
+
+      // ============================================
+      // STEP 11: ❌ Other failures (user debited, keep for admin)
+      // ============================================
+          const failedTx = await Transaction.create({
         userId: userId,
         amount: totalAmount,
         type: 'Cable TV Subscription',
         status: 'Failed',
-        description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode} - FAILED (USER DEBITED ₦${totalAmount})`,
+        description: `${serviceID.toUpperCase()} ${isPackageChange ? 'Package Change' : 'Renewal'} for ${billersCode} - FAILED (USER DEBITED)`,
         balanceBefore: balanceBefore,
         balanceAfter: balanceAfter,
         reference: reference,
         isCommission: false,
-        authenticationMethod: req.authenticationMethod || 'pin',
         gateway: 'DalabaPay App',
         isFailed: true,
         shouldShowAsFailed: true,
-        failureReason: `${vtpassDesc} - USER DEBITED`,
+        failureReason: interpretation.description || 'Transaction failed',
         metadata: {
-          phone: phone,
-          smartcardNumber: billersCode,
-          billersCode: billersCode,
-          variation_code: variationCode,
-          packageName: packageName,
-          selectedPackage: variationCode,
-          serviceID: serviceID,
-          vtpassResponse: vtpassResult.data || { error: vtpassDesc, code: vtpassCode },
-          userDebited: true,
-          debitAmount: totalAmount,
-          vtpassDelivered: false,
-          isPackageChange: isPackageChange,
-          packageChangeDetails: packageChangeDetails,
-          quantity: quantity,
-          subscription_type: vtpassSubscriptionType,
-          renewalAmount: renewalAmount,
-          currentBouquet: verifiedCurrentBouquet,
-          vtpassCode: vtpassCode,
-          vtpassDescription: vtpassDesc,
-          vtpassError: vtpassDesc,
-          action: isPackageChange ? 'change' : 'renew',
-          requestBody: req.body,
-          vtpassPayload: vtpassPayload,
-          vtpassResult: vtpassResult
+          phone, smartcardNumber: billersCode, variation_code: variationCode,
+          serviceID,
+          vtpassResponse: vtpassBody,           // ✅ use safe body
+          userDebited: true, debitAmount: totalAmount,
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description,
+          isPackageChange
         }
       });
 
-      await failedTransaction.save({ session });
-      await session.commitTransaction();
-      session.endSession();
+      let userMessage = 'Transaction failed. Please try again.';
+      const desc = (interpretation.description || '').toLowerCase();
+      const code = interpretation.code;
 
-      // ============================================
-      // STEP 13: BUILD USER-FRIENDLY ERROR MESSAGE
-      // ============================================
-      let userMessage = 'Your wallet was debited but TV subscription delivery failed. Please contact support.';
-      let displayMessage = 'Transaction failed. Please try again.';
-
-      // Check specific VTpass error codes
-      if (vtpassCode === '018' || (vtpassDesc && vtpassDesc.includes('LOW WALLET BALANCE'))) {
-        userMessage = 'Service provider wallet is low. Your payment has been recorded and will be processed when service is restored.';
-        displayMessage = 'Service temporarily unavailable. Your payment is recorded.';
-      } else if (vtpassCode === '024' || (vtpassDesc && vtpassDesc.includes('INSUFFICIENT'))) {
-        userMessage = 'Service provider issue. Your payment has been recorded and will be processed shortly.';
-        displayMessage = 'Service issue. Your payment is recorded.';
-      } else if (vtpassDesc && vtpassDesc.toLowerCase().includes('invalid smartcard')) {
-        userMessage = 'Invalid smartcard number. Please check and try again. Your payment has been recorded.';
-        displayMessage = 'Invalid smartcard number.';
-      } else if (vtpassCode === '019' || (vtpassDesc && vtpassDesc.includes('DUPLICATE'))) {
-        userMessage = 'This transaction was already processed. Please check your subscription status.';
-        displayMessage = 'Transaction already processed.';
-      } else if (isPackageChange && vtpassDesc && vtpassDesc.includes('change')) {
-        userMessage = 'Package change failed. Your payment has been recorded. Please contact support.';
-        displayMessage = 'Package change failed.';
-      } else if (!vtpassResult.success && vtpassResult.message) {
-        userMessage = `Service temporarily unavailable. Your payment of ₦${totalAmount} has been recorded. Please try again later.`;
-        displayMessage = 'Service unavailable. Payment recorded.';
+      if (code === '018' || desc.includes('low wallet balance')) {
+        userMessage = 'Service temporarily unavailable. Your payment has been recorded.';
+      } else if (code === '019' || desc.includes('duplicate')) {
+        userMessage = 'This transaction was already processed. Please check your subscription.';
+      } else if (desc.includes('invalid smartcard') || desc.includes('invalid billerscode')) {
+        userMessage = 'Invalid smartcard number. Please check and try again.';
       }
 
-      console.log('❌ SENDING FAILURE RESPONSE');
-      console.log('   User Message:', userMessage);
-      console.log('   Display Message:', displayMessage);
+      console.log(`❌ CABLE TV FAILED: ${reference} - ${code}`);
 
       return res.status(400).json({
         success: false,
         message: userMessage,
-        displayMessage: displayMessage,
-        transactionId: failedTransaction._id.toString(),
+        transactionId: failedTx._id.toString(),
         status: 'Failed',
         newBalance: balanceAfter,
-        vtpassResponse: vtpassResult.data || { code: vtpassCode, response_description: vtpassDesc },
+        vtpassResponse: vtpassResult.data,
         userDebited: true,
         amountDebited: totalAmount,
         isFailed: true,
         shouldShowAsFailed: true,
-        code: vtpassCode,
-        response_description: vtpassDesc,
-        vtpassCode: vtpassCode,
-        vtpassDescription: vtpassDesc,
-        isPackageChange: isPackageChange,
-        packageChangeDetails: packageChangeDetails,
-        action: isPackageChange ? 'change' : 'renew',
-        debug: {
-          requestId: reference,
-          serviceID: serviceID,
-          billersCode: billersCode,
-          variationCode: variationCode,
-          vtpassSubscriptionType: vtpassSubscriptionType,
-          vtpassPayload: vtpassPayload
-        }
+        code: code,
+        vtpassCode: code,
+        vtpassDescription: interpretation.description,
+        isPackageChange: isPackageChange
       });
 
     } catch (error) {
-      // ============================================
-      // STEP 14: HANDLE UNEXPECTED ERRORS
-      // ============================================
-      await session.abortTransaction();
-      session.endSession();
-
-      console.error('❌ ========== CABLE TV CRITICAL ERROR ==========');
-      console.error('❌ Error Name:', error.name);
-      console.error('❌ Error Message:', error.message);
-      console.error('❌ Error Stack:', error.stack);
-      console.error('❌ Error Code:', error.code);
-      console.error('❌ ================================================');
+      console.error('❌ CABLE TV CRITICAL ERROR:', error.name, error.message);
+      console.error('Stack:', error.stack);
 
       if (error.code === 11000) {
         return res.status(409).json({
@@ -16279,17 +16139,15 @@ app.post('/api/vtpass/tv/purchase',
         });
       }
 
-      res.status(500).json({ 
+      return res.status(500).json({ 
         success: false, 
         message: 'An unexpected error occurred. Please try again.',
-        displayMessage: 'Transaction failed. Please try again.',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-        errorName: error.name,
-        errorCode: error.code
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }
 );
+
 
 // ================================================
 // HELPER FUNCTIONS
@@ -16560,47 +16418,21 @@ app.post('/api/vtpass/airtime/purchase',
       let transactionStatus = interpretation.status; // 'Successful' | 'Pending' | 'Failed'
       let newBalance = balanceAfter;
       
-      // ================================================
+            // ================================================
       // ✅ DELIVERED — success + commission + notification
+      // Commission/notification are fired AFTER session commit below.
       // ================================================
       if (interpretation.isDelivered && interpretation.status === 'Successful') {
-        await calculateAndAddCommission(userId, amount, network, session)
-          .catch(err => console.log('⚠️ Airtime commission calculation failed:', err.message));
-        
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Airtime Purchase Successful ✅",
-            message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phone, amount, network, newBalance, vtpassCode: interpretation.code }
-          });
-        } catch (notificationError) {
-          console.error('Error creating transaction notification:', notificationError);
-        }
-        
-        console.log(`✅ [AIRTIME] SUCCESS: ${network} - ₦${amount} to ${phone}`);
+        console.log(`✅ [AIRTIME] VTpass DELIVERED: ${network} - ₦${amount} to ${phone}`);
+        // Deferred: commission + notification run after commit
       }
       // ================================================
       // 🔄 PENDING — user debited, awaiting VTpass confirmation
       // ================================================
-      else if (interpretation.isPending) {
+           else if (interpretation.isPending) {
         transactionStatus = 'Pending';
         console.log(`🔄 [AIRTIME] PENDING: User debited ₦${amount}, awaiting VTpass. Code: ${interpretation.code}`);
-        
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Airtime Purchase Pending ⏳",
-            message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. We'll notify you once confirmed.`,
-            type: 'transaction_pending',
-            isRead: false,
-            metadata: { phone, amount, network, vtpassCode: interpretation.code, action: interpretation.action }
-          });
-        } catch (notificationError) {
-          console.error('Error creating pending notification:', notificationError);
-        }
+        // Notification fires after commit (see below)
       }
       // ================================================
       // ⚠️ CODE 018 — VTpass wallet low → keep pending, alert admin
@@ -16700,7 +16532,32 @@ app.post('/api/vtpass/airtime/purchase',
         }
       );
       
-            await session.commitTransaction();
+                 await session.commitTransaction();
+      session.endSession();
+
+            // ✅ COMMISSION + NOTIFICATION NOW RUN OUTSIDE THE TRANSACTION
+      if (transactionStatus === 'Successful') {
+        calculateAndAddCommission(userId, amount, network)
+          .catch(err => console.log('⚠️ Airtime commission error:', err.message));
+
+        Notification.create({
+          recipient: userId,
+          title: "Airtime Purchase Successful ✅",
+          message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
+          type: 'transaction',
+          isRead: false,
+          metadata: { phone, amount, network, newBalance, vtpassCode: interpretation.code }
+        }).catch(err => console.error('Airtime notif error:', err.message));
+      } else if (transactionStatus === 'Pending') {
+        Notification.create({
+          recipient: userId,
+          title: "Airtime Purchase Pending ⏳",
+          message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. We'll notify you once confirmed.`,
+          type: 'transaction_pending',
+          isRead: false,
+          metadata: { phone, amount, network, vtpassCode: interpretation.code, action: interpretation.action }
+        }).catch(err => console.error('Airtime pending notif error:', err.message));
+      }
       
       console.log(`✅ [AIRTIME] COMPLETE: ${network} - ₦${amount} → Status: ${transactionStatus} | VTpass: ${interpretation.code}/${interpretation.innerStatus}`);
 
@@ -16965,8 +16822,8 @@ app.post('/api/vtpass/data/purchase',
       let transactionStatus = interpretation.status;
       let finalBalance = balanceAfter;
 
-      // ================================================
-      // ✅ DELIVERED
+           // ================================================
+      // ✅ DELIVERED — commission runs AFTER commit below
       // ================================================
       if (interpretation.isDelivered && interpretation.status === 'Successful') {
         const newTransaction = await createTransaction(
@@ -16998,23 +16855,22 @@ app.post('/api/vtpass/data/purchase',
           }
         );
 
-        await calculateAndAddCommission(userId, amount, serviceID, session)
-          .catch(err => console.log('⚠️ Data commission calculation failed:', err.message));
+        await session.commitTransaction();
+        session.endSession();
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Data Purchase Successful 📱",
-            message: `${planName} data bundle purchased for ${phone} (${network.toUpperCase()}). New balance: ₦${balanceAfter.toFixed(2)}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phone, amount, network, planName, newBalance: balanceAfter, userDebited: true }
-          });
-        } catch (notificationError) {
-          console.error('Error creating notification:', notificationError);
-        }
+        // ✅ Commission + notification OUTSIDE transaction
+        calculateAndAddCommission(userId, amount, serviceID)
+          .catch(err => console.log('⚠️ Data commission error:', err.message));
 
-                await session.commitTransaction();
+        Notification.create({
+          recipient: userId,
+          title: "Data Purchase Successful 📱",
+          message: `${planName} data bundle purchased for ${phone} (${network.toUpperCase()}). New balance: ₦${balanceAfter.toFixed(2)}`,
+          type: 'transaction',
+          isRead: false,
+          metadata: { phone, amount, network, planName, newBalance: balanceAfter, userDebited: true }
+        }).catch(err => console.error('Data notif error:', err.message));
+
         console.log(`✅ [DATA] SUCCESS: ${network} - ${planName} to ${phone}`);
 
         // ✅ NOTIFY ADMINS
@@ -17107,22 +16963,18 @@ app.post('/api/vtpass/data/purchase',
           }
         );
 
-        // Notify user (pending)
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Data Purchase Pending ⏳",
-            message: `Your ${planName} data purchase for ${phone} is being processed. We'll confirm shortly.`,
-            type: 'transaction_pending',
-            isRead: false,
-            metadata: { phone, amount, network, planName, action: interpretation.action }
-          });
-        } catch (notificationError) {
-          console.error('Error creating pending notification:', notificationError);
-        }
+                await session.commitTransaction();
+               console.log(`🔄 [DATA] PENDING: ${network} - ${planName} to ${phone} | code=${interpretation.code} inner=${interpretation.innerStatus}`);
 
-        await session.commitTransaction();
-        console.log(`🔄 [DATA] PENDING: ${network} - ${planName} to ${phone} | code=${interpretation.code} inner=${interpretation.innerStatus}`);
+        // ✅ Notification fires AFTER commit
+        Notification.create({
+          recipient: userId,
+          title: "Data Purchase Pending ⏳",
+          message: `Your ${planName} data purchase for ${phone} is being processed. We'll confirm shortly.`,
+          type: 'transaction_pending',
+          isRead: false,
+          metadata: { phone, amount, network, planName, action: interpretation.action }
+        }).catch(err => console.error('Data pending notif error:', err.message));
 
         return res.status(200).json({
           success: true,
@@ -17341,8 +17193,8 @@ app.post('/api/vtpass/data/purchase',
         message: 'Service temporarily unavailable. Please try again.',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
-    } finally {
-      session.endSession();
+       } finally {
+      try { session.endSession(); } catch (e) { /* already ended */ }
     }
   }
 );
@@ -17852,12 +17704,14 @@ app.post('/api/vtpass/electricity/purchase',
           userDebited: true, debitConfirmed: true
         });
 
-        await transaction.save({ session });
-
-               await calculateAndAddCommission(userId, amount, serviceID, session)
-          .catch(err => console.log('⚠️ Electricity commission calculation failed:', err.message));
+                await transaction.save({ session });
 
         await session.commitTransaction();
+        session.endSession();
+
+        // ✅ Commission OUTSIDE transaction
+        calculateAndAddCommission(userId, amount, serviceID)
+          .catch(err => console.log('⚠️ Electricity commission error:', err.message));
 
         // ✅ NOTIFY ADMINS
         notifyAdminsOfTransaction({
@@ -18175,8 +18029,8 @@ app.post('/api/vtpass/electricity/purchase',
         userDebited: wasUserDebited,
         contactSupport: wasUserDebited ? true : false
       });
-    } finally {
-      session.endSession();
+       } finally {
+      try { session.endSession(); } catch (e) { /* already ended */ }
     }
   }
 );
@@ -19123,26 +18977,27 @@ app.post('/api/vtpass/proxy',
         }
       }
       
-      // Commission calculation (only if not using commission)
+           await user.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+
+      // ✅ Commission + referral (fire-and-forget, OUTSIDE transaction)
       if (transactionAmount > 0 && !isUsingCommission) {
-        let commissionServiceType = getCommissionServiceType(serviceID);
+        const commissionServiceType = getCommissionServiceType(serviceID);
         
-        await calculateAndAddCommission(
+        calculateAndAddCommission(
           userId, 
           transactionAmount, 
-          commissionServiceType, 
-          session,
+          commissionServiceType,
           isUsingCommission
-        ).catch(err => console.log('⚠️ Commission calculation failed:', err.message));
+        ).catch(err => console.log('⚠️ Proxy commission error:', err.message));
         
-        // Referral service commission
-        if (!isUsingCommission && user.referrerId) {
-          await awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, session);
+        // Referral service commission (no session — runs standalone)
+        if (user.referrerId) {
+          awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, null)
+            .catch(err => console.log('⚠️ Proxy referral commission error:', err.message));
         }
       }
-
-      await user.save({ session });
-      await session.commitTransaction();
 
       console.log(`✅ PROXY TRANSACTION COMPLETE: ${uniqueRequestId} - User debited, service delivered`);
 
@@ -19303,8 +19158,8 @@ app.post('/api/vtpass/proxy',
       message: 'Service unavailable',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
-  } finally {
-    session.endSession();
+   } finally {
+    try { session.endSession(); } catch (e) { /* already ended */ }
   }
 });
 
@@ -19409,7 +19264,9 @@ function buildTransactionMetadata(serviceID, phone, billersCode, variation_code,
 
 async function awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, session) {
   try {
-    const referrer = await User.findById(user.referrerId).session(session);
+    const referrerQuery = User.findById(user.referrerId);
+    if (session) referrerQuery.session(session);
+    const referrer = await referrerQuery;
     if (referrer) {
       const referralCommissionRate = 0.00005;
       let referralCommissionAmount = transactionAmount * referralCommissionRate;
@@ -19446,7 +19303,11 @@ async function awardReferralCommission(user, transactionAmount, serviceID, uniqu
           }
         );
         
-        await referrer.save({ session });
+                if (session) {
+          await referrer.save({ session });
+        } else {
+          await referrer.save();
+        }
         console.log(`✅ Awarded ₦${referralCommissionAmount.toFixed(4)} referral commission`);
       }
     }
@@ -20253,27 +20114,14 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-    if (interpretation.isDelivered && interpretation.status === 'Successful') {
+       if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
 
-      await calculateAndAddCommission(userId, amount, serviceID, session)
-        .catch(err => console.log('⚠️ Education commission calculation failed:', err.message));
-
-      try {
-        await Notification.create({
-          recipientId: userId,
-          title: "Education Purchase Successful 🎓",
-          message: `Your ${serviceID.toUpperCase()} purchase of ₦${amount} was completed successfully. New wallet balance: ₦${newBalance}`,
-          isRead: false
-        });
-      } catch (notificationError) {
-        console.error('Error creating transaction notification:', notificationError);
-      }
-    }
-    // ================================================
+      // ⚠️ Commission + notification will run AFTER commit — see below
+    }    // ================================================
     // 🔄 PENDING — DO NOT debit, create pending record
     // ================================================
     else if (interpretation.isPending) {
@@ -20337,7 +20185,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       });
     }
 
-    const newTransaction = await createTransaction(
+        const newTransaction = await createTransaction(
       userId,
       amount,
       'debit',
@@ -20351,6 +20199,21 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     );
 
     await session.commitTransaction();
+    session.endSession();
+
+    // ✅ Commission + notification OUTSIDE transaction
+    if (transactionStatus === 'successful') {
+      calculateAndAddCommission(userId, amount, serviceID)
+        .catch(err => console.log('⚠️ Education commission error:', err.message));
+
+      Notification.create({
+        recipient: userId,
+        title: "Education Purchase Successful 🎓",
+        message: `Your ${serviceID.toUpperCase()} purchase of ₦${amount} was completed successfully. New wallet balance: ₦${newBalance}`,
+        type: 'transaction',
+        isRead: false
+      }).catch(err => console.error('Education notif error:', err.message));
+    }
 
     res.json({
       success: true,
@@ -20375,68 +20238,12 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
         message: 'Education purchase failed' 
       });
     }
-  } finally {
+   } finally {
     try {
       await session.endSession();
-    } catch (e) { /* ignore — may already be ended */ }
+    } catch (e) { /* already ended */ }
   }
 });
-
-// Helper function for mock education variations
-function getMockEducationVariations(serviceID) {
-  const mockVariations = {
-    'waec-registration': [
-      {
-        "name": "WASSCE for Private Candidates - Second Series (2024)",
-        "variation_code": "waec-registration",
-        "variation_amount": "18950.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "WASSCE for Private Candidates - First Series (2024)",
-        "variation_code": "waec-registration-2", 
-        "variation_amount": "18950.00",
-        "fixedPrice": "Yes"
-      }
-    ],
-    'waec': [
-      {
-        "name": "WASSCE Result Checker",
-        "variation_code": "waecdirect",
-        "variation_amount": "1200.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "WASSCE GCE Result Checker",
-        "variation_code": "waecdirect-2",
-        "variation_amount": "1200.00", 
-        "fixedPrice": "Yes"
-      }
-    ],
-    'jamb': [
-      {
-        "name": "UTME PIN (with mock)",
-        "variation_code": "utme-mock",
-        "variation_amount": "6300.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "UTME PIN (without mock)",
-        "variation_code": "utme-no-mock",
-        "variation_amount": "4700.00",
-        "fixedPrice": "Yes"
-      },
-      {
-        "name": "Direct Entry PIN",
-        "variation_code": "direct-entry", 
-        "variation_amount": "5300.00",
-        "fixedPrice": "Yes"
-      }
-    ]
-  };
-
-  return mockVariations[serviceID] || [];
-}
 
 
 
@@ -21110,12 +20917,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     console.log('🚀 Calling VTpass for insurance purchase...');
     
     // Prepare VTpass payload for insurance purchase
-    const vtpassPayload = {
+       const vtpassPayload = {
       request_id: reference,
       serviceID: 'ui-insure',
       billersCode: plateNumber,
       variation_code: vtpassVariationCode,
-      variation_code: variationCode,
       amount: amount.toString(),
       phone: phone,
       Insured_Name: insuredName,
@@ -21156,25 +20962,12 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-    if (interpretation.isDelivered && interpretation.status === 'Successful') {
+        if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
       newBalance = user.walletBalance - amount;
       user.walletBalance = newBalance;
       await user.save({ session });
-
-      await calculateAndAddCommission(userId, amount, 'insurance', session)
-        .catch(err => console.log('⚠️ Insurance commission calculation failed:', err.message));
-
-      try {
-        await Notification.create({
-          recipientId: userId,
-          title: "Insurance Purchase Successful 🛡️",
-          message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
-          isRead: false
-        });
-      } catch (notificationError) {
-        console.error('Error creating insurance notification:', notificationError);
-      }
+      // ⚠️ Commission + notification will run AFTER commit — see below
     }
     // ================================================
     // 🔄 PENDING — DO NOT debit
@@ -21242,8 +21035,7 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       });
     }
 
-    // Create transaction record
-    const newTransaction = await createTransaction(
+       const newTransaction = await createTransaction(
       userId,
       amount,
       'debit',
@@ -21257,6 +21049,21 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     );
 
     await session.commitTransaction();
+    session.endSession();
+
+    // ✅ Commission + notification OUTSIDE transaction
+    if (transactionStatus === 'successful') {
+      calculateAndAddCommission(userId, amount, 'insurance')
+        .catch(err => console.log('⚠️ Insurance commission error:', err.message));
+
+      Notification.create({
+        recipient: userId,
+        title: "Insurance Purchase Successful 🛡️",
+        message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
+        type: 'transaction',
+        isRead: false
+      }).catch(err => console.error('Insurance notif error:', err.message));
+    }
 
     // Extract certificate URL from response
     const certUrl = vtpassResult.data.certUrl || 
@@ -23801,34 +23608,27 @@ app.post('/api/international-airtime/purchase',
           }
         });
 
-        await newTransaction.save({ session });
+                await newTransaction.save({ session });
         await session.commitTransaction();
         session.endSession();
 
-        // Commission (outside session)
-        try {
-          await calculateAndAddCommission(userId, debitAmountNaira, 'airtime');
-        } catch (commErr) {
-          console.log('⚠️ Commission error:', commErr.message);
-        }
+        // ✅ Commission (fire-and-forget, outside session)
+        calculateAndAddCommission(userId, debitAmountNaira, 'airtime')
+          .catch(err => console.log('⚠️ Intl-Airtime commission error:', err.message));
 
-        // Notification
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "International Airtime Purchase Successful 🌍",
-            message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${debitAmountNaira.toFixed(2)}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: {
-              phoneNumber, amount, currency, countryCode,
-              nairaAmount: debitAmountNaira,
-              newBalance: balanceAfter
-            }
-          });
-        } catch (notifError) {
-          console.error('❌ Notification error:', notifError);
-        }
+        // ✅ Notification (fire-and-forget)
+        Notification.create({
+          recipient: userId,
+          title: "International Airtime Purchase Successful 🌍",
+          message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${debitAmountNaira.toFixed(2)}`,
+          type: 'transaction',
+          isRead: false,
+          metadata: {
+            phoneNumber, amount, currency, countryCode,
+            nairaAmount: debitAmountNaira,
+            newBalance: balanceAfter
+          }
+        }).catch(err => console.error('Intl-Airtime notif error:', err.message));
 
         console.log(`✅ [INTL-AIRTIME] SUCCESS: ₦${debitAmountNaira.toFixed(2)} charged (profit: ₦${profitMargin.toFixed(2)})`);
 
