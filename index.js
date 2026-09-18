@@ -15930,26 +15930,24 @@ app.post('/api/vtpass/tv/purchase',
       console.log(`   Before: ₦${balanceBefore.toFixed(2)}`);
       console.log(`   After:  ₦${balanceAfter.toFixed(2)}`);
 
+            // ============================================
+      // STEP 9: BUILD VTPASS PAYLOAD (per VTpass docs)
+      // ExtraView is baked into the variation_code — no flag needed
       // ============================================
-      // STEP 9: BUILD VTPASS PAYLOAD
-      // ============================================
-      console.log('📤 ========== BUILDING VTPASS PAYLOAD ==========');
       const vtpassPayload = {
         request_id: reference,
         serviceID: serviceID,
         billersCode: billersCode,
         variation_code: variationCode,
-        amount: totalAmount,
+        amount: Number(totalAmount),
         phone: phone,
         subscription_type: vtpassSubscriptionType,
         quantity: parseInt(quantity)
       };
 
-      // For ExtraView packages
-      if (serviceID === 'dstv' && variationCode && variationCode.includes('extra')) {
-        vtpassPayload.is_extra_view = true;
-        console.log('📺 EXTRAVIEW DETECTED');
-      }
+      console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
+      console.log('📤 Action:', isPackageChange ? 'BOUQUET CHANGE' : 'BOUQUET RENEWAL');
+   
 
       console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
       console.log('📤 Action:', isPackageChange ? 'CHANGE BOUQUET' : 'RENEW BOUQUET');
@@ -16327,16 +16325,85 @@ async function getPackagePrices(serviceID) {
   return packageMappings[serviceID] || {};
 }
 
+// Helper function to map variation code to package name (COMPLETE DSTV MAPPING)
 // Helper function to map variation code to package name
 function getPackageNameFromVariationCode(variationCode, serviceID) {
   const packageMappings = {
     'dstv': {
+      // Base packages
       'dstv-padi': 'DStv Padi',
-      'dstv-yanga': 'DStv Yanga', 
+      'dstv-yanga': 'DStv Yanga',
       'dstv-confam': 'DStv Confam',
       'dstv79': 'DStv Compact',
       'dstv7': 'DStv Compact Plus',
-      'dstv3': 'DStv Premium'
+      'dstv3': 'DStv Premium',
+      'dstv6': 'DStv Asia',
+      'dstv9': 'DStv Premium French',
+      'dstv10': 'DStv Premium Asia',
+      'dstv-access-1': 'DStv Access',
+      'dstv-family-1': 'DStv Family',
+      'dstv-mobile-1': 'DStv Mobile',
+      'dstv-fta-plus': 'DStv FTA Plus',
+      'dstv-premium-hd': 'DStv Premium HD',
+      'dstv-indian': 'DStv Indian',
+      'dstv80': 'DStv Asian Bouquet E36',
+      // ExtraView combos
+      'confam-extra': 'DStv Confam + ExtraView',
+      'yanga-extra': 'DStv Yanga + ExtraView',
+      'padi-extra': 'DStv Padi + ExtraView',
+      'dstv30': 'DStv Compact + ExtraView',
+      'dstv33': 'DStv Premium + ExtraView',
+      'dstv45': 'DStv Compact Plus + ExtraView',
+      'com-frenchtouch-extra': 'DStv Compact + French Touch + ExtraView',
+      'com-asia-extra': 'DStv Compact + Asia + ExtraView',
+      'complus-french-extraview': 'DStv Compact Plus + FrenchPlus + ExtraView',
+      'dstv48': 'DStv Compact Plus + Asia + ExtraView',
+      'dstv61': 'DStv Premium + Asia + ExtraView',
+      'dstv62': 'DStv Premium + French + ExtraView',
+      'dstv-complus-frch-xtra': 'DStv Compact Plus + French + XtraView',
+      // French / Asia combos
+      'com-asia': 'DStv Compact + Asia',
+      'com-frenchtouch': 'DStv Compact + French Touch',
+      'dstv40': 'DStv Compact Plus + Asia',
+      'dstv43': 'DStv Compact Plus + French Plus',
+      'complus-frenchtouch': 'DStv Compact Plus + French Touch',
+      'dstv47': 'DStv Compact + French Plus',
+      'dstv-complus-frch': 'DStv Compact Plus + French',
+      // Showmax combos
+      'dstv-yanga-showmax': 'DStv Yanga + Showmax',
+      'dstv-compact-plus-showmax': 'DStv Compact Plus + Showmax',
+      'dstv-confam-showmax': 'DStv Confam + Showmax',
+      'dstv-compact-showmax': 'DStv Compact + Showmax',
+      'dstv-padi-showmax': 'DStv Padi + Showmax',
+      'dstv-premium-showmax': 'DStv Premium + Showmax',
+      'dstv-premium-asia-showmax': 'DStv Premium + Asia + Showmax',
+      'dstv-asia-showmax': 'DStv Asia + Showmax',
+      'dstv-premium-french-showmax': 'DStv Premium + French + Showmax',
+      'dstv-premium-wafr-showmax': 'DStv Premium W/Afr + Showmax',
+      'dstv-greatwall-showmax': 'DStv Great Wall + Showmax',
+      // Streaming
+      'dstv-premium-str': 'DStv Premium Streaming',
+      'dstv-yanga-stream': 'DStv Yanga Streaming',
+      'dstv-compact-plus-streem': 'DStv Compact Plus Streaming',
+      'dstv-compact-stream': 'DStv Compact Streaming',
+      'dstv-confam-stream': 'DStv Confam Streaming',
+      // Addons
+      'hdpvr-access-service': 'DStv HDPVR Access Service',
+      'frenchplus-addon': 'DStv French Plus Add-on',
+      'asia-addon': 'DStv Asian Add-on',
+      'frenchtouch-addon': 'DStv French Touch Add-on',
+      'extraview-access': 'ExtraView Access',
+      'french11': 'DStv French 11',
+      'dstv-indian-add-on': 'DStv India Add-on',
+      'dstv-movie-bundle-add-on': 'DStv Movie Bundle Add-on',
+      'dstv-pvr-access': 'DStv PVR Access Service',
+      'dstv-premium-indian': 'DStv Premium East Africa & Indian',
+      // Others
+      'dstv-prestige': 'DStv Prestige',
+      'dstv-prestige-850': 'DStv Prestige Membership',
+      'showmax3500': 'Showmax Standalone',
+      'dstv-box-office': 'DStv Box Office',
+      'dstv-box-office-premier': 'DStv Box Office (New Premier)'
     },
     'gotv': {
       'gotv-lite': 'GOtv Lite',
@@ -16353,23 +16420,16 @@ function getPackageNameFromVariationCode(variationCode, serviceID) {
       'super': 'StarTimes Super'
     }
   };
-  
+
   if (packageMappings[serviceID] && packageMappings[serviceID][variationCode]) {
     return packageMappings[serviceID][variationCode];
   }
-  
-  for (const [key, value] of Object.entries(packageMappings[serviceID] || {})) {
-    if (variationCode.includes(key) || key.includes(variationCode)) {
-      return value;
-    }
-  }
-  
+
   return variationCode
     .split('-')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
-
 
 
 
