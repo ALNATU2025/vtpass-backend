@@ -12,7 +12,6 @@ const { protect } = require('../middleware/authMiddleware');
  * @desc    Unified RBAC endpoint - Single endpoint for all role/permission operations
  * @access  Private
  */
-router.post('/', protect, [
  router.post('/', protect, [
   body('operation').isString().notEmpty().withMessage('Operation is required'),
   // ✅ Allow null AND undefined — only validate if it's actually a non-null value
