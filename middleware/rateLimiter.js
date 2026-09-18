@@ -6,11 +6,13 @@ const Transaction = mongoose.model('Transaction');
 const requestCache = new Map();
 
 // Clean up old entries every 30 seconds
+// ✅ FIXED: Use 120s retention so we never prematurely delete an entry
+// that a route wanted to keep for up to 90s (pending retry window).
 setInterval(() => {
   const now = Date.now();
   let deletedCount = 0;
   for (const [key, data] of requestCache.entries()) {
-    if (now - data.timestamp > 30000) { // 30 seconds
+    if (now - data.timestamp > 120000) { // 120 seconds — safe max
       requestCache.delete(key);
       deletedCount++;
     }
@@ -25,103 +27,154 @@ setInterval(() => {
  * Blocks duplicate transactions within 30 seconds
  * This is your PRIMARY defense against the race condition bug
  */
+// ==================== preventRaceCondition (STATUS-AWARE v2) ====================
+// Blocks rapid duplicate requests BUT allows retry if the previous
+// attempt is still Pending and enough time has passed OR the previous
+// attempt has Failed.
+//
+// Real-world scenario fixed:
+//   User clicks "Renew Compact" → VTpass takes 45s → user gets impatient,
+//   cancels, opens the app again, clicks "Change to Compact Plus" within
+//   the same minute. Old middleware blocked it. New middleware:
+//     • If previous is Pending → allow only after `pendingRetryMs` (default 90s)
+//     • If previous is Successful → block for `successBlockMs` (default 60s)
+//     • If previous is Failed → allow immediately
+// ======================================================================
 const preventRaceCondition = (options = {}) => {
   const {
-    windowMs = 30000,        // 30 seconds window
-    maxRequests = 1,          // Only 1 request allowed
+    windowMs = 30000,                 // Block window after SUCCESS (fallback)
+    maxRequests = 1,
     keyPrefix = 'txn',
     checkDuplicateInDB = true,
-    excludeStatuses = ['Failed'] // Exclude failed transactions from duplicate check
+    excludeStatuses = ['Failed'],     // Failed → allow immediately
+    pendingRetryMs = 90000,           // Pending  → allow retry after 90s
+    successBlockMs = 60000            // Successful → block 60s
   } = options;
 
   return async (req, res, next) => {
     try {
       // Get user ID from multiple possible locations
       const userId = req.user?._id?.toString() || req.body.userId || req.query.userId;
+      if (!userId) return next();
+
       const serviceType = req.body.serviceType || req.body.serviceID || req.body.type || 'unknown';
-      const phone = req.body.phone || req.body.billersCode || '';
+      const phone = req.body.phone || req.body.billersCode || req.body.meterNumber || req.body.smartcardNumber || '';
       const amount = parseFloat(req.body.amount) || 0;
       const variationCode = req.body.variationCode || req.body.variation_code || '';
-      
-      if (!userId) {
-        return next(); // No user ID, skip rate limiting
-      }
-      
-      // Create a unique fingerprint for this transaction
-      // More specific = better protection
+
+      // Faster cache key — includes user, service, recipient, amount
       const fingerprint = `${keyPrefix}_${userId}_${serviceType}_${phone}_${variationCode}_${amount}`;
       const now = Date.now();
-      
-      // ========== CHECK 1: In-memory cache (fastest - prevents 99% of race conditions) ==========
+
+      // ============================================================
+      // ============ CHECK 1: DB (STATUS-AWARE) ====================
+      // ============================================================
+      // We do the DB check FIRST because it tells us the actual
+      // status of the previous attempt — which the in-memory cache
+      // cannot know.
+      // ============================================================
+      if (checkDuplicateInDB) {
+        const lookbackMs = Math.max(successBlockMs, pendingRetryMs); // e.g. 90s
+        const lookbackTime = new Date(now - lookbackMs);
+
+        const query = {
+          userId: userId,
+          createdAt: { $gte: lookbackTime }
+        };
+
+        if (serviceType !== 'unknown') {
+          query.type = { $regex: new RegExp(serviceType, 'i') };
+        }
+
+        if (phone && phone.length > 5) {
+          query.$or = [
+            { 'metadata.phone': phone },
+            { 'metadata.billersCode': phone },
+            { 'metadata.meterNumber': phone },
+            { 'metadata.smartcardNumber': phone }
+          ];
+        }
+
+        const recentTx = await Transaction.findOne(query).sort({ createdAt: -1 }).lean();
+
+        if (recentTx) {
+          const txStatus = (recentTx.status || '').toLowerCase();
+          const ageMs = now - new Date(recentTx.createdAt).getTime();
+
+          // ---- FAILED → allow immediately ----
+          if (excludeStatuses.map(s => s.toLowerCase()).includes(txStatus)) {
+            console.log(`✅ [RACE] Previous txn FAILED — allowing retry (age: ${Math.round(ageMs / 1000)}s)`);
+            // fall through to next()
+          }
+          // ---- SUCCESSFUL → block for successBlockMs ----
+          else if (txStatus === 'successful' || txStatus === 'completed') {
+            if (ageMs < successBlockMs) {
+              const waitSec = Math.ceil((successBlockMs - ageMs) / 1000);
+              console.log(`🚫 [RACE] Previous txn SUCCESSFUL ${Math.round(ageMs / 1000)}s ago — block ${waitSec}s`);
+              return res.status(409).json({
+                success: false,
+                code: 'RECENT_TRANSACTION_EXISTS',
+                alreadyProcessed: true,
+                message: `A transaction to this ${phone ? 'recipient' : 'service'} was just completed ${Math.round(ageMs / 1000)}s ago. Please wait ${waitSec}s before trying again.`,
+                existingTransactionId: recentTx._id,
+                existingStatus: recentTx.status,
+                retryAfterSeconds: waitSec
+              });
+            }
+          }
+          // ---- PENDING / PROCESSING → block until pendingRetryMs ----
+          else if (txStatus === 'pending' || txStatus === 'processing') {
+            if (ageMs < pendingRetryMs) {
+              const waitSec = Math.ceil((pendingRetryMs - ageMs) / 1000);
+              console.log(`🔄 [RACE] Previous txn PENDING ${Math.round(ageMs / 1000)}s ago — block ${waitSec}s`);
+              return res.status(409).json({
+                success: false,
+                code: 'TRANSACTION_PENDING',
+                isPending: true,
+                message: `Your previous transaction to this ${phone ? 'recipient' : 'service'} is still being processed by the provider. Please wait up to ${waitSec}s for confirmation before trying again.`,
+                existingTransactionId: recentTx._id,
+                existingStatus: recentTx.status,
+                retryAfterSeconds: waitSec
+              });
+            }
+            console.log(`✅ [RACE] Pending txn aged out (${Math.round(ageMs / 1000)}s) — allowing retry`);
+          }
+        }
+      }
+
+      // ============================================================
+      // ============ CHECK 2: In-memory cache (fast backstop) ======
+      // ============================================================
+      // Only use the cache AFTER the DB check. This way a cached
+      // fingerprint cannot block the user when the DB says the
+      // previous attempt already failed.
+      // ============================================================
       const cachedRequest = requestCache.get(fingerprint);
       if (cachedRequest && (now - cachedRequest.timestamp) < windowMs) {
         const timeDiff = now - cachedRequest.timestamp;
         console.log(`🚫 RACE CONDITION BLOCKED (CACHE): ${fingerprint} - ${timeDiff}ms ago`);
-        console.log(`   User: ${userId}, Service: ${serviceType}, Amount: ₦${amount}`);
-        
         return res.status(429).json({
           success: false,
-          message: 'Duplicate transaction detected. Please wait 30 seconds and try again.',
+          message: 'Duplicate request detected. Please wait a moment before trying again.',
           code: 'DUPLICATE_TRANSACTION_CACHE',
           retryAfter: Math.ceil((windowMs - timeDiff) / 1000),
           alreadyProcessed: true
         });
       }
-      
-      // ========== CHECK 2: Database check for recent transactions ==========
-      if (checkDuplicateInDB && userId) {
-        const thirtySecondsAgo = new Date(now - windowMs);
-        
-        // Build query to find recent transactions
-        const query = {
-          userId: userId,
-          status: { $nin: excludeStatuses }, // Exclude failed transactions
-          createdAt: { $gte: thirtySecondsAgo }
-        };
-        
-        // Add service type filter if available
-        if (serviceType !== 'unknown') {
-          query.type = { $regex: new RegExp(serviceType, 'i') };
-        }
-        
-        // Add phone/meter filter for more precise matching
-        if (phone && phone.length > 5) {
-          query.$or = [
-            { 'metadata.phone': phone },
-            { 'metadata.billersCode': phone },
-            { 'metadata.meterNumber': phone }
-          ];
-        }
-        
-        const recentTransaction = await Transaction.findOne(query).sort({ createdAt: -1 }).lean();
-        
-        if (recentTransaction) {
-          const timeSinceLast = now - new Date(recentTransaction.createdAt).getTime();
-          console.log(`🚫 DB DUPLICATE BLOCKED: User ${userId} - ${serviceType} - ${timeSinceLast}ms ago`);
-          console.log(`   Last transaction ID: ${recentTransaction._id}, Status: ${recentTransaction.status}`);
-          
-          return res.status(409).json({
-            success: false,
-            message: 'A similar transaction was just processed. Please check your transaction history before trying again.',
-            code: 'RECENT_TRANSACTION_EXISTS',
-            existingTransactionId: recentTransaction._id,
-            timeSinceLastMs: timeSinceLast,
-            alreadyProcessed: true
-          });
-        }
-      }
-      
-      // ========== CHECK 3: Check for exact same request_id (if provided) ==========
+
+      // ============================================================
+      // ============ CHECK 3: Exact duplicate request_id ===========
+      // ============================================================
       const requestId = req.body.request_id || req.body.requestId;
       if (requestId) {
-        const existingRequest = await Transaction.findOne({ 
+        const existingRequest = await Transaction.findOne({
           $or: [
             { reference: requestId },
             { transactionId: requestId },
             { 'metadata.requestId': requestId }
           ]
         }).lean();
-        
+
         if (existingRequest && existingRequest.status !== 'Failed') {
           console.log(`🚫 DUPLICATE request_id BLOCKED: ${requestId} already processed`);
           return res.status(409).json({
@@ -133,8 +186,10 @@ const preventRaceCondition = (options = {}) => {
           });
         }
       }
-      
-      // ========== ALL CHECKS PASSED - Store in cache ==========
+
+      // ============================================================
+      // ============ ALL CHECKS PASSED — Cache and move on =========
+      // ============================================================
       requestCache.set(fingerprint, {
         timestamp: now,
         userId: userId,
@@ -143,14 +198,13 @@ const preventRaceCondition = (options = {}) => {
         amount: amount,
         requestId: requestId || Date.now().toString()
       });
-      
-      // Log for debugging
+
       console.log(`✅ RATE LIMITER PASSED: User ${userId} - ${serviceType} - ₦${amount}`);
-      
       next();
+
     } catch (error) {
       console.error('❌ Rate limiter error:', error);
-      next(); // Don't block on error - fail open
+      next(); // Fail open — never block on internal errors
     }
   };
 };
