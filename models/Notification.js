@@ -35,23 +35,30 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
+    // ✅ COMPLETE ENUM — includes every type used anywhere in the codebase
     enum: [
-      'account', 
-      'transaction', 
-      'security', 
-      'promotion', 
-      'system', 
-      'alert', 
-      'update', 
-      'general', 
+      'account',
+      'transaction',
+      'transaction_pending',
+      'transaction_issue',
+      'security',
+      'promotion',
+      'system',
+      'alert',
+      'update',
+      'general',
       'test',
       'transfer_sent',
       'transfer_received',
       'payment_success',
       'payment_failed',
       'commission_earned',
+      'referral_bonus',
       'wallet_funded',
-      'announcement' 
+      'wallet_funding',
+      'announcement',
+      'admin_transaction',
+      'admin_activity'
     ],
     default: 'general'
   },
@@ -78,8 +85,8 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     default: null
   }
-}, { 
-  timestamps: true 
+}, {
+  timestamps: true
 });
 
 // ==================== INDEXES ====================
@@ -95,17 +102,17 @@ notificationSchema.index({ createdAt: -1 });
  */
 notificationSchema.methods.isReadByUser = function(userId) {
   const userIdStr = userId.toString();
-  
+
   // For personal notifications
   if (this.recipient && this.recipient.toString() === userIdStr) {
     return this.isRead === true;
   }
-  
+
   // For general notifications (sent to all)
   if (!this.recipient) {
     return this.readBy && this.readBy.some(id => id.toString() === userIdStr);
   }
-  
+
   return false;
 };
 
@@ -114,13 +121,13 @@ notificationSchema.methods.isReadByUser = function(userId) {
  */
 notificationSchema.methods.markAsReadByUser = async function(userId) {
   const userIdStr = userId.toString();
-  
+
   // For personal notifications
   if (this.recipient && this.recipient.toString() === userIdStr) {
     this.isRead = true;
     return await this.save();
   }
-  
+
   // For general notifications (sent to all)
   if (!this.recipient) {
     if (!this.readBy) this.readBy = [];
@@ -130,7 +137,7 @@ notificationSchema.methods.markAsReadByUser = async function(userId) {
     }
     return this;
   }
-  
+
   return this;
 };
 
@@ -139,17 +146,17 @@ notificationSchema.methods.markAsReadByUser = async function(userId) {
  */
 notificationSchema.methods.isForUser = function(userId) {
   const userIdStr = userId.toString();
-  
+
   // Personal notification for this user
   if (this.recipient && this.recipient.toString() === userIdStr) {
     return true;
   }
-  
+
   // General notification (sent to all)
   if (!this.recipient) {
     return true;
   }
-  
+
   return false;
 };
 
@@ -187,12 +194,12 @@ notificationSchema.set('toJSON', {
   transform: function(doc, ret) {
     ret.id = ret._id;
     delete ret.__v;
-    
+
     // Add isGeneral if not already set
     if (ret.isGeneral === undefined) {
       ret.isGeneral = ret.recipient === null;
     }
-    
+
     return ret;
   }
 });
