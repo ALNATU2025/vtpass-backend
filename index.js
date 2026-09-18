@@ -23212,7 +23212,6 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     );
 
     console.log('📦 VTpass API response status:', response.status);
-    console.log('📦 VTpass API response:', JSON.stringify(response.data, null, 2));
 
     const vtpassData = response.data;
 
@@ -23227,14 +23226,137 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
       });
     }
 
-    const variations = vtpassData.content?.variations || [];
+     // ✅ VTpass returns variations in `content.varations` (typo in VTpass API)
+    const rawVariations = vtpassData.content?.variations || vtpassData.content?.varations || [];
     const serviceName = vtpassData.content?.ServiceName || 'International Airtime';
     
-    console.log(`✅ Found ${variations.length} variations`);
-    // Log first 3 variations for debugging
-    variations.slice(0, 3).forEach(v => {
-      console.log(`  📌 Variation: ${v.name} (Code: ${v.variation_code}, Fixed: ${v.fixedPrice})`);
+    // ✅ CRITICAL: Map and preserve ALL min/max/rate fields from VTpass
+    // Handles both numeric AND string values from VTpass
+    const variations = rawVariations.map(v => {
+      // ============================================
+      // Parse variation_amount_min (flexible plans only)
+      // VTpass can return: number, string, null, undefined
+      // ============================================
+      let minAmount = null;
+      const rawMin = v.variation_amount_min;
+      if (rawMin !== null && rawMin !== undefined && rawMin !== '') {
+        const parsed = typeof rawMin === 'number' ? rawMin : parseFloat(rawMin);
+        if (!isNaN(parsed) && parsed > 0) {
+          minAmount = parsed;
+        }
+      }
+      
+      // ============================================
+      // Parse variation_amount_max (flexible plans only)
+      // VTpass can return: number, string, null, undefined
+      // ============================================
+      let maxAmount = null;
+      const rawMax = v.variation_amount_max;
+      if (rawMax !== null && rawMax !== undefined && rawMax !== '') {
+        const parsed = typeof rawMax === 'number' ? rawMax : parseFloat(rawMax);
+        if (!isNaN(parsed) && parsed > 0) {
+          maxAmount = parsed;
+        }
+      }
+      
+      // ============================================
+      // Parse variation_rate (exchange rate for Naira conversion)
+      // VTpass can return: number, string, null, undefined
+      // ============================================
+      let variationRate = null;
+      const rawRate = v.variation_rate;
+      if (rawRate !== null && rawRate !== undefined && rawRate !== '') {
+        const parsed = typeof rawRate === 'number' ? rawRate : parseFloat(rawRate);
+        if (!isNaN(parsed) && parsed > 0) {
+          variationRate = parsed;
+        }
+      }
+      
+      // ============================================
+      // Parse charged_amount (exact Naira amount for fixed plans)
+      // VTpass can return: number, string, false, null, undefined
+      // ⚠️ VTpass sometimes returns `false` here — handle safely
+      // ============================================
+      let chargedAmount = null;
+      const rawCharged = v.charged_amount;
+      if (
+        rawCharged !== null && 
+        rawCharged !== undefined && 
+        rawCharged !== false && 
+        rawCharged !== ''
+      ) {
+        const parsed = typeof rawCharged === 'number' ? rawCharged : parseFloat(rawCharged);
+        if (!isNaN(parsed) && parsed > 0) {
+          chargedAmount = parsed;
+        }
+      }
+      
+      // ============================================
+      // Parse variation_amount (foreign amount for fixed plans)
+      // VTpass can return: number, string, null, undefined
+      // ⚠️ For flexible plans, VTpass returns `null` here
+      // ============================================
+      let variationAmount = null;
+      const rawAmount = v.variation_amount;
+      if (rawAmount !== null && rawAmount !== undefined && rawAmount !== '') {
+        const parsed = typeof rawAmount === 'number' ? rawAmount : parseFloat(rawAmount);
+        if (!isNaN(parsed) && parsed > 0) {
+          variationAmount = parsed;
+        }
+      }
+      
+      // ============================================
+      // Determine if plan is fixed or flexible
+      // VTpass returns "Yes"/"No" strings OR true/false booleans
+      // ============================================
+      const isFixed = v.fixedPrice === 'Yes' || v.fixedPrice === true;
+      
+      return {
+        variation_code: v.variation_code?.toString() || '',
+        name: v.name?.toString() || 'Unknown Plan',
+        fixedPrice: isFixed,
+        // ✅ Preserve all amount fields with proper types
+        variation_amount: variationAmount,        // Foreign amount (fixed only)
+        variation_amount_min: minAmount,          // Min foreign amount (flexible only)
+        variation_amount_max: maxAmount,          // Max foreign amount (flexible only)
+        variation_rate: variationRate,            // Exchange rate (both)
+        charged_amount: chargedAmount,            // Naira amount (fixed only)
+        charged_currency: v.charged_currency?.toString() || 'NGN',
+      };
     });
+    
+    // ============================================
+    // ✅ DEBUG LOGGING — Verify min/max extracted correctly
+    // ============================================
+    console.log(`✅ Processed ${variations.length} variations`);
+    
+    const flexiblePlans = variations.filter(v => v.fixedPrice === false);
+    const fixedPlans = variations.filter(v => v.fixedPrice === true);
+    
+    console.log(`   📋 Fixed plans: ${fixedPlans.length}`);
+    console.log(`   📋 Flexible plans: ${flexiblePlans.length}`);
+    
+    if (flexiblePlans.length > 0) {
+      console.log(`   🔍 FLEXIBLE PLAN DETAILS:`);
+      flexiblePlans.forEach((v, i) => {
+        console.log(`      [${i + 1}] "${v.name}"`);
+        console.log(`          Code: ${v.variation_code}`);
+        console.log(`          Min: ${v.variation_amount_min} (type: ${typeof v.variation_amount_min})`);
+        console.log(`          Max: ${v.variation_amount_max} (type: ${typeof v.variation_amount_max})`);
+        console.log(`          Rate: ${v.variation_rate} (type: ${typeof v.variation_rate})`);
+      });
+    }
+    
+    if (fixedPlans.length > 0) {
+      console.log(`   🔍 FIXED PLAN SAMPLE (first 3):`);
+      fixedPlans.slice(0, 3).forEach((v, i) => {
+        console.log(`      [${i + 1}] "${v.name}"`);
+        console.log(`          Code: ${v.variation_code}`);
+        console.log(`          Amount: ${v.variation_amount}`);
+        console.log(`          Charged: ${v.charged_amount} (type: ${typeof v.charged_amount})`);
+        console.log(`          Rate: ${v.variation_rate}`);
+      });
+    }
 
     cache.set(cacheKey, variations, 3600);
 
@@ -23258,6 +23380,8 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     });
   }
 });
+
+
 
 // @desc    Purchase International Airtime – RACE CONDITION PROTECTED + IMMEDIATE DEBIT
 // @route   POST /api/international-airtime/purchase
@@ -23285,7 +23409,10 @@ app.post('/api/international-airtime/purchase',
     body('variationCode').notEmpty().withMessage('Variation code is required'),
     body('phoneNumber').notEmpty().withMessage('Phone number is required'),
     body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be at least 1'),
-    body('currency').optional().isString().withMessage('Currency must be a string')
+    body('currency').optional().isString().withMessage('Currency must be a string'),
+    // ✅ NEW: Accept min/max from frontend for validation
+    body('variationMin').optional(),
+    body('variationMax').optional()
   ], 
   async (req, res) => {
     const errors = validationResult(req);
@@ -23346,6 +23473,49 @@ app.post('/api/international-airtime/purchase',
       const estimatedNairaAmount = req.body.estimatedNairaAmount 
         ? parseFloat(req.body.estimatedNairaAmount)
         : 0;
+
+
+
+            // ================================================
+      // 🔥 NEW: VALIDATE AMOUNT AGAINST VTpass MIN/MAX
+      // This catches "011 INVALID ARGUMENT - Amount is lesser than minimum" errors
+      // ================================================
+      const variationMin = req.body.variationMin ? parseFloat(req.body.variationMin) : null;
+      const variationMax = req.body.variationMax ? parseFloat(req.body.variationMax) : null;
+      
+      console.log(`📊 Amount validation: amount=${amount}, min=${variationMin}, max=${variationMax}`);
+      
+      if (variationMin !== null && !isNaN(variationMin) && amount < variationMin) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: `Minimum amount for this plan is ${currency} ${variationMin.toFixed(2)}. You entered ${currency} ${amount.toFixed(2)}.`,
+          code: 'AMOUNT_BELOW_MINIMUM',
+          minAmount: variationMin,
+          maxAmount: variationMax,
+          enteredAmount: amount,
+          currency: currency,
+          userDebited: false
+        });
+      }
+      
+      if (variationMax !== null && !isNaN(variationMax) && amount > variationMax) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: `Maximum amount for this plan is ${currency} ${variationMax.toFixed(2)}. You entered ${currency} ${amount.toFixed(2)}.`,
+          code: 'AMOUNT_ABOVE_MAXIMUM',
+          minAmount: variationMin,
+          maxAmount: variationMax,
+          enteredAmount: amount,
+          currency: currency,
+          userDebited: false
+        });
+      }
+      
+      console.log(`✅ Amount validation passed: ${amount} is within [${variationMin}, ${variationMax}]`);
       
       const variationRate = req.body.variationRate 
         ? parseFloat(req.body.variationRate)
