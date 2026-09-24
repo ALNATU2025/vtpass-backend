@@ -22501,13 +22501,26 @@ app.post('/api/auth/send-verification-otp', [
     return res.status(400).json({ 
       success: false, 
       message: errors.array()[0].msg,
-      slogan: 'Smart Life, Fast Pay'  // Added slogan
+      slogan: 'Smart Life, Fast Pay'
     });
   }
 
   try {
     const { email } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
+
+    // ==================== 🔍 DEBUG BLOCK — START ====================
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 [SEND-OTP-DEBUG] REQUEST RECEIVED');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('📧 Email (raw):', email);
+    console.log('📧 Email (normalized):', normalizedEmail);
+    console.log('📦 otpStore size BEFORE:', otpStore.size);
+    console.log('📦 All keys BEFORE:', Array.from(otpStore.keys()));
+    console.log('🕐 Timestamp:', new Date().toISOString());
+    console.log('🖥️  Process PID:', process.pid);
+    console.log('═══════════════════════════════════════════════════');
+    // ==================== 🔍 DEBUG BLOCK — END ====================
 
     // Rate limiting check (your existing code)
     const now = Date.now();
@@ -22535,13 +22548,28 @@ app.post('/api/auth/send-verification-otp', [
     // Generate and store OTP
     const otp = generateOTP();
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
     otpStore.set(normalizedEmail, { 
       otp, 
       expiresAt, 
       verified: false,
       attempts: 0
     });
+
+    // ==================== 🔍 DEBUG BLOCK — START ====================
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 [SEND-OTP-DEBUG] OTP STORED IN MEMORY');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('✅ OTP stored for:', normalizedEmail);
+    console.log('🔢 OTP value:', otp);
+    console.log('🕐 Expires at:', new Date(expiresAt).toISOString());
+    console.log('🕐 Expires in:', Math.floor((expiresAt - Date.now()) / 1000), 'seconds');
+    console.log('📦 otpStore size AFTER:', otpStore.size);
+    console.log('📦 All keys AFTER:', Array.from(otpStore.keys()));
+    console.log('🔍 Can we read it back?', otpStore.get(normalizedEmail) ? '✅ YES' : '❌ NO');
+    console.log('🔍 Read-back OTP value:', otpStore.get(normalizedEmail)?.otp);
+    console.log('🖥️  Process PID (should match above):', process.pid);
+    console.log('═══════════════════════════════════════════════════');
+    // ==================== 🔍 DEBUG BLOCK — END ====================
 
     console.log(`📧 [VERIFICATION] OTP generated for ${normalizedEmail}: ${otp}`);
 
@@ -22692,11 +22720,35 @@ app.post('/api/auth/verify-otp', [
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
 
-  try {
+   try {
     const { email, otp } = req.body;
+
+    // ==================== 🔍 DEBUG BLOCK — START ====================
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 [VERIFY-OTP-DEBUG] REQUEST RECEIVED');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('📧 Email (raw):', email);
+    console.log('📧 Email (lowercase):', email.toLowerCase());
+    console.log('📧 Email (trimmed + lowercase):', email.toLowerCase().trim());
+    console.log('🔢 OTP received:', otp);
+    console.log('📦 otpStore size:', otpStore.size);
+    console.log('📦 All keys in otpStore:', Array.from(otpStore.keys()));
+    console.log('🖥️  Process PID:', process.pid);
+    
+    const debugData = otpStore.get(email.toLowerCase().trim());
+    if (debugData) {
+      console.log('✅ Found OTP record:');
+      console.log('   Stored OTP:', debugData.otp);
+      console.log('   Match?', debugData.otp === otp);
+      console.log('   Expires:', new Date(debugData.expiresAt).toISOString());
+      console.log('   Is expired?', debugData.expiresAt < Date.now());
+    } else {
+      console.log('❌ NO OTP RECORD FOUND');
+    }
+    console.log('═══════════════════════════════════════════════════');
+    // ==================== 🔍 DEBUG BLOCK — END ====================
     
     console.log(`🔍 Verifying OTP for ${email}: ${otp}`);
-
     // Check if OTP exists
     const otpData = otpStore.get(email);
     if (!otpData) {
