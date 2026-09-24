@@ -5399,7 +5399,7 @@ app.post('/api/users/register', [
   const session = await mongoose.startSession();
   session.startTransaction();
   
-  try {
+ 
      try {
     console.log(`📝 [REGISTER] Starting registration for: ${normalizedEmail}`);
 
