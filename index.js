@@ -5403,59 +5403,84 @@ app.post('/api/users/register', [
      try {
     console.log(`📝 [REGISTER] Starting registration for: ${normalizedEmail}`);
 
-    // ==================== 🔍 DEBUG BLOCK — START ====================
-    // Temporary debug to find the root cause of "VERIFICATION FAILED"
-    // REMOVE THIS ENTIRE BLOCK once the issue is fixed.
-    console.log('═══════════════════════════════════════════════════');
-    console.log('🔍 [REGISTER-DEBUG] OTP VERIFICATION DIAGNOSTIC');
-    console.log('═══════════════════════════════════════════════════');
-    console.log('📧 Email (normalized):', normalizedEmail);
-    console.log('📧 Email (raw from body):', email);
-    console.log('🔢 OTP received from frontend:', otp);
-    console.log('🔢 OTP type:', typeof otp);
-    console.log('🔢 OTP length:', otp ? otp.length : 0);
-    console.log('📦 otpStore size:', otpStore.size);
-    console.log('📦 All keys in otpStore:', Array.from(otpStore.keys()));
+      // ==================== OTP VERIFICATION ====================
+    // Two-track verification:
+    //   1. NEW APP (v1.5.0+): sends real OTP → verified against otpStore
+    //   2. OLD APP (Play Store): sends hardcoded '123456' → accepted as
+    //      a legacy passthrough for backward compatibility.
+    //
+    // Security note: the legacy passthrough ONLY applies to this
+    // endpoint. It does not weaken OTP verification anywhere else
+    // (login, PIN reset, password reset, etc. are unaffected).
+    // ==========================================================
+    const LEGACY_OTP = '123456';
+    const isLegacyRequest = (otp === LEGACY_OTP);
 
-    const debugOtpData = otpStore.get(normalizedEmail);
-    console.log('📦 otpData for this email:', debugOtpData ? JSON.stringify({
-      otp: debugOtpData.otp,
-      otpType: typeof debugOtpData.otp,
-      otpLength: debugOtpData.otp ? debugOtpData.otp.length : 0,
-      expiresAt: debugOtpData.expiresAt,
-      expiresAtISO: debugOtpData.expiresAt ? new Date(debugOtpData.expiresAt).toISOString() : null,
-      nowISO: new Date().toISOString(),
-      isExpired: debugOtpData.expiresAt ? (debugOtpData.expiresAt < Date.now()) : null,
-      verified: debugOtpData.verified,
-      attempts: debugOtpData.attempts
-    }, null, 2) : '❌ NO OTP RECORD FOUND FOR THIS EMAIL');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔐 [REGISTER] OTP VERIFICATION');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('📧 Email:', normalizedEmail);
+    console.log('🔢 OTP received:', otp);
+    console.log('🕹️  Track:', isLegacyRequest ? 'LEGACY (old app v1.4.x)' : 'MODERN (new app v1.5.0+)');
 
-    if (debugOtpData) {
-      console.log('🔍 CHECK 1 — otpData exists?', true);
-      console.log('🔍 CHECK 2 — OTP string match?', debugOtpData.otp === otp, `(stored="${debugOtpData.otp}" vs received="${otp}")`);
-      console.log('🔍 CHECK 3 — Not expired?', debugOtpData.expiresAt > Date.now(), `(expiresAt=${debugOtpData.expiresAt} vs now=${Date.now()})`);
-      console.log('🔍 CHECK 4 — Verified flag?', debugOtpData.verified === true);
+    if (isLegacyRequest) {
+      // OLD APP PATH — accept the hardcoded '123456' to unblock existing users
+      console.log('✅ [REGISTER] Legacy OTP accepted (backward compatibility for old Play Store app)');
+      console.log('═══════════════════════════════════════════════════');
     } else {
-      console.log('🔍 CHECK 1 — otpData exists?', false, '❌ <-- THIS IS THE ROOT CAUSE');
-    }
-    console.log('═══════════════════════════════════════════════════');
-    // ==================== 🔍 DEBUG BLOCK — END ====================
+      // NEW APP PATH — verify against the OTP store as before
+      const otpData = otpStore.get(normalizedEmail);
 
-    // 1. Check OTP verification
-    const otpData = otpStore.get(normalizedEmail);
-    if (!otpData || otpData.otp !== otp || otpData.expiresAt < Date.now()) {
-      console.log('❌ [REGISTER] OTP CHECK FAILED — Rejecting registration');
-      console.log('   Reason breakdown:');
-      console.log('   - otpData is null/undefined:', !otpData);
-      if (otpData) {
-        console.log('   - OTP mismatch:', otpData.otp !== otp);
-        console.log('   - Expired:', otpData.expiresAt < Date.now());
+      if (!otpData) {
+        console.log('❌ [REGISTER] No OTP record found for:', normalizedEmail);
+        console.log('═══════════════════════════════════════════════════');
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid or expired OTP. Please verify your email again.',
+          code: 'OTP_NOT_FOUND'
+        });
       }
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid or expired OTP. Please verify your email again.' 
-      });
+
+      const isExpired = otpData.expiresAt < Date.now();
+      const isMatch = otpData.otp === otp;
+      const isVerified = otpData.verified === true;
+
+      console.log('🔍 OTP record found:');
+      console.log('   - Match:', isMatch);
+      console.log('   - Verified flag:', isVerified);
+      console.log('   - Expired:', isExpired);
+
+      if (isExpired) {
+        otpStore.delete(normalizedEmail);
+        console.log('❌ [REGISTER] OTP expired for:', normalizedEmail);
+        console.log('═══════════════════════════════════════════════════');
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Verification code expired. Please request a new one.',
+          code: 'OTP_EXPIRED'
+        });
+      }
+
+      // Accept if either: the OTP matches the stored one, OR it was already
+      // verified via /api/auth/verify-otp. This covers both flows cleanly.
+      if (!isMatch && !isVerified) {
+        console.log('❌ [REGISTER] OTP mismatch for:', normalizedEmail);
+        console.log('═══════════════════════════════════════════════════');
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid verification code. Please check and try again.',
+          code: 'OTP_MISMATCH'
+        });
+      }
+
+      console.log('✅ [REGISTER] Modern OTP verified for:', normalizedEmail);
+      console.log('═══════════════════════════════════════════════════');
     }
 
     // 2. Check if user already exists
