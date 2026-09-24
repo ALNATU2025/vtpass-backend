@@ -5400,11 +5400,57 @@ app.post('/api/users/register', [
   session.startTransaction();
   
   try {
+     try {
     console.log(`📝 [REGISTER] Starting registration for: ${normalizedEmail}`);
+
+    // ==================== 🔍 DEBUG BLOCK — START ====================
+    // Temporary debug to find the root cause of "VERIFICATION FAILED"
+    // REMOVE THIS ENTIRE BLOCK once the issue is fixed.
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔍 [REGISTER-DEBUG] OTP VERIFICATION DIAGNOSTIC');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('📧 Email (normalized):', normalizedEmail);
+    console.log('📧 Email (raw from body):', email);
+    console.log('🔢 OTP received from frontend:', otp);
+    console.log('🔢 OTP type:', typeof otp);
+    console.log('🔢 OTP length:', otp ? otp.length : 0);
+    console.log('📦 otpStore size:', otpStore.size);
+    console.log('📦 All keys in otpStore:', Array.from(otpStore.keys()));
+
+    const debugOtpData = otpStore.get(normalizedEmail);
+    console.log('📦 otpData for this email:', debugOtpData ? JSON.stringify({
+      otp: debugOtpData.otp,
+      otpType: typeof debugOtpData.otp,
+      otpLength: debugOtpData.otp ? debugOtpData.otp.length : 0,
+      expiresAt: debugOtpData.expiresAt,
+      expiresAtISO: debugOtpData.expiresAt ? new Date(debugOtpData.expiresAt).toISOString() : null,
+      nowISO: new Date().toISOString(),
+      isExpired: debugOtpData.expiresAt ? (debugOtpData.expiresAt < Date.now()) : null,
+      verified: debugOtpData.verified,
+      attempts: debugOtpData.attempts
+    }, null, 2) : '❌ NO OTP RECORD FOUND FOR THIS EMAIL');
+
+    if (debugOtpData) {
+      console.log('🔍 CHECK 1 — otpData exists?', true);
+      console.log('🔍 CHECK 2 — OTP string match?', debugOtpData.otp === otp, `(stored="${debugOtpData.otp}" vs received="${otp}")`);
+      console.log('🔍 CHECK 3 — Not expired?', debugOtpData.expiresAt > Date.now(), `(expiresAt=${debugOtpData.expiresAt} vs now=${Date.now()})`);
+      console.log('🔍 CHECK 4 — Verified flag?', debugOtpData.verified === true);
+    } else {
+      console.log('🔍 CHECK 1 — otpData exists?', false, '❌ <-- THIS IS THE ROOT CAUSE');
+    }
+    console.log('═══════════════════════════════════════════════════');
+    // ==================== 🔍 DEBUG BLOCK — END ====================
 
     // 1. Check OTP verification
     const otpData = otpStore.get(normalizedEmail);
     if (!otpData || otpData.otp !== otp || otpData.expiresAt < Date.now()) {
+      console.log('❌ [REGISTER] OTP CHECK FAILED — Rejecting registration');
+      console.log('   Reason breakdown:');
+      console.log('   - otpData is null/undefined:', !otpData);
+      if (otpData) {
+        console.log('   - OTP mismatch:', otpData.otp !== otp);
+        console.log('   - Expired:', otpData.expiresAt < Date.now());
+      }
       await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
