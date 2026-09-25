@@ -13106,26 +13106,35 @@ checkPerMinuteLimit('transfer'), // ✅ Service-specific limit
       */
       // =========================================================
       
-      // Create notifications (outside transaction)
-      try {
-        await Notification.create({
-          recipientId: sender._id,
-          title: "Transfer Successful 💸",
-          message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
-          type: 'transfer_sent',
-          isRead: false
-        });
-        
-        await Notification.create({
-          recipientId: receiver._id,
-          title: "Money Received 💰",
-          message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
-          type: 'transfer_received',
-          isRead: false
-        });
-      } catch (notificationError) {
-        console.error('Error creating notifications:', notificationError);
-      }
+         // ✅ USER FCM PUSH — SENDER
+      createNotificationAndSendPush({
+        recipientId: sender._id,
+        title: "Transfer Successful 💸",
+        message: `You successfully transferred ₦${amount} to ${receiver.email}. New balance: ₦${senderBalanceAfter}`,
+        type: 'transfer_sent',
+        screen: 'transaction_details',
+        metadata: {
+          amount,
+          receiverEmail: receiver.email,
+          newBalance: senderBalanceAfter,
+          status: 'Successful'
+        }
+      }).catch(err => console.error('Transfer sender notif error:', err.message));
+
+      // ✅ USER FCM PUSH — RECEIVER
+      createNotificationAndSendPush({
+        recipientId: receiver._id,
+        title: "Money Received 💰",
+        message: `You received ₦${amount} from ${sender.email}. New balance: ₦${receiverBalanceAfter}`,
+        type: 'transfer_received',
+        screen: 'transaction_details',
+        metadata: {
+          amount,
+          senderEmail: sender.email,
+          newBalance: receiverBalanceAfter,
+          status: 'Successful'
+        }
+      }).catch(err => console.error('Transfer receiver notif error:', err.message));
       
       return res.json({ 
         success: true, 
@@ -16116,15 +16125,23 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
         calculateAndAddCommission(userId, totalAmount, 'tv')
           .catch(err => console.log('⚠️ Commission error:', err.message));
 
-        // ⚡ Fire-and-forget: notification
-        Notification.create({
-          recipient: userId,
+                // ✅ USER FCM PUSH
+        createNotificationAndSendPush({
+          recipientId: userId,
           title: isPackageChange ? 'TV Package Changed Successfully 📺' : 'TV Subscription Renewed 📺',
           message: `${serviceID.toUpperCase()} ${isPackageChange ? 'package changed' : 'renewed'} for ${billersCode}. New balance: ₦${balanceAfter.toFixed(2)}`,
           type: 'transaction',
-          isRead: false,
-          metadata: { serviceID, smartcardNumber: billersCode, amount: totalAmount, packageName, newBalance: balanceAfter }
-        }).catch(err => console.log('⚠️ Notif error:', err.message));
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransaction._id.toString(),
+            serviceID,
+            smartcardNumber: billersCode,
+            amount: totalAmount,
+            packageName,
+            newBalance: balanceAfter,
+            status: 'Successful'
+          }
+        }).catch(err => console.error('Cable TV notif error:', err.message));
 
         // ⚡ Fire-and-forget: admin notify
         notifyAdminsOfTransaction({
@@ -16750,28 +16767,58 @@ app.post('/api/vtpass/airtime/purchase',
                  await session.commitTransaction();
       session.endSession();
 
-            // ✅ COMMISSION + NOTIFICATION NOW RUN OUTSIDE THE TRANSACTION
+                 // ✅ COMMISSION + NOTIFICATION NOW RUN OUTSIDE THE TRANSACTION
       if (transactionStatus === 'Successful') {
         calculateAndAddCommission(userId, amount, network)
           .catch(err => console.log('⚠️ Airtime commission error:', err.message));
 
-        Notification.create({
-          recipient: userId,
+        // ✅ USER FCM PUSH
+        createNotificationAndSendPush({
+          recipientId: userId,
           title: "Airtime Purchase Successful ✅",
-          message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New wallet balance: ₦${newBalance}`,
+          message: `Your airtime purchase of ₦${amount} for ${phone} (${network.toUpperCase()}) was completed successfully. New balance: ₦${newBalance.toFixed(2)}`,
           type: 'transaction',
-          isRead: false,
-          metadata: { phone, amount, network, newBalance, vtpassCode: interpretation.code }
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransaction._id.toString(),
+            phone, amount, network,
+            newBalance: newBalance,
+            vtpassCode: interpretation.code,
+            status: 'Successful'
+          }
         }).catch(err => console.error('Airtime notif error:', err.message));
+
       } else if (transactionStatus === 'Pending') {
-        Notification.create({
-          recipient: userId,
+        // ✅ USER FCM PUSH (PENDING)
+        createNotificationAndSendPush({
+          recipientId: userId,
           title: "Airtime Purchase Pending ⏳",
           message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. We'll notify you once confirmed.`,
           type: 'transaction_pending',
-          isRead: false,
-          metadata: { phone, amount, network, vtpassCode: interpretation.code, action: interpretation.action }
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransaction._id.toString(),
+            phone, amount, network,
+            vtpassCode: interpretation.code,
+            action: interpretation.action,
+            status: 'Pending'
+          }
         }).catch(err => console.error('Airtime pending notif error:', err.message));
+
+      } else if (transactionStatus === 'Failed') {
+        // ✅ USER FCM PUSH (FAILED)
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: "Airtime Purchase Failed ❌",
+          message: `Your airtime purchase of ₦${amount} for ${phone} failed. Please contact support if debited.`,
+          type: 'transaction_failed',
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransaction._id.toString(),
+            phone, amount, network,
+            status: 'Failed'
+          }
+        }).catch(err => console.error('Airtime failed notif error:', err.message));
       }
       
       console.log(`✅ [AIRTIME] COMPLETE: ${network} - ₦${amount} → Status: ${transactionStatus} | VTpass: ${interpretation.code}/${interpretation.innerStatus}`);
@@ -17073,17 +17120,23 @@ app.post('/api/vtpass/data/purchase',
         await session.commitTransaction();
         session.endSession();
 
-        // ✅ Commission + notification OUTSIDE transaction
+                // ✅ Commission + notification OUTSIDE transaction
         calculateAndAddCommission(userId, amount, serviceID)
           .catch(err => console.log('⚠️ Data commission error:', err.message));
 
-        Notification.create({
-          recipient: userId,
+        // ✅ USER FCM PUSH
+        createNotificationAndSendPush({
+          recipientId: userId,
           title: "Data Purchase Successful 📱",
           message: `${planName} data bundle purchased for ${phone} (${network.toUpperCase()}). New balance: ₦${balanceAfter.toFixed(2)}`,
           type: 'transaction',
-          isRead: false,
-          metadata: { phone, amount, network, planName, newBalance: balanceAfter, userDebited: true }
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransaction._id.toString(),
+            phone, amount, network, planName,
+            newBalance: balanceAfter,
+            status: 'Successful'
+          }
         }).catch(err => console.error('Data notif error:', err.message));
 
         console.log(`✅ [DATA] SUCCESS: ${network} - ${planName} to ${phone}`);
@@ -17941,18 +17994,21 @@ app.post('/api/vtpass/electricity/purchase',
           transactionId: transaction._id
         }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Electricity Purchase Successful 💡",
-            message: `Your electricity purchase of ₦${amount} for meter ${billersCode} was successful. Token: ${formattedToken || 'Check SMS'}`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { token: formattedToken, meterNumber: billersCode, amount }
-          });
-        } catch (notifError) {
-          console.error('Notification error:', notifError.message);
-        }
+               // ✅ USER FCM PUSH
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: "Electricity Purchase Successful 💡",
+          message: `Your electricity purchase of ₦${amount} for meter ${billersCode} was successful. Token: ${formattedToken || 'Check SMS'}`,
+          type: 'transaction',
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: transaction._id.toString(),
+            token: formattedToken,
+            meterNumber: billersCode,
+            amount,
+            status: 'Successful'
+          }
+        }).catch(err => console.error('Electricity notif error:', err.message));
 
         console.log('✅ [ELECTRICITY] DELIVERED — token issued');
 
@@ -20416,18 +20472,37 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ Commission + notification OUTSIDE transaction
+       // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
       calculateAndAddCommission(userId, amount, serviceID)
         .catch(err => console.log('⚠️ Education commission error:', err.message));
 
-      Notification.create({
-        recipient: userId,
+      // ✅ USER FCM PUSH
+      createNotificationAndSendPush({
+        recipientId: userId,
         title: "Education Purchase Successful 🎓",
         message: `Your ${serviceID.toUpperCase()} purchase of ₦${amount} was completed successfully. New wallet balance: ₦${newBalance}`,
         type: 'transaction',
-        isRead: false
+        screen: 'transaction_details',
+        metadata: {
+          transactionId: newTransaction._id.toString(),
+          serviceID, amount, newBalance,
+          status: 'Successful'
+        }
       }).catch(err => console.error('Education notif error:', err.message));
+
+      // ✅ ADMIN FCM PUSH
+      notifyAdminsOfTransaction({
+        title: '🎓 Education Purchase',
+        message: `${user.fullName} bought ${serviceID.toUpperCase()} for ${phone} — ₦${amount}`,
+        transactionType: 'Education Purchase',
+        amount: amount,
+        userName: user.fullName,
+        userEmail: user.email,
+        reference: reference,
+        status: 'Successful',
+        transactionId: newTransaction._id
+      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
     }
 
     res.json({
@@ -21266,18 +21341,37 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     await session.commitTransaction();
     session.endSession();
 
-    // ✅ Commission + notification OUTSIDE transaction
+     // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
       calculateAndAddCommission(userId, amount, 'insurance')
         .catch(err => console.log('⚠️ Insurance commission error:', err.message));
 
-      Notification.create({
-        recipient: userId,
+      // ✅ USER FCM PUSH
+      createNotificationAndSendPush({
+        recipientId: userId,
         title: "Insurance Purchase Successful 🛡️",
         message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
         type: 'transaction',
-        isRead: false
+        screen: 'transaction_details',
+        metadata: {
+          transactionId: newTransaction._id.toString(),
+          plateNumber, amount,
+          status: 'Successful'
+        }
       }).catch(err => console.error('Insurance notif error:', err.message));
+
+      // ✅ ADMIN FCM PUSH
+      notifyAdminsOfTransaction({
+        title: '🛡️ Insurance Purchase',
+        message: `${user.fullName} bought insurance for ${plateNumber} — ₦${amount}`,
+        transactionType: 'Insurance Purchase',
+        amount: amount,
+        userName: user.fullName,
+        userEmail: user.email,
+        reference: reference,
+        status: 'Successful',
+        transactionId: newTransaction._id
+      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
     }
 
     // Extract certificate URL from response
@@ -23883,19 +23977,34 @@ app.post('/api/international-airtime/purchase',
         calculateAndAddCommission(userId, debitAmountNaira, 'airtime')
           .catch(err => console.log('⚠️ Intl-Airtime commission error:', err.message));
 
-        // ✅ Notification (fire-and-forget)
-        Notification.create({
-          recipient: userId,
-          title: "International Airtime Purchase Successful 🌍",
+              // ✅ USER FCM PUSH
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: "International Airtime Successful 🌍",
           message: `International airtime of ${currency} ${amount} sent to ${phoneNumber} (${countryCode}). Deducted: ₦${debitAmountNaira.toFixed(2)}`,
           type: 'transaction',
-          isRead: false,
+          screen: 'transaction_details',
           metadata: {
+            transactionId: newTransaction._id.toString(),
             phoneNumber, amount, currency, countryCode,
             nairaAmount: debitAmountNaira,
-            newBalance: balanceAfter
+            newBalance: balanceAfter,
+            status: 'Successful'
           }
-        }).catch(err => console.error('Intl-Airtime notif error:', err.message));
+        }).catch(err => console.error('Intl-Airtime user notif error:', err.message));
+
+        // ✅ ADMIN FCM PUSH
+        notifyAdminsOfTransaction({
+          title: '🌍 International Airtime',
+          message: `${user.fullName} bought ${currency} ${amount} intl airtime for ${phoneNumber} (${countryCode}) — ₦${debitAmountNaira.toFixed(2)}`,
+          transactionType: 'International Airtime Purchase',
+          amount: debitAmountNaira,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: requestId,
+          status: 'Successful',
+          transactionId: newTransaction._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         console.log(`✅ [INTL-AIRTIME] SUCCESS: ₦${debitAmountNaira.toFixed(2)} charged (profit: ₦${profitMargin.toFixed(2)})`);
 
@@ -23960,18 +24069,32 @@ app.post('/api/international-airtime/purchase',
         await session.commitTransaction();
         session.endSession();
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "International Airtime Pending ⏳",
-            message: `Your international airtime purchase of ${currency} ${amount} for ${phoneNumber} is being processed. We'll confirm shortly.`,
-            type: 'transaction_pending',
-            isRead: false,
-            metadata: { phoneNumber, amount, currency, countryCode }
-          });
-        } catch (notifError) {
-          console.error('❌ Notification error:', notifError);
-        }
+               // ✅ USER FCM PUSH (PENDING)
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: "International Airtime Pending ⏳",
+          message: `Your international airtime purchase of ${currency} ${amount} for ${phoneNumber} is being processed. We'll confirm shortly.`,
+          type: 'transaction_pending',
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: pendingTx._id.toString(),
+            phoneNumber, amount, currency, countryCode,
+            status: 'Pending'
+          }
+        }).catch(err => console.error('Intl-Airtime pending notif error:', err.message));
+
+        // ✅ ADMIN FCM PUSH
+        notifyAdminsOfTransaction({
+          title: '🌍 Intl Airtime Pending',
+          message: `${user.fullName}'s ${currency} ${amount} intl airtime to ${phoneNumber} (${countryCode}) is pending — ₦${debitAmountNaira.toFixed(2)}`,
+          transactionType: 'International Airtime Purchase',
+          amount: debitAmountNaira,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: requestId,
+          status: 'Pending',
+          transactionId: pendingTx._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         console.log(`🔄 [INTL-AIRTIME] PENDING: code=${interpretation.code} inner=${interpretation.innerStatus}`);
 
@@ -24113,18 +24236,34 @@ app.post('/api/international-airtime/purchase',
         session.endSession();
 
         // Notification
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "International Airtime Failed — Refunded 💰",
-            message: `Your international airtime purchase of ${currency} ${amount} failed. ₦${debitAmountNaira.toFixed(2)} has been refunded to your wallet.`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phoneNumber, amount, currency, countryCode, refunded: true, refundAmount: debitAmountNaira }
-          });
-        } catch (notifError) {
-          console.error('❌ Notification error:', notifError);
-        }
+              // ✅ USER FCM PUSH (FAILED + REFUNDED)
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: "International Airtime Failed — Refunded 💰",
+          message: `Your international airtime purchase of ${currency} ${amount} failed. ₦${debitAmountNaira.toFixed(2)} has been refunded to your wallet.`,
+          type: 'transaction_failed',
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: failedTx._id.toString(),
+            phoneNumber, amount, currency, countryCode,
+            refunded: true,
+            refundAmount: debitAmountNaira,
+            status: 'Failed'
+          }
+        }).catch(err => console.error('Intl-Airtime failed notif error:', err.message));
+
+        // ✅ ADMIN FCM PUSH
+        notifyAdminsOfTransaction({
+          title: '🌍 Intl Airtime Failed — Refunded',
+          message: `${user.fullName}'s ${currency} ${amount} intl airtime to ${phoneNumber} failed. ₦${debitAmountNaira.toFixed(2)} refunded.`,
+          transactionType: 'International Airtime Purchase',
+          amount: debitAmountNaira,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: requestId,
+          status: 'Failed',
+          transactionId: failedTx._id
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
 
         console.log(`❌ [INTL-AIRTIME] FAILED: ${interpretation.code} - ${interpretation.description} | REFUNDED`);
 
