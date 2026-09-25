@@ -12369,6 +12369,116 @@ app.post('/api/admin/users/:userId/reject', adminProtect, async (req, res) => {
 // ==================== END USER APPROVAL ENDPOINTS ====================
 
 
+
+// ==================== INTERNAL NOTIFICATION RELAY ====================
+// Called by the Cashwyre server (or any trusted internal service) to trigger
+// a push notification for a user when they receive wallet funding.
+// Protected by a shared secret so random callers cannot spam users.
+// ======================================================================
+app.post('/api/internal/notify-wallet-credit', async (req, res) => {
+  try {
+    const internalSecret = req.headers['x-internal-secret'];
+    const expectedSecret = process.env.INTERNAL_NOTIFY_SECRET || 'dalabapay_internal_2026_secret';
+
+    if (internalSecret !== expectedSecret) {
+      console.warn('🚫 [INTERNAL-NOTIFY] Unauthorized attempt from IP:', req.ip);
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const {
+      userId,
+      amount,
+      newBalance,
+      source = 'virtual_account',
+      reference = '',
+      bankName = '',
+      accountNumber = '',
+    } = req.body;
+
+    if (!userId || amount === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId and amount are required',
+      });
+    }
+
+    console.log(`📣 [INTERNAL-NOTIFY] Wallet credit for user ${userId}: ₦${amount}`);
+
+    // ✅ Check the user exists and has a valid FCM token
+    const targetUser = await User.findById(userId).select('fullName email fcmToken');
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const sourceLabel =
+      source === 'admin_fund' ? 'Admin Funding' :
+      source === 'dedicated_account' ? 'Dedicated Account' :
+      source === 'virtual_account' ? 'Virtual Account' :
+      'Wallet Funding';
+
+    const title = 'Wallet Credited 💰';
+    const message =
+      `Your wallet has been credited with ₦${Number(amount).toFixed(2)}` +
+      ` via ${sourceLabel}. New balance: ₦${Number(newBalance || 0).toFixed(2)}`;
+
+    // ✅ Also save a Notification document so the in-app list shows it
+    try {
+      await Notification.create({
+        recipient: userId,
+        title: title,
+        message: message,
+        type: 'wallet_funded',
+        isRead: false,
+        metadata: {
+          source,
+          amount: Number(amount),
+          newBalance: Number(newBalance || 0),
+          reference,
+          bankName,
+          accountNumber,
+          screen: 'transaction_details',
+        },
+      });
+    } catch (dbErr) {
+      console.error('⚠️ [INTERNAL-NOTIFY] DB save failed:', dbErr.message);
+    }
+
+    // ✅ Send FCM push
+    const pushResult = await createNotificationAndSendPush({
+      recipientId: userId,
+      title: title,
+      message: message,
+      type: 'wallet_funded',
+      screen: 'transaction_details',
+      metadata: {
+        source,
+        amount: Number(amount),
+        newBalance: Number(newBalance || 0),
+        reference,
+        bankName,
+        accountNumber,
+      },
+    });
+
+    console.log(
+      `✅ [INTERNAL-NOTIFY] Push ${pushResult?.pushSent ? 'sent' : 'failed'} to ${targetUser.email}`
+    );
+
+    return res.json({
+      success: true,
+      pushSent: pushResult?.pushSent || false,
+      message: 'Notification dispatched',
+    });
+  } catch (error) {
+    console.error('❌ [INTERNAL-NOTIFY] Error:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+// ==================== END INTERNAL NOTIFICATION RELAY ====================
+
+
+
+
 // ==================== ADMIN NOTIFICATION ENDPOINTS ====================
 
 app.get('/api/admin/notifications', adminProtect, async (req, res) => {
@@ -12727,6 +12837,25 @@ app.post('/api/users/fund', adminProtect, [
     
        await session.commitTransaction();
     console.log(`✅ Successfully funded user ${user.email}`);
+
+
+        // ✅ NOTIFY THE USER WHO RECEIVED THE FUNDS (FCM push + in-app)
+    createNotificationAndSendPush({
+      recipientId: user._id,
+      title: 'Wallet Credited 💰',
+      message: `Your wallet has been credited with ₦${Number(amount).toFixed(2)} by an admin. New balance: ₦${Number(balanceAfter).toFixed(2)}`,
+      type: 'wallet_funded',
+      screen: 'transaction_details',
+      metadata: {
+        source: 'admin_fund',
+        amount: Number(amount),
+        newBalance: Number(balanceAfter),
+        fundedBy: req.user.fullName,
+        note: note,
+        status: 'Successful',
+      },
+    }).catch(err => console.error('⚠️ User fund notif error:', err.message));
+
 
        // ✅ NOTIFY ADMINS
     notifyAdminsOfTransaction({
