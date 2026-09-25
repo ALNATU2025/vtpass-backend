@@ -1,5 +1,5 @@
 const Notification = require('../models/Notification');
-const { sendPushNotification } = require('../notificationSender');
+const { sendPushNotification } = require('../firebaseAdmin');
 const User = require('../models/User');
 
 /**
