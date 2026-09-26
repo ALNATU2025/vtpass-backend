@@ -4,6 +4,11 @@ const User = require('../models/User');
 
 /**
  * Create notification in database and send push notification
+ *
+ * ✅ FIXED: MongoDB Mixed field mutation bug
+ *    - Added markModified('metadata') after mutating notification.metadata
+ *    - Without this, MongoDB silently skips persisting pushSent/pushError
+ *    - This was causing DB to show pushSent:false even when FCM succeeded
  */
 async function createNotificationAndSendPush({
   recipientId,
@@ -44,23 +49,45 @@ async function createNotificationAndSendPush({
     console.log('✅ Notification saved to database:', notification._id);
 
     // 3. Send push notification via Firebase
-    const pushResult = await sendPushNotification({
-      userId: recipientId,
-      title: title,
-      message: message,
-      type: type,
-      screen: screen,
-      badgeCount: unreadCount,
-      data: {
-        notificationId: notification._id.toString(),
-        ...metadata
-      }
-    });
+    let pushResult = { success: false, error: 'Not attempted' };
+    try {
+      pushResult = await sendPushNotification({
+        userId: recipientId,
+        title: title,
+        message: message,
+        type: type,
+        screen: screen,
+        badgeCount: unreadCount,
+        data: {
+          notificationId: notification._id.toString(),
+          ...metadata
+        }
+      });
+      console.log(`📤 [PUSH] sendPushNotification returned: success=${pushResult.success}, error=${pushResult.error || 'none'}`);
+    } catch (pushCallErr) {
+      console.error('❌ [PUSH] sendPushNotification threw:', pushCallErr.message);
+      pushResult = { success: false, error: pushCallErr.message };
+    }
 
-    // Update notification with push status
-    notification.metadata.pushSent = pushResult.success;
+    // ============================================================
+    // ✅ CRITICAL FIX: Update notification with push status
+    // ============================================================
+    // The `metadata` field is type: Mixed in the Notification schema.
+    // MongoDB does NOT track mutations on Mixed fields unless we
+    // explicitly call markModified(). Without this line, the DB keeps
+    // the ORIGINAL pushSent:false value forever — even when FCM works.
+    // ============================================================
+    notification.metadata = notification.metadata || {};
+    notification.metadata.pushSent = pushResult.success === true;
     notification.metadata.pushError = pushResult.error || null;
+
+    // ✅ THE FIX: Tell Mongoose the Mixed field changed
+    notification.markModified('metadata');
+
     await notification.save();
+    console.log(
+      `📝 [PUSH-STATUS] Notification ${notification._id} updated — pushSent: ${notification.metadata.pushSent}, pushError: ${notification.metadata.pushError || 'none'}`
+    );
 
     // 4. Emit via Socket.IO if available
     try {
