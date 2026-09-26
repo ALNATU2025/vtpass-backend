@@ -447,71 +447,30 @@ async function notifyAdminsOfTransaction({
       console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
     }
 
-    for (const admin of adminUsers) {
+       for (const admin of adminUsers) {
       try {
-        await Notification.create({
-          recipient: admin._id,
+        // ✅ Use the helper so we get FCM push + DB push status tracking
+        await createNotificationAndSendPush({
+          recipientId: admin._id,
           title: notifTitle,
           message: notifMessage,
           type: 'admin_transaction',
-          isRead: false,
+          screen: 'admin_transactions',
+          badgeCount: 0,
           metadata: {
             adminNotificationId: adminNotif?._id || null,
-            transactionId: transactionId || null,
+            transactionId: transactionId ? transactionId.toString() : null,
             transactionType,
             amount,
             userName,
             userEmail,
             reference,
-            status,
-            screen: 'admin_transactions'
+            status
           }
         });
-      } catch (dbErr) {
-        console.error(`⚠️ [ADMIN-NOTIFY] DB save failed:`, dbErr.message);
-      }
-
-      if (admin.fcmToken) {
-        try {
-          await sendPushNotification({
-            userId: admin._id,
-            title: notifTitle,
-            message: notifMessage,
-            type: 'admin_transaction',
-            screen: 'admin_transactions',
-            badgeCount: 0,
-            data: {
-              transactionId: transactionId ? transactionId.toString() : '',
-              transactionType,
-              amount: String(amount || 0),
-              reference: reference || '',
-              status: status || ''
-            }
-          });
-          console.log(`📱 [ADMIN-NOTIFY] Push sent to ${admin.email}`);
-        } catch (pushErr) {
-          console.error(`⚠️ [ADMIN-NOTIFY] Push failed:`, pushErr.message);
-        }
-      }
-
-      if (global.io) {
-        try {
-          global.io.to(`user:${admin._id}`).emit('notification', {
-            title: notifTitle,
-            message: notifMessage,
-            type: 'admin_transaction',
-            screen: 'admin_transactions',
-            createdAt: new Date().toISOString(),
-            metadata: {
-              transactionId: transactionId || null,
-              transactionType,
-              amount,
-              userName,
-              reference,
-              status
-            }
-          });
-        } catch (socketErr) {}
+        console.log(`📱 [ADMIN-NOTIFY] Handled (push + socket + DB) for ${admin.email}`);
+      } catch (adminNotifErr) {
+        console.error(`⚠️ [ADMIN-NOTIFY] createNotificationAndSendPush failed for ${admin.email}:`, adminNotifErr.message);
       }
     }
   } catch (err) {
@@ -570,62 +529,33 @@ async function notifyAdmins({
       console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
     }
 
-    // 2) Per admin: personal Notification + push + socket
+        // 2) Per admin: personal Notification + push + socket (via helper)
     for (const admin of adminUsers) {
       try {
-        await Notification.create({
-          recipient: admin._id,
+        await createNotificationAndSendPush({
+          recipientId: admin._id,
           title: title,
           message: message,
           type: 'admin_activity',
-          isRead: false,
+          screen: 'admin_notifications',
+          badgeCount: 0,
           metadata: {
-            adminNotificationId: adminNotif?._id || null,
+            adminNotificationId: adminNotif?._id?.toString() || null,
             activityType: type,
             severity,
-            userId,
-            transactionId,
+            userId: userId ? userId.toString() : null,
+            transactionId: transactionId ? transactionId.toString() : null,
             transactionReference,
-            screen: 'admin_notifications'
+            transactionType,
+            amount,
+            status,
+            userName,
+            userEmail
           }
         });
-      } catch (dbErr) {
-        console.error(`⚠️ [ADMIN-NOTIFY] Personal notif failed:`, dbErr.message);
-      }
-
-      if (admin.fcmToken) {
-        try {
-          await sendPushNotification({
-            userId: admin._id,
-            title: title,
-            message: message,
-            type: type,
-            screen: 'admin_notifications',
-            badgeCount: 0,
-            data: {
-              adminNotificationId: adminNotif?._id?.toString() || '',
-              activityType: type,
-              transactionId: transactionId?.toString() || '',
-              reference: transactionReference || '',
-              severity,
-            }
-          });
-        } catch (pushErr) {
-          console.error(`⚠️ [ADMIN-NOTIFY] Push failed:`, pushErr.message);
-        }
-      }
-
-      if (global.io) {
-        try {
-          global.io.to(`user:${admin._id}`).emit('admin_activity', {
-            _id: adminNotif?._id?.toString() || '',
-            type, title, message, severity,
-            userName, userEmail,
-            transactionReference, transactionType,
-            amount, status,
-            createdAt: new Date().toISOString(),
-          });
-        } catch (socketErr) {}
+        console.log(`📱 [ADMIN-NOTIFY] Activity handled for ${admin.email}`);
+      } catch (adminActErr) {
+        console.error(`⚠️ [ADMIN-NOTIFY] createNotificationAndSendPush failed for ${admin.email}:`, adminActErr.message);
       }
     }
 
@@ -5094,13 +5024,13 @@ const calculateAndAddCommission = async (userId, amount, serviceType, isUsingCom
       }
     );
 
-    // ✅ FIRE-AND-FORGET: Notification (never await, never block caller)
-    Notification.create({
-      recipient: userId,
+        // ✅ FIRE-AND-FORGET: Notification via helper (DB save + FCM push + socket + pushSent tracking)
+    createNotificationAndSendPush({
+      recipientId: userId,
       title: 'Commission Earned 💰',
       message: `You earned ₦${commissionAmount.toFixed(2)} commission from ${source} service`,
       type: 'commission_earned',
-      isRead: false,
+      screen: 'commission',
       metadata: {
         commissionAmount,
         source,
