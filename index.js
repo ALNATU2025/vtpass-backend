@@ -7466,10 +7466,24 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
         type: { $not: { $regex: excludePattern, $options: 'i' } }
       };
       console.log('📋 Filter: All services (excluding commissions)');
-    } else {
+        } else {
       const keywords = serviceKeywords[service] || [];
       if (keywords.length > 0) {
-        const servicePattern = keywords.join('|');
+        // ✅ FIX: Make the regex tolerant of word order and spacing.
+        // For a keyword like 'cable tv', also match 'cable-tv', 'cabletv',
+        // and any string containing BOTH 'cable' AND 'tv'.
+        const flexibleKeywords = keywords.map((kw) => {
+          const words = kw.split(/\s+/).filter(Boolean);
+          if (words.length > 1) {
+            // Multi-word keyword → match if all words appear anywhere in the type
+            return words
+              .map((w) => `(?=.*${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`)
+              .join('');
+          }
+          return kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        });
+
+        const servicePattern = flexibleKeywords.join('|');
         typeFilter = {
           $and: [
             { type: { $regex: servicePattern, $options: 'i' } },
@@ -7573,13 +7587,32 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
     };
 
     // Get stats for each period
-    const [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
-      getPeriodStats({ createdAt: { $gte: today } }),
-      getPeriodStats({ createdAt: { $gte: weekStart } }),
-      getPeriodStats({ createdAt: { $gte: monthStart } }),
-      getPeriodStats({ createdAt: { $gte: yearStart } }),
-      getPeriodStats({})
-    ]);
+      // ✅ FIX: When a custom date range is selected, ALL period stats
+    // must reflect that range — otherwise the "All Time" row shows
+    // grand totals from all dates (ignoring the custom range).
+    const isCustomRange = !!(customStartDate && customEndDate);
+
+    let todayStats, weekStats, monthStats, yearStats, allTimeStats;
+
+    if (isCustomRange) {
+      // When custom range is set, every period shows the SAME range.
+      const customRange = { createdAt: timeFilterQuery.createdAt };
+      const customStats = await getPeriodStats(customRange);
+
+      todayStats = customStats;
+      weekStats = customStats;
+      monthStats = customStats;
+      yearStats = customStats;
+      allTimeStats = customStats;
+    } else {
+      [todayStats, weekStats, monthStats, yearStats, allTimeStats] = await Promise.all([
+        getPeriodStats({ createdAt: { $gte: today } }),
+        getPeriodStats({ createdAt: { $gte: weekStart } }),
+        getPeriodStats({ createdAt: { $gte: monthStart } }),
+        getPeriodStats({ createdAt: { $gte: yearStart } }),
+        getPeriodStats({})
+      ]);
+    }
 
     console.log('📊 Period Stats:');
     console.log(`   Today: ${todayStats.count} txns, ₦${todayStats.commission.toFixed(2)} commission, ₦${todayStats.amount.toFixed(2)} volume`);
@@ -7644,13 +7677,27 @@ app.get('/api/admin/service-commission-stats', adminProtect, async (req, res) =>
       return breakdown;
     };
 
-    const [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
-      getServiceBreakdown({ createdAt: { $gte: today } }),
-      getServiceBreakdown({ createdAt: { $gte: weekStart } }),
-      getServiceBreakdown({ createdAt: { $gte: monthStart } }),
-      getServiceBreakdown({ createdAt: { $gte: yearStart } }),
-      getServiceBreakdown({})
-    ]);
+        let todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown;
+
+    if (isCustomRange) {
+      // When custom range is set, all breakdowns show the same range.
+      const customRange = { createdAt: timeFilterQuery.createdAt };
+      const customBreakdown = await getServiceBreakdown(customRange);
+
+      todayBreakdown = customBreakdown;
+      weekBreakdown = customBreakdown;
+      monthBreakdown = customBreakdown;
+      yearBreakdown = customBreakdown;
+      allTimeBreakdown = customBreakdown;
+    } else {
+      [todayBreakdown, weekBreakdown, monthBreakdown, yearBreakdown, allTimeBreakdown] = await Promise.all([
+        getServiceBreakdown({ createdAt: { $gte: today } }),
+        getServiceBreakdown({ createdAt: { $gte: weekStart } }),
+        getServiceBreakdown({ createdAt: { $gte: monthStart } }),
+        getServiceBreakdown({ createdAt: { $gte: yearStart } }),
+        getServiceBreakdown({})
+      ]);
+    }
 
     // ================================================
     // 11. GET USER DATA FOR TRANSACTIONS
