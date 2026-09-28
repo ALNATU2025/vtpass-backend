@@ -23643,107 +23643,93 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
       });
     }
 
-     // ✅ VTpass returns variations in `content.varations` (typo in VTpass API)
+    // ✅ VTpass returns variations in `content.varations` (typo in VTpass API)
     const rawVariations = vtpassData.content?.variations || vtpassData.content?.varations || [];
     const serviceName = vtpassData.content?.ServiceName || 'International Airtime';
     
-    // ✅ CRITICAL: Map and preserve ALL min/max/rate fields from VTpass
-    // Handles both numeric AND string values from VTpass
+    // ============================================
+    // ✅ COMPLETE PARSER — extracts ALL fields safely
+    // Handles: number | string | null | undefined | false
+    // ============================================
     const variations = rawVariations.map(v => {
-      // ============================================
-      // Parse variation_amount_min (flexible plans only)
-      // VTpass can return: number, string, null, undefined
-      // ============================================
+      
+      // ✅ Parse variation_amount_min (flexible plans only)
       let minAmount = null;
       const rawMin = v.variation_amount_min;
-      if (rawMin !== null && rawMin !== undefined && rawMin !== '') {
+      if (rawMin !== null && rawMin !== undefined && rawMin !== '' && rawMin !== false) {
         const parsed = typeof rawMin === 'number' ? rawMin : parseFloat(rawMin);
         if (!isNaN(parsed) && parsed > 0) {
           minAmount = parsed;
         }
       }
       
-      // ============================================
-      // Parse variation_amount_max (flexible plans only)
-      // VTpass can return: number, string, null, undefined
-      // ============================================
+      // ✅ Parse variation_amount_max (flexible plans only)
       let maxAmount = null;
       const rawMax = v.variation_amount_max;
-      if (rawMax !== null && rawMax !== undefined && rawMax !== '') {
+      if (rawMax !== null && rawMax !== undefined && rawMax !== '' && rawMax !== false) {
         const parsed = typeof rawMax === 'number' ? rawMax : parseFloat(rawMax);
         if (!isNaN(parsed) && parsed > 0) {
           maxAmount = parsed;
         }
       }
       
-      // ============================================
-      // Parse variation_rate (exchange rate for Naira conversion)
-      // VTpass can return: number, string, null, undefined
-      // ============================================
+      // ✅ Parse variation_rate (exchange rate for Naira conversion)
       let variationRate = null;
       const rawRate = v.variation_rate;
-      if (rawRate !== null && rawRate !== undefined && rawRate !== '') {
+      if (rawRate !== null && rawRate !== undefined && rawRate !== '' && rawRate !== false) {
         const parsed = typeof rawRate === 'number' ? rawRate : parseFloat(rawRate);
         if (!isNaN(parsed) && parsed > 0) {
           variationRate = parsed;
         }
       }
       
-      // ============================================
-      // Parse charged_amount (exact Naira amount for fixed plans)
-      // VTpass can return: number, string, false, null, undefined
-      // ⚠️ VTpass sometimes returns `false` here — handle safely
-      // ============================================
+      // ✅ Parse charged_amount (exact Naira amount for fixed plans)
       let chargedAmount = null;
       const rawCharged = v.charged_amount;
-      if (
-        rawCharged !== null && 
-        rawCharged !== undefined && 
-        rawCharged !== false && 
-        rawCharged !== ''
-      ) {
+      if (rawCharged !== null && rawCharged !== undefined && rawCharged !== false && rawCharged !== '') {
         const parsed = typeof rawCharged === 'number' ? rawCharged : parseFloat(rawCharged);
         if (!isNaN(parsed) && parsed > 0) {
           chargedAmount = parsed;
         }
       }
       
-      // ============================================
-      // Parse variation_amount (foreign amount for fixed plans)
-      // VTpass can return: number, string, null, undefined
-      // ⚠️ For flexible plans, VTpass returns `null` here
-      // ============================================
+      // ✅ Parse variation_amount (foreign amount for fixed plans)
       let variationAmount = null;
       const rawAmount = v.variation_amount;
-      if (rawAmount !== null && rawAmount !== undefined && rawAmount !== '') {
+      if (rawAmount !== null && rawAmount !== undefined && rawAmount !== '' && rawAmount !== false) {
         const parsed = typeof rawAmount === 'number' ? rawAmount : parseFloat(rawAmount);
         if (!isNaN(parsed) && parsed > 0) {
           variationAmount = parsed;
         }
       }
       
-      // ============================================
-      // Determine if plan is fixed or flexible
-      // VTpass returns "Yes"/"No" strings OR true/false booleans
-      // ============================================
+      // ✅ Determine if plan is fixed or flexible
       const isFixed = v.fixedPrice === 'Yes' || v.fixedPrice === true;
       
+      // ============================================
+      // ✅ BUILD CLEAN RESPONSE OBJECT
+      // All fields present — null if not applicable
+      // ============================================
       return {
         variation_code: v.variation_code?.toString() || '',
         name: v.name?.toString() || 'Unknown Plan',
         fixedPrice: isFixed,
-        // ✅ Preserve all amount fields with proper types
-        variation_amount: variationAmount,        // Foreign amount (fixed only)
-        variation_amount_min: minAmount,          // Min foreign amount (flexible only)
-        variation_amount_max: maxAmount,          // Max foreign amount (flexible only)
-        variation_rate: variationRate,            // Exchange rate (both)
-        charged_amount: chargedAmount,            // Naira amount (fixed only)
+        
+        // ✅ For FIXED plans:
+        variation_amount: variationAmount,      // Foreign amount (e.g., 5 for $5)
+        charged_amount: chargedAmount,          // Naira amount (e.g., 8000)
+        
+        // ✅ For FLEXIBLE plans:
+        variation_amount_min: minAmount,        // Min foreign amount (e.g., 5)
+        variation_amount_max: maxAmount,        // Max foreign amount (e.g., 50000)
+        variation_rate: variationRate,          // Naira per unit (e.g., 1500)
+        
         charged_currency: v.charged_currency?.toString() || 'NGN',
       };
     });
     
     // ============================================
-    // ✅ DEBUG LOGGING — Verify min/max extracted correctly
+    // ✅ DEBUG LOGGING
     // ============================================
     console.log(`✅ Processed ${variations.length} variations`);
     
@@ -23758,19 +23744,8 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
       flexiblePlans.forEach((v, i) => {
         console.log(`      [${i + 1}] "${v.name}"`);
         console.log(`          Code: ${v.variation_code}`);
-        console.log(`          Min: ${v.variation_amount_min} (type: ${typeof v.variation_amount_min})`);
-        console.log(`          Max: ${v.variation_amount_max} (type: ${typeof v.variation_amount_max})`);
-        console.log(`          Rate: ${v.variation_rate} (type: ${typeof v.variation_rate})`);
-      });
-    }
-    
-    if (fixedPlans.length > 0) {
-      console.log(`   🔍 FIXED PLAN SAMPLE (first 3):`);
-      fixedPlans.slice(0, 3).forEach((v, i) => {
-        console.log(`      [${i + 1}] "${v.name}"`);
-        console.log(`          Code: ${v.variation_code}`);
-        console.log(`          Amount: ${v.variation_amount}`);
-        console.log(`          Charged: ${v.charged_amount} (type: ${typeof v.charged_amount})`);
+        console.log(`          Min: ${v.variation_amount_min}`);
+        console.log(`          Max: ${v.variation_amount_max}`);
         console.log(`          Rate: ${v.variation_rate}`);
       });
     }
@@ -23797,7 +23772,6 @@ app.get('/api/international-airtime/variations', protect, async (req, res) => {
     });
   }
 });
-
 
 
 // @desc    Purchase International Airtime – RACE CONDITION PROTECTED + IMMEDIATE DEBIT
