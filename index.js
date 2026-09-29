@@ -425,9 +425,9 @@ async function notifyAdminsOfTransaction({
       }).catch(err => console.error('⚠️ Suspicious-activity notify error:', err.message));
     }
 
-    let adminNotif = null;
+        let adminNotif = null;
     try {
-      adminNotif = await AdminNotification.create({
+      adminNotif = new AdminNotification({
         type: 'transaction_made',
         title: notifTitle,
         message: notifMessage,
@@ -443,6 +443,8 @@ async function notifyAdminsOfTransaction({
         readBy: [],
         metadata: { source: 'notifyAdminsOfTransaction' }
       });
+      adminNotif.markModified('metadata');
+      await adminNotif.save();
     } catch (dbErr) {
       console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
     }
@@ -515,9 +517,9 @@ async function notifyAdmins({
     }
 
     // 1) Save ONE AdminNotification record (shared)
-    let adminNotif = null;
+      let adminNotif = null;
     try {
-      adminNotif = await AdminNotification.create({
+      adminNotif = new AdminNotification({
         type, title, message, severity,
         userId, userName, userEmail, userPhone,
         transactionId, transactionReference, transactionType,
@@ -525,6 +527,8 @@ async function notifyAdmins({
         isRead: false,
         readBy: []
       });
+      adminNotif.markModified('metadata');
+      await adminNotif.save();
     } catch (dbErr) {
       console.error('⚠️ [ADMIN-NOTIFY] AdminNotification save failed:', dbErr.message);
     }
