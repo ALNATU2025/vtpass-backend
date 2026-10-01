@@ -36,29 +36,50 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     // ✅ COMPLETE ENUM — includes every type used anywhere in the codebase
-    enum: [
+        enum: [
+      // ---- General / account ----
+      'general',
       'account',
-      'transaction',
-      'transaction_pending',
-      'transaction_issue',
+      'announcement',
       'security',
       'promotion',
       'system',
       'alert',
       'update',
-      'general',
       'test',
-      'transfer_sent',
-      'transfer_received',
+
+      // ---- Transaction lifecycle ----
+      'transaction',
+      'transaction_success',
+      'transaction_pending',
+      'transaction_failed',
+      'transaction_issue',
+      'transaction_status_update',
+
+      // ---- Payments ----
       'payment_success',
       'payment_failed',
-      'commission_earned',
-      'referral_bonus',
+
+      // ---- Money movement ----
       'wallet_funded',
       'wallet_funding',
-      'announcement',
+      'wallet_debited',
+      'refund',
+      'refund_credited',
+      'transfer_sent',
+      'transfer_received',
+
+      // ---- Commission / referral ----
+      'commission_earned',
+      'referral_bonus',
+      'referral_commission',
+
+      // ---- Admin ----
       'admin_transaction',
-      'admin_activity'
+      'admin_activity',
+      'admin_alert',
+      'admin_refund',
+      'admin_dispute',
     ],
     default: 'general'
   },
