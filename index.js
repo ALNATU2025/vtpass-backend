@@ -9622,7 +9622,7 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
     session.endSession();
 
     // ============================================
-    // 6. NOTIFY USER (outside session)
+    // 6. NOTIFY USER — FCM push + DB + socket
     // ============================================
     try {
       const userFriendlyTitles = {
@@ -9635,23 +9635,39 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
         Resolved: 'Transaction Resolved ✔️'
       };
 
-      await Notification.create({
-        recipient: transaction.userId,
-        title: userFriendlyTitles[normalizedStatus] || `Transaction Status: ${normalizedStatus}`,
-        message: `Your transaction (Ref: ${transaction.reference}) status has been updated to ${normalizedStatus}.${adminNote ? ' Note: ' + adminNote : ''}`,
-        type: 'transaction',
-        isRead: false,
+      const userFriendlyMessages = {
+        Successful: `Great news! Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} is now SUCCESSFUL. Ref: ${transaction.reference}`,
+        Completed: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} is now COMPLETED. Ref: ${transaction.reference}`,
+        Failed: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} was marked FAILED. Ref: ${transaction.reference}`,
+        Pending: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} is now PENDING. Ref: ${transaction.reference}`,
+        Processing: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} is now PROCESSING. Ref: ${transaction.reference}`,
+        Refunded: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} has been REFUNDED. Ref: ${transaction.reference}`,
+        Resolved: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} has been RESOLVED. Ref: ${transaction.reference}`
+      };
+
+      const notifTitle = userFriendlyTitles[normalizedStatus] || `Transaction Status: ${normalizedStatus}`;
+      const notifMessage = userFriendlyMessages[normalizedStatus]
+        || `Your transaction (Ref: ${transaction.reference}) status updated to ${normalizedStatus}.${adminNote ? ' Note: ' + adminNote : ''}`;
+
+      await createNotificationAndSendPush({
+        recipientId: transaction.userId,
+        title: notifTitle,
+        message: notifMessage,
+        type: 'transaction_status_update',
+        screen: 'transaction_details',
         metadata: {
-          transactionId: transaction._id,
+          transactionId: transaction._id.toString(),
           oldStatus,
           newStatus: normalizedStatus,
           adminNote: adminNote || '',
-          screen: 'transaction_details'
-        }
+          amount: Number(transaction.amount),
+          reference: transaction.reference,
+        },
       });
-          console.log(`   ✅ User notified`);
+
+      console.log(`   ✅ User notified via FCM + DB: ${oldStatus} → ${normalizedStatus}`);
     } catch (notifErr) {
-      console.error('   ⚠️ Notification error:', notifErr.message);
+      console.error('   ⚠️ User status-change notification error:', notifErr.message);
     }
 
     // ✅ NOTIFY ADMINS ABOUT STATUS CHANGE
