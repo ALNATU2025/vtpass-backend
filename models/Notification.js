@@ -59,10 +59,15 @@ const notificationSchema = new mongoose.Schema(
         // ---- Transaction lifecycle ----
         'transaction',
         'transaction_success',
+        'transaction_successful',
         'transaction_pending',
         'transaction_failed',
+        'transaction_refunded',
+        'transaction_blocked',           // ✅ NEW — 60s gate / duplicate / rate limit
+        'transaction_status_changed',    // ✅ NEW — admin status update
         'transaction_issue',
         'transaction_status_update',
+        'duplicate_transaction',         // ✅ NEW — exact duplicate payload
 
         // ---- Payments ----
         'payment_success',
