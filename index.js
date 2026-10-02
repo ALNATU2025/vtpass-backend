@@ -21627,7 +21627,7 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         await session.commitTransaction();
     session.endSession();
 
-    await releaseActiveTransactionLock(req);wait releaseActiveTransactionLock(req);
+       await releaseActiveTransactionLock(req);
     }
 
      // ✅ Commission + notification OUTSIDE transaction
