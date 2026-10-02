@@ -11,7 +11,9 @@
 //   2. EXACT lock        → 60s block for identical retries
 // ============================================================
 
+// middleware/atomicDuplicateGuard.js
 const IdempotencyLock = require('../models/IdempotencyLock');
+const { sendBlockedNotification } = require('../helpers/blockedNotifier');
 
 const LOCK_MS = 60 * 1000;        // 60 seconds — ACTIVE user lock
 const DUPLICATE_MS = 60 * 1000;   // 60 seconds — EXACT lock
@@ -112,6 +114,20 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
       if (activeTransaction) {
         const retryAfterSeconds = getRetryAfterSeconds(activeTransaction.expiresAt, lockMs);
         console.warn(`🚫 [ACTIVE-TXN] User ${userId} blocked — ${retryAfterSeconds}s remaining`);
+
+        // ✅ Notify the user that they were blocked
+        sendBlockedNotification({
+          userId,
+          reason: 'in_progress',
+          service: serviceKey,
+          retryAfterSeconds,
+          metadata: {
+            gateType: 'active-lock',
+            previousService: activeTransaction.serviceKey || null,
+            previousLockId: activeTransaction._id?.toString() || null
+          }
+        }).catch(() => {});
+
         return res.status(409).json({
           success: false,
           code: 'TRANSACTION_IN_PROGRESS',
@@ -144,7 +160,7 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
         expiresAt: new Date(Date.now() + lockMs)
       });
     } catch (err) {
-      if (err && err.code === 11000) {
+           if (err && err.code === 11000) {
         // Parallel request won the race
         let retryAfterSeconds = Math.max(1, Math.ceil(lockMs / 1000));
         try {
@@ -154,6 +170,18 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
           }
         } catch (_) {}
         console.warn(`🚫 [ACTIVE-RACE] User ${userId} blocked — ${retryAfterSeconds}s remaining`);
+
+        // ✅ Notify the user that they were blocked
+        sendBlockedNotification({
+          userId,
+          reason: 'in_progress',
+          service: serviceKey,
+          retryAfterSeconds,
+          metadata: {
+            gateType: 'active-race'
+          }
+        }).catch(() => {});
+
         return res.status(409).json({
           success: false,
           code: 'TRANSACTION_IN_PROGRESS',
@@ -198,7 +226,7 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
       return next();
 
     } catch (err) {
-      if (err && err.code === 11000) {
+           if (err && err.code === 11000) {
         // Release ACTIVE lock we just took
         try {
           await IdempotencyLock.deleteOne({
@@ -219,6 +247,21 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
         } catch (_) {}
 
         console.warn(`🚫 [DUPLICATE] Blocked duplicate ${serviceKey} for user ${userId}`);
+
+        // ✅ Notify the user that they were blocked
+        sendBlockedNotification({
+          userId,
+          reason: 'duplicate',
+          service: serviceKey,
+          retryAfterSeconds,
+          metadata: {
+            gateType: 'exact-lock',
+            recipient: recipient || null,
+            amount: amount || 0,
+            variation: variation || null
+          }
+        }).catch(() => {});
+
         return res.status(409).json({
           success: false,
           code: 'DUPLICATE_TRANSACTION_BLOCKED',
