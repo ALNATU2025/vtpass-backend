@@ -350,6 +350,107 @@ async function logAdminAction({
 
 
 
+// ============================================================================
+// VTpass Wallet Balance Check — Cached + Non-Blocking
+// ----------------------------------------------------------------------------
+// VTpass uses DIFFERENT auth headers for GET vs POST:
+//   • GET  endpoints → api-key + public-key
+//   • POST endpoints → api-key + secret-key
+//
+// This helper caches the balance for 60 seconds so we don't hammer VTpass
+// with a network call on every single transaction. If VTpass is unreachable,
+// we return the last known value (or null) and NEVER block the transaction.
+// ============================================================================
+
+let vtpassBalanceCache = {
+  value: null,          // last known balance (or null)
+  timestamp: 0,         // when we last successfully fetched
+  lastError: null       // last error message (for debugging)
+};
+
+const VTPASS_BALANCE_TTL_MS = 60 * 1000; // 60 seconds
+
+async function getCachedVtpassBalance(forceRefresh = false) {
+  const now = Date.now();
+
+  // Return cached value if still fresh
+  if (
+    !forceRefresh &&
+    vtpassBalanceCache.value !== null &&
+    (now - vtpassBalanceCache.timestamp) < VTPASS_BALANCE_TTL_MS
+  ) {
+    return {
+      balance: vtpassBalanceCache.value,
+      fromCache: true,
+      ageMs: now - vtpassBalanceCache.timestamp,
+      error: null
+    };
+  }
+
+  // Fetch fresh from VTpass
+  try {
+    const apiKey = process.env.VTPASS_API_KEY;
+    const publicKey = process.env.VTPASS_PUBLIC_KEY;
+
+    if (!apiKey || !publicKey) {
+      const err = 'VTpass API_KEY or PUBLIC_KEY missing from environment';
+      console.log(`⚠️ VTpass balance check skipped: ${err}`);
+      vtpassBalanceCache.lastError = err;
+      return {
+        balance: vtpassBalanceCache.value, // may be null
+        fromCache: true,
+        ageMs: null,
+        error: err
+      };
+    }
+
+    const response = await axios.get('https://vtpass.com/api/balance', {
+      headers: {
+        'api-key': apiKey,
+        'public-key': publicKey,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+
+    const freshBalance = parseFloat(response.data?.contents?.balance ?? 0) || 0;
+
+    vtpassBalanceCache = {
+      value: freshBalance,
+      timestamp: now,
+      lastError: null
+    };
+
+    console.log(`📊 VTpass wallet balance (fresh): ₦${freshBalance.toFixed(2)}`);
+
+    return {
+      balance: freshBalance,
+      fromCache: false,
+      ageMs: 0,
+      error: null
+    };
+
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.response_description
+             || err.response?.data?.message
+             || err.message;
+
+    console.log(`⚠️ VTpass balance check failed: ${status ? `HTTP ${status} - ` : ''}${msg}`);
+
+    vtpassBalanceCache.lastError = msg;
+
+    // Return last known value (or null) — never throw, never block
+    return {
+      balance: vtpassBalanceCache.value,
+      fromCache: true,
+      ageMs: vtpassBalanceCache.timestamp ? now - vtpassBalanceCache.timestamp : null,
+      error: msg
+    };
+  }
+}
+
+
 
 const adminExportRoutes = require('./routes/adminExportRoutes');
 const { createNotificationAndSendPush } = require('./helpers/notificationHelper');
@@ -11595,103 +11696,65 @@ app.get('/api/users', adminProtect, [
 
 app.get('/api/admin/vtpass-balance', protect, adminProtect, async (req, res) => {
   try {
-    console.log('🔍 === VTpass Balance Debug ===');
+    console.log('🔍 === VTpass Balance Check ===');
     console.log('User:', req.user?.email);
-    console.log('Is Admin:', req.user?.isAdmin);
-    
+
     const vtpassApiKey = process.env.VTPASS_API_KEY;
+    const vtpassPublicKey = process.env.VTPASS_PUBLIC_KEY;
     const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-    
-    console.log('API Key configured:', !!vtpassApiKey);
-    console.log('Secret Key configured:', !!vtpassSecretKey);
-    console.log('API Key length:', vtpassApiKey?.length || 0);
-    console.log('Secret Key length:', vtpassSecretKey?.length || 0);
-    
-    if (!vtpassApiKey || !vtpassSecretKey) {
-      console.log('❌ CREDENTIALS MISSING!');
+
+    if (!vtpassApiKey || !vtpassPublicKey) {
       return res.status(400).json({
         success: false,
-        message: 'VTpass API credentials not configured',
-        debug: { 
-          apiKeyExists: !!vtpassApiKey, 
-          secretKeyExists: !!vtpassSecretKey 
+        message: 'VTpass API credentials not configured (missing api-key or public-key)',
+        debug: {
+          apiKeyExists: !!vtpassApiKey,
+          publicKeyExists: !!vtpassPublicKey,
+          secretKeyExists: !!vtpassSecretKey
         }
       });
     }
 
-    console.log('📡 Calling VTpass API...');
-    
-    // Try both sandbox and production
-    const urls = [
-      'https://sandbox.vtpass.com/api/balance',
-      'https://vtpass.com/api/balance'
-    ];
-    
-    let balanceResponse = null;
-    let lastError = null;
-    
-    for (const url of urls) {
-      try {
-        console.log(`📡 Trying: ${url}`);
-        const response = await axios.get(url, {
-          headers: {
-            'api-key': vtpassApiKey,
-            'secret-key': vtpassSecretKey,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        });
-        
-        if (response.data.code === 1) {
-          balanceResponse = response;
-          console.log(`✅ Success with: ${url}`);
-          break;
-        }
-      } catch (e) {
-        console.log(`❌ Failed: ${url}`, e.response?.data || e.message);
-        lastError = e;
-      }
-    }
+    console.log('📡 Calling VTpass balance endpoint...');
 
-    if (!balanceResponse) {
-      console.error('❌ All VTpass endpoints failed');
-      return res.status(500).json({
-        success: false,
-        message: 'VTpass API unreachable',
-        error: lastError?.response?.data || lastError?.message || 'Unknown error',
-        triedEndpoints: urls
-      });
-    }
+    const response = await axios.get('https://vtpass.com/api/balance', {
+      headers: {
+        'api-key': vtpassApiKey,
+        'public-key': vtpassPublicKey,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
 
-    const vtpassBalance = balanceResponse.data.contents?.balance || 0;
-    
-    console.log('💰 VTpass Balance:', vtpassBalance);
-    
-    res.json({
+    console.log('📦 VTpass balance response:', JSON.stringify(response.data, null, 2));
+
+    const vtpassBalance = response.data?.contents?.balance || 0;
+
+    console.log('💰 VTpass wallet balance: ₦', vtpassBalance);
+
+    return res.json({
       success: true,
       balance: vtpassBalance,
-      environment: balanceResponse.config.url.includes('sandbox') ? 'sandbox' : 'production',
-      lastChecked: new Date().toISOString(),
-      currency: 'NGN'
+      environment: 'production',
+      currency: 'NGN',
+      lastChecked: new Date().toISOString()
     });
-    
+
   } catch (error) {
-    console.error('❌ ERROR DETAILS:');
-    console.error('Message:', error.message);
-    console.error('Status:', error.response?.status);
-    console.error('Data:', JSON.stringify(error.response?.data, null, 2));
-    
-    res.status(500).json({
+    console.error('❌ VTpass balance fetch error:');
+    console.error('   Message:', error.message);
+    console.error('   Status:', error.response?.status);
+    console.error('   Data:', JSON.stringify(error.response?.data, null, 2));
+
+    return res.status(500).json({
       success: false,
       message: 'Failed to fetch VTpass balance',
       error: error.message,
       status: error.response?.status,
-      vtpassResponse: error.response?.data,
-      details: 'Check server logs for full details'
+      vtpassResponse: error.response?.data
     });
   }
 });
-
 
 
 
@@ -19164,78 +19227,92 @@ app.post('/api/vtpass/proxy',
       });
     }
 
-    // === 7. Check VTpass Wallet Balance BEFORE calling VTpass ===
-    console.log('💰 Checking VTpass wallet balance before transaction...');
+        // ============================================================
+    // === 7. Check VTpass Wallet Balance (cached, non-blocking) ===
+    // ============================================================
+    // Cache is 60s. If VTpass is unreachable, we return the last
+    // known value and CONTINUE — never block a transaction because
+    // of a balance-check failure.
+    //
+    // If balance is known AND lower than the transaction amount,
+    // we keep the user debited (immediate debit already ran) and
+    // log a PENDING record for admin reconciliation.
+    // ============================================================
     try {
-      const vtpassApiKey = process.env.VTPASS_API_KEY;
-      const vtpassSecretKey = process.env.VTPASS_SECRET_KEY;
-      
-      const balanceResponse = await axios.get('https://vtpass.com/api/balance', {
-        headers: {
-          'api-key': vtpassApiKey,
-          'secret-key': vtpassSecretKey,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
-      });
+      const balanceResult = await getCachedVtpassBalance();
+      const vtpassBalance = balanceResult.balance;
 
-      const vtpassBalance = balanceResponse.data.contents?.balance || 0;
-      console.log(`📊 VTpass Merchant Wallet Balance: ₦${vtpassBalance.toFixed(2)}`);
+      if (vtpassBalance === null) {
+        // No cached value and fetch failed — proceed anyway
+        console.log('ℹ️ VTpass balance unknown — proceeding with transaction');
+      } else {
+        const sourceLabel = balanceResult.fromCache
+          ? `cached ${Math.round((balanceResult.ageMs || 0) / 1000)}s ago`
+          : 'fresh';
+        console.log(`📊 VTpass wallet balance (${sourceLabel}): ₦${vtpassBalance.toFixed(2)}`);
 
-      if (vtpassBalance < transactionAmount) {
-        // VTpass has low balance - User already debited, but we need to handle this
-        // Keep the debit - company will reconcile later
-        await sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance);
-        
-        // Create a pending transaction record
-        const pendingTransaction = new Transaction({
-          userId,
-          amount: transactionAmount,
-          type: getDisplayType(serviceID),
-          status: 'Pending',
-          transactionId: uniqueRequestId,
-          reference: uniqueRequestId,
-          description: `${serviceID.toUpperCase()} purchase - PENDING (VTpass LOW BALANCE) - USER DEBITED`,
-          balanceBefore,
-          balanceAfter,
-          metadata: {
-            serviceID,
-            phone,
-            billersCode,
-            variation_code,
-            type,
-            vtpassBalanceError: true,
+        // Only trigger the low-balance path when the balance is
+        // CONFIRMED below what we need AND we fetched it fresh enough
+        // to trust (cache age < 60s, guaranteed by getCachedVtpassBalance).
+        if (vtpassBalance < transactionAmount) {
+          console.log(`⚠️ VTpass wallet low: ₦${vtpassBalance} < required ₦${transactionAmount}`);
+
+          // Alert admins (fire-and-forget — never throws)
+          sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance)
+            .catch(err => console.log('⚠️ Low-balance alert error:', err.message));
+
+          // Create a Pending transaction — user stays debited
+          const pendingTransaction = new Transaction({
+            userId,
+            amount: transactionAmount,
+            type: getDisplayType(serviceID),
+            status: 'Pending',
+            transactionId: uniqueRequestId,
+            reference: uniqueRequestId,
+            description: `${serviceID.toUpperCase()} purchase - PENDING (VTpass LOW BALANCE) - USER DEBITED`,
+            balanceBefore,
+            balanceAfter,
+            metadata: {
+              serviceID,
+              phone,
+              billersCode,
+              variation_code,
+              type,
+              vtpassBalanceError: true,
+              vtpassBalance: vtpassBalance,
+              userDebited: true,
+              debitAmount: transactionAmount,
+              paymentMethod: isUsingCommission ? 'commission' : 'wallet'
+            },
+            isCommission: false,
+            service: getServiceType(serviceID),
+            authenticationMethod: req.authenticationMethod || 'pin',
+            gateway: 'DalabaPay App',
+            userDebited: true,
+            debitConfirmed: true
+          });
+
+          await pendingTransaction.save({ session });
+          await session.commitTransaction();
+          session.endSession();
+
+          return res.status(400).json({
+            success: false,
+            message: 'Service temporarily unavailable due to provider wallet issues. Your payment has been recorded and will be processed when service is restored.',
+            code: 'VTPASS_INSUFFICIENT_FUNDS',
             vtpassBalance: vtpassBalance,
+            requiredAmount: transactionAmount,
             userDebited: true,
             debitAmount: transactionAmount,
-            paymentMethod: isUsingCommission ? 'commission' : 'wallet'
-          },
-          isCommission: false,
-          service: getServiceType(serviceID),
-          authenticationMethod: req.authenticationMethod || 'pin',
-          gateway: 'DalabaPay App',
-          userDebited: true,
-          debitConfirmed: true
-        });
-        
-        await pendingTransaction.save({ session });
-        await session.commitTransaction();
-        
-        return res.status(400).json({
-          success: false,
-          message: 'Service temporarily unavailable due to provider wallet issues. Your payment has been recorded and will be processed when service is restored.',
-          code: 'VTPASS_INSUFFICIENT_FUNDS',
-          vtpassBalance: vtpassBalance,
-          requiredAmount: transactionAmount,
-          userDebited: true,
-          debitAmount: transactionAmount,
-          transactionId: pendingTransaction._id,
-          status: 'pending'
-        });
+            transactionId: pendingTransaction._id,
+            status: 'pending'
+          });
+        }
       }
     } catch (balanceError) {
-      console.error('❌ Failed to check VTpass wallet balance:', balanceError.message);
-      // Continue with transaction but log warning
+      // Any unexpected error — log and CONTINUE with the transaction.
+      // A balance-check failure must never block a valid payment.
+      console.log('⚠️ VTpass balance check skipped (non-fatal):', balanceError.message);
     }
 
     // === 8. Build VTpass payload ===
@@ -19614,6 +19691,9 @@ return res.status(400).json({
     try { session.endSession(); } catch (e) { /* already ended */ }
   }
 });
+
+
+
 
 // ==================== HELPER FUNCTIONS FOR PROXY ====================
 
