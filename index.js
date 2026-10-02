@@ -13083,9 +13083,11 @@ app.get('/api/transactions/statistics', adminProtect, [
 // @route   POST /api/transfer
 // @access  Private
 app.post('/api/transfer', protect, requireApproval, verifyTransactionAuth, checkServiceEnabled('isTransferEnabled'),
-checkGlobalPerMinuteLimit, // ✅ Global limit
+preventRaceCondition({ windowMs: 60000, maxRequests: 1, keyPrefix: 'transfer', excludeStatuses: ['Failed'] }),
+atomicDuplicateGuard('transfer', { lockMs: 60000, duplicateMs: 60000 }),
+checkGlobalPerMinuteLimit,
 checkTransactionLimit('transfer'),
-checkPerMinuteLimit('transfer'), // ✅ Service-specific limit         
+checkPerMinuteLimit('transfer'),
          [
   body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
@@ -15949,14 +15951,15 @@ app.post('/api/vtpass/tv/purchase',
   verifyTransactionAuth, 
   checkServiceEnabled('isCableTvEnabled'),
   smartLimitCheck,
-    preventRaceCondition({ 
-    windowMs: 30000,              // ✅ 30s window after SUCCESS
+  preventRaceCondition({ 
+    windowMs: 60000,
     maxRequests: 1,
     keyPrefix: 'cabletv',
     excludeStatuses: ['Failed'],
-    pendingRetryMs: 90000,        // ✅ Allow retry after 90s if previous is PENDING
-    successBlockMs: 60000         // ✅ Block 60s after SUCCESS
+    pendingRetryMs: 60000,
+    successBlockMs: 60000
   }),
+  atomicDuplicateGuard('cabletv', { lockMs: 60000, duplicateMs: 60000 }),
   [
     body('serviceID').notEmpty().withMessage('Service ID is required'),
     body('billersCode').notEmpty().withMessage('Billers code is required'),
@@ -16699,7 +16702,7 @@ app.post('/api/vtpass/airtime/purchase',
   checkTransactionLimit('airtime'), // ✅ Per-transaction limit (₦1,000)
   checkPerMinuteLimit('airtime'), // ✅ Service-specific limit (max 3 per minute)
   preventRaceCondition({ 
-    windowMs: 30000,        // 30 seconds window
+    windowMs: 60000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'airtime',
     excludeStatuses: ['Failed']
@@ -17085,7 +17088,7 @@ app.post('/api/vtpass/data/purchase',
   checkTransactionLimit('data'),
   checkPerMinuteLimit('data'), // ✅ Service-specific limit
   preventRaceCondition({ 
-    windowMs: 30000,        // 30 seconds window
+    windowMs: 60000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'data',
     excludeStatuses: ['Failed']
@@ -17822,7 +17825,7 @@ app.post('/api/vtpass/electricity/purchase',
   checkTransactionLimit('electricity'),// ✅ Global limit
   checkPerMinuteLimit('electricity'), // ✅ Service-specific limit
   preventRaceCondition({ 
-    windowMs: 30000,        // 30 seconds window
+    windowMs: 60000,        // 30 seconds window
     maxRequests: 1,         // Only 1 request allowed
     keyPrefix: 'electricity',
     excludeStatuses: ['Failed']
@@ -18999,6 +19002,7 @@ app.post('/api/vtpass/proxy',
   smartLimitCheck,
   checkPerMinuteLimit('proxy'),
   preventDuplicateVtpassCall(),
+  atomicDuplicateGuard('proxy', { lockMs: 60000, duplicateMs: 60000 }),
   async (req, res) => {
   console.log('PROXY ENDPOINT HIT - RACE PROTECTED + IMMEDIATE DEBIT 2026');
   console.log('Body:', JSON.stringify(req.body, null, 2));
@@ -19065,7 +19069,7 @@ app.post('/api/vtpass/proxy',
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // === 3. Check if user has sufficient balance (BEFORE any processing) ===
+    // === 3. Check if user has sufficient balance ===
     const isUsingCommission = req.headers['x-commission-usage'] === 'true';
     console.log(`💰 Payment method: ${isUsingCommission ? 'COMMISSION' : 'WALLET'}`);
 
@@ -19093,7 +19097,7 @@ app.post('/api/vtpass/proxy',
       }
     }
 
-    // === 4. IMMEDIATE DEBIT - Deduct from correct balance NOW ===
+    // === 4. IMMEDIATE DEBIT ===
     let balanceBefore = 0;
     let balanceAfter = 0;
     
@@ -19112,7 +19116,7 @@ app.post('/api/vtpass/proxy',
       await user.save({ session });
     }
 
-    // === 5. PREVENT DUPLICATE PROCESSING - Enhanced check ===
+    // === 5. PREVENT DUPLICATE PROCESSING ===
     const alreadyProcessed = await Transaction.findOne({
       $or: [
         { reference: uniqueRequestId },
@@ -19123,7 +19127,6 @@ app.post('/api/vtpass/proxy',
     }).session(session);
 
     if (alreadyProcessed) {
-      // REFUND the user since this was a duplicate
       if (transactionAmount > 0) {
         if (isUsingCommission) {
           user.commissionBalance += transactionAmount;
@@ -19137,7 +19140,6 @@ app.post('/api/vtpass/proxy',
       await session.abortTransaction();
       console.log(`🚫 DUPLICATE PROXY CALL BLOCKED: ${uniqueRequestId} already processed - Refunded user`);
 
-            // ✅ ALERT ADMINS ABOUT DUPLICATE REQUEST_ID ATTEMPT
       notifyAdmins({
         type: 'duplicate_transaction_attempt',
         title: '🚨 Duplicate Request ID Blocked',
@@ -19167,83 +19169,12 @@ app.post('/api/vtpass/proxy',
       });
     }
 
-    // === 6. Check recent transactions for same recipient (30 second window) ===
-    const thirtySecondsAgo = new Date(Date.now() - 30000);
-    const recentTransaction = await Transaction.findOne({
-      userId: userId,
-      status: 'Successful',
-      createdAt: { $gte: thirtySecondsAgo },
-      $or: [
-        { 'metadata.phone': phone },
-        { 'metadata.billersCode': billersCode },
-        { 'metadata.smartcardNumber': billersCode },
-        { 'metadata.meterNumber': billersCode }
-      ]
-    }).session(session);
-
-    if (recentTransaction) {
-      // REFUND the user since this is a duplicate to same recipient
-      if (transactionAmount > 0) {
-        if (isUsingCommission) {
-          user.commissionBalance += transactionAmount;
-        } else {
-          user.walletBalance += transactionAmount;
-        }
-        await user.save({ session });
-        console.log(`💰 REFUNDED: Recent transaction to same recipient - ₦${transactionAmount} returned to user`);
-      }
-      
-      await session.abortTransaction();
-      console.log(`🚫 RECENT TRANSACTION BLOCKED: User ${userId} - Same recipient within 30 seconds - Refunded user`);
-
-            // ✅ ALERT ADMINS ABOUT DUPLICATE ATTEMPT
-      notifyAdmins({
-        type: 'duplicate_transaction_attempt',
-        title: '🚨 Duplicate Transaction Blocked',
-        message: `${req.user.fullName} tried a duplicate ${serviceID} transaction to ${phone || billersCode} within 30 seconds. Blocked.`,
-        severity: 'critical',
-        userId: req.user._id,
-        userName: req.user.fullName,
-        userEmail: req.user.email,
-        transactionType: serviceID,
-        amount: transactionAmount,
-        transactionReference: uniqueRequestId,
-        metadata: {
-          existingTransactionId: recentTransaction._id,
-          recipient: phone || billersCode,
-          ip: req.ip,
-        }
-      }).catch(err => console.error('⚠️ Admin dup notify error:', err.message));
-      
-      return res.status(409).json({
-        success: false,
-        message: 'A recent transaction to this recipient was just processed. Please wait 30 seconds. Your payment has been refunded.',
-        code: 'RECENT_TRANSACTION_EXISTS',
-        alreadyProcessed: true,
-        existingTransactionId: recentTransaction._id,
-        timeSinceLastMs: Date.now() - new Date(recentTransaction.createdAt).getTime(),
-        refunded: true,
-        refundAmount: transactionAmount
-      });
-    }
-
-        // ============================================================
-    // === 7. Check VTpass Wallet Balance (cached, non-blocking) ===
-    // ============================================================
-    // Cache is 60s. If VTpass is unreachable, we return the last
-    // known value and CONTINUE — never block a transaction because
-    // of a balance-check failure.
-    //
-    // If balance is known AND lower than the transaction amount,
-    // we keep the user debited (immediate debit already ran) and
-    // log a PENDING record for admin reconciliation.
-    // ============================================================
+    // === 6. Check VTpass Wallet Balance (cached, non-blocking) ===
     try {
       const balanceResult = await getCachedVtpassBalance();
       const vtpassBalance = balanceResult.balance;
 
       if (vtpassBalance === null) {
-        // No cached value and fetch failed — proceed anyway
         console.log('ℹ️ VTpass balance unknown — proceeding with transaction');
       } else {
         const sourceLabel = balanceResult.fromCache
@@ -19251,17 +19182,12 @@ app.post('/api/vtpass/proxy',
           : 'fresh';
         console.log(`📊 VTpass wallet balance (${sourceLabel}): ₦${vtpassBalance.toFixed(2)}`);
 
-        // Only trigger the low-balance path when the balance is
-        // CONFIRMED below what we need AND we fetched it fresh enough
-        // to trust (cache age < 60s, guaranteed by getCachedVtpassBalance).
         if (vtpassBalance < transactionAmount) {
           console.log(`⚠️ VTpass wallet low: ₦${vtpassBalance} < required ₦${transactionAmount}`);
 
-          // Alert admins (fire-and-forget — never throws)
           sendAdminLowBalanceAlert(serviceID, transactionAmount, vtpassBalance)
             .catch(err => console.log('⚠️ Low-balance alert error:', err.message));
 
-          // Create a Pending transaction — user stays debited
           const pendingTransaction = new Transaction({
             userId,
             amount: transactionAmount,
@@ -19310,12 +19236,10 @@ app.post('/api/vtpass/proxy',
         }
       }
     } catch (balanceError) {
-      // Any unexpected error — log and CONTINUE with the transaction.
-      // A balance-check failure must never block a valid payment.
       console.log('⚠️ VTpass balance check skipped (non-fatal):', balanceError.message);
     }
 
-    // === 8. Build VTpass payload ===
+    // === 7. Build VTpass payload ===
     const payload = {
       request_id: uniqueRequestId,
       serviceID: serviceID,
@@ -19327,181 +19251,168 @@ app.post('/api/vtpass/proxy',
 
     if (amount) payload.amount = parseFloat(amount).toFixed(2);
 
-    // === 9. Determine endpoint ===
+    // === 8. Determine endpoint ===
     const endpoint = serviceID.includes('electric') && billersCode && !variation_code 
       ? '/merchant-verify' 
       : '/pay';
 
-    // === 10. Call VTpass API ===
+    // === 9. Call VTpass API ===
     const vtpassResult = await callVtpassApi(endpoint, payload);
 
-   // === 11. Handle VTpass response ===
-if (vtpassResult.success && vtpassResult.data?.code === '000') {
-  // SUCCESS: Update transaction with VTpass data
-  
-  // Map display type
-  let displayType = getDisplayType(serviceID);
-  let transactionMetadata = buildTransactionMetadata(
-    serviceID, phone, billersCode, variation_code, type,
-    uniqueRequestId, isUsingCommission, vtpassResult.data
-  );
+    // === 10. Handle VTpass response ===
+    if (vtpassResult.success && vtpassResult.data?.code === '000') {
+      let displayType = getDisplayType(serviceID);
+      let transactionMetadata = buildTransactionMetadata(
+        serviceID, phone, billersCode, variation_code, type,
+        uniqueRequestId, isUsingCommission, vtpassResult.data
+      );
 
-  let newTransactionRecord = null;
+      let newTransactionRecord = null;
 
-  // CREATE TRANSACTION RECORD (user already debited above)
-  if (!isUsingCommission) {
-    newTransactionRecord = await createTransaction(
-      userId,
-      transactionAmount,
-      displayType,
-      'Successful',
-      `${serviceID.toUpperCase()} purchase completed`,
-      balanceBefore,
-      balanceAfter,
-      session,
-      false,
-      'pin',
-      uniqueRequestId,
-      transactionMetadata
-    );
-    console.log(`✅ Wallet payment - Regular transaction recorded (user already debited)`);
-  } else {
-    console.log(`✅ Commission payment - Transaction already created earlier`);
-    
-    // Update commission transaction with VTpass data
-    if (commissionTransactionId || commissionTrackingId) {
-      const commissionTransaction = await Transaction.findOne({
-        $or: [
-          { _id: commissionTransactionId },
-          { reference: commissionTrackingId },
-          { 'metadata.commissionTrackingId': commissionTrackingId }
-        ],
-        userId: userId,
-        isCommission: true
-      }).session(session);
+      if (!isUsingCommission) {
+        newTransactionRecord = await createTransaction(
+          userId,
+          transactionAmount,
+          displayType,
+          'Successful',
+          `${serviceID.toUpperCase()} purchase completed`,
+          balanceBefore,
+          balanceAfter,
+          session,
+          false,
+          'pin',
+          uniqueRequestId,
+          transactionMetadata
+        );
+        console.log(`✅ Wallet payment - Regular transaction recorded (user already debited)`);
+      } else {
+        console.log(`✅ Commission payment - Transaction already created earlier`);
+        
+        if (commissionTransactionId || commissionTrackingId) {
+          const commissionTransaction = await Transaction.findOne({
+            $or: [
+              { _id: commissionTransactionId },
+              { reference: commissionTrackingId },
+              { 'metadata.commissionTrackingId': commissionTrackingId }
+            ],
+            userId: userId,
+            isCommission: true
+          }).session(session);
+          
+          if (commissionTransaction) {
+            commissionTransaction.status = 'Successful';
+            commissionTransaction.metadata = {
+              ...commissionTransaction.metadata,
+              ...transactionMetadata,
+              vtpassResponse: vtpassResult.data,
+              requestId: uniqueRequestId,
+              completedAt: new Date(),
+              service: serviceID,
+              userDebited: true
+            };
+            await commissionTransaction.save({ session });
+            newTransactionRecord = commissionTransaction;
+            console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
+          }
+        }
+      }
       
-      if (commissionTransaction) {
-        commissionTransaction.status = 'Successful';
-        commissionTransaction.metadata = {
-          ...commissionTransaction.metadata,
-          ...transactionMetadata,
-          vtpassResponse: vtpassResult.data,
-          requestId: uniqueRequestId,
-          completedAt: new Date(),
-          service: serviceID,
-          userDebited: true
-        };
-        await commissionTransaction.save({ session });
-        newTransactionRecord = commissionTransaction;
-        console.log(`✅ Updated commission transaction: ${commissionTransaction._id}`);
+      await user.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+
+      if (transactionAmount > 0 && !isUsingCommission) {
+        const commissionServiceType = getCommissionServiceType(serviceID);
+        
+        calculateAndAddCommission(
+          userId, 
+          transactionAmount, 
+          commissionServiceType,
+          isUsingCommission
+        ).catch(err => console.log('⚠️ Proxy commission error:', err.message));
+        
+        if (user.referrerId) {
+          awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, null)
+            .catch(err => console.log('⚠️ Proxy referral commission error:', err.message));
+        }
       }
-    }
-  }
-  
-  await user.save({ session });
-  await session.commitTransaction();
-  session.endSession();
 
-  await releaseActiveTransactionLock(req);
+      try {
+        const userServiceLabel = getServiceType(serviceID);
+        const userServiceTitle =
+          userServiceLabel === 'airtime' ? 'Airtime Purchase Successful ✅' :
+          userServiceLabel === 'data' ? 'Data Purchase Successful 📱' :
+          userServiceLabel === 'electricity' ? 'Electricity Purchase Successful 💡' :
+          userServiceLabel === 'tv' ? 'TV Subscription Successful 📺' :
+          'Transaction Successful ✅';
 
-  // ✅ Commission + referral (fire-and-forget, OUTSIDE transaction)
-  if (transactionAmount > 0 && !isUsingCommission) {
-    const commissionServiceType = getCommissionServiceType(serviceID);
-    
-    calculateAndAddCommission(
-      userId, 
-      transactionAmount, 
-      commissionServiceType,
-      isUsingCommission
-    ).catch(err => console.log('⚠️ Proxy commission error:', err.message));
-    
-    // Referral service commission (no session — runs standalone)
-    if (user.referrerId) {
-      awardReferralCommission(user, transactionAmount, serviceID, uniqueRequestId, null)
-        .catch(err => console.log('⚠️ Proxy referral commission error:', err.message));
-    }
-  }
+        const userServiceMessage = `${serviceID.toUpperCase()} purchase of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'your account'} was successful. New balance: ₦${user.walletBalance.toFixed(2)}`;
 
-  // ✅ ============ USER FCM PUSH (PROXY) ============
-  // Send push notification to the USER's phone
-  try {
-    const userServiceLabel = getServiceType(serviceID); // 'airtime', 'data', 'electricity', 'tv'
-    const userServiceTitle =
-      userServiceLabel === 'airtime' ? 'Airtime Purchase Successful ✅' :
-      userServiceLabel === 'data' ? 'Data Purchase Successful 📱' :
-      userServiceLabel === 'electricity' ? 'Electricity Purchase Successful 💡' :
-      userServiceLabel === 'tv' ? 'TV Subscription Successful 📺' :
-      'Transaction Successful ✅';
-
-    const userServiceMessage = `${serviceID.toUpperCase()} purchase of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'your account'} was successful. New balance: ₦${user.walletBalance.toFixed(2)}`;
-
-    createNotificationAndSendPush({
-      recipientId: userId,
-      title: userServiceTitle,
-      message: userServiceMessage,
-      type: 'transaction',
-      screen: 'transaction_details',
-      metadata: {
-        transactionId: newTransactionRecord?._id?.toString() || '',
-        serviceID: serviceID,
-        phone: phone || '',
-        billersCode: billersCode || '',
-        amount: transactionAmount,
-        newBalance: user.walletBalance,
-        status: 'Successful'
+        createNotificationAndSendPush({
+          recipientId: userId,
+          title: userServiceTitle,
+          message: userServiceMessage,
+          type: 'transaction',
+          screen: 'transaction_details',
+          metadata: {
+            transactionId: newTransactionRecord?._id?.toString() || '',
+            serviceID: serviceID,
+            phone: phone || '',
+            billersCode: billersCode || '',
+            amount: transactionAmount,
+            newBalance: user.walletBalance,
+            status: 'Successful'
+          }
+        }).catch(err => console.error('⚠️ Proxy user notif error:', err.message));
+      } catch (userNotifErr) {
+        console.error('⚠️ Proxy user notif error:', userNotifErr.message);
       }
-    }).catch(err => console.error('⚠️ Proxy user notif error:', err.message));
-  } catch (userNotifErr) {
-    console.error('⚠️ Proxy user notif error:', userNotifErr.message);
-  }
 
-  // ✅ ============ ADMIN FCM PUSH (PROXY) ============
-  // Send push notification to ALL ADMINS' phones
-  try {
-    const adminServiceLabel =
-      serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile'
-        ? 'Airtime Purchase'
-        : serviceID.includes('data')
-        ? 'Data Purchase'
-        : serviceID.includes('electric')
-        ? 'Electricity Purchase'
-        : serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes'
-        ? 'Cable TV Purchase'
-        : 'Transaction';
+      try {
+        const adminServiceLabel =
+          serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile'
+            ? 'Airtime Purchase'
+            : serviceID.includes('data')
+            ? 'Data Purchase'
+            : serviceID.includes('electric')
+            ? 'Electricity Purchase'
+            : serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes'
+            ? 'Cable TV Purchase'
+            : 'Transaction';
 
-    notifyAdminsOfTransaction({
-      title: `📢 ${adminServiceLabel}`,
-      message: `${user.fullName} made a ${adminServiceLabel} of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'N/A'} — Successful`,
-      transactionType: adminServiceLabel,
-      amount: transactionAmount,
-      userName: user.fullName,
-      userEmail: user.email,
-      reference: uniqueRequestId,
-      status: 'Successful',
-      transactionId: newTransactionRecord?._id || null
-    }).catch(err => console.error('⚠️ Admin notify error:', err.message));
-  } catch (adminNotifErr) {
-    console.error('⚠️ Admin notify error:', adminNotifErr.message);
-  }
+        notifyAdminsOfTransaction({
+          title: `📢 ${adminServiceLabel}`,
+          message: `${user.fullName} made a ${adminServiceLabel} of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'N/A'} — Successful`,
+          transactionType: adminServiceLabel,
+          amount: transactionAmount,
+          userName: user.fullName,
+          userEmail: user.email,
+          reference: uniqueRequestId,
+          status: 'Successful',
+          transactionId: newTransactionRecord?._id || null
+        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+      } catch (adminNotifErr) {
+        console.error('⚠️ Admin notify error:', adminNotifErr.message);
+      }
 
-  console.log(`✅ PROXY TRANSACTION COMPLETE: ${uniqueRequestId} - User debited, service delivered`);
+      console.log(`✅ PROXY TRANSACTION COMPLETE: ${uniqueRequestId} - User debited, service delivered`);
 
-  return res.json({
-    success: true,
-    message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
-    newWalletBalance: user.walletBalance,
-    newCommissionBalance: user.commissionBalance,
-    paymentMethod: isUsingCommission ? 'commission' : 'wallet',
-    vtpassResponse: vtpassResult.data,
-    requestId: uniqueRequestId,
-    transactionCompleted: true,
-    userDebited: true,
-    amountDebited: transactionAmount,
-    customerName: vtpassResult.data.content?.Customer_Name || ''
-  });
-}
+      return res.json({
+        success: true,
+        message: `Transaction successful ${isUsingCommission ? '(Paid with Commission)' : ''}`,
+        newWalletBalance: user.walletBalance,
+        newCommissionBalance: user.commissionBalance,
+        paymentMethod: isUsingCommission ? 'commission' : 'wallet',
+        vtpassResponse: vtpassResult.data,
+        requestId: uniqueRequestId,
+        transactionCompleted: true,
+        userDebited: true,
+        amountDebited: transactionAmount,
+        customerName: vtpassResult.data.content?.Customer_Name || ''
+      });
+    }
 
-    // === 12. Handle VTpass DUPLICATE response ===
+    // === 11. Handle VTpass DUPLICATE response ===
     if (vtpassResult.data?.code === '019' || 
         vtpassResult.data?.response_description?.includes('DUPLICATE') ||
         vtpassResult.data?.response_description?.includes('REQUEST ID ALREADY EXIST')) {
@@ -19517,7 +19428,6 @@ if (vtpassResult.success && vtpassResult.data?.code === '000') {
       }).session(session);
       
       if (existingTransaction && existingTransaction.status === 'Successful') {
-        // Transaction already exists - keep the debit
         await session.commitTransaction();
         console.log(`✅ Duplicate request - transaction already successful, user already debited`);
         
@@ -19533,7 +19443,6 @@ if (vtpassResult.success && vtpassResult.data?.code === '000') {
         });
       }
       
-      // Duplicate but no successful transaction - REFUND the user
       if (transactionAmount > 0) {
         if (isUsingCommission) {
           user.commissionBalance += transactionAmount;
@@ -19554,110 +19463,96 @@ if (vtpassResult.success && vtpassResult.data?.code === '000') {
         refundAmount: transactionAmount
       });
     }
-// === 13. Handle VTpass FAILURE - User is already debited, keep the money ===
-await session.abortTransaction();
 
-const msg = vtpassResult.data?.response_description || 'Transaction failed';
-const errorCode = vtpassResult.data?.code || 'UNKNOWN';
+    // === 12. Handle VTpass FAILURE ===
+    await session.abortTransaction();
 
-// User is already debited from earlier - we keep the money
-console.log(`❌ VTPASS FAILED: User already debited ₦${transactionAmount}, service not delivered`);
+    const msg = vtpassResult.data?.response_description || 'Transaction failed';
+    const errorCode = vtpassResult.data?.code || 'UNKNOWN';
 
-// Create a failed transaction record (user already debited)
-const failedTransactionRecord = new Transaction({
-  userId,
-  amount: transactionAmount,
-  type: getDisplayType(serviceID),
-  status: 'Failed',
-  transactionId: uniqueRequestId,
-  reference: uniqueRequestId,
-  description: `${serviceID.toUpperCase()} purchase - FAILED (USER DEBITED ₦${transactionAmount})`,
-  balanceBefore,
-  balanceAfter,
-  metadata: {
-    serviceID,
-    phone,
-    billersCode,
-    variation_code,
-    type,
-    vtpassError: msg,
-    vtpassCode: errorCode,
-    vtpassResponse: vtpassResult.data,
-    userDebited: true,
-    debitAmount: transactionAmount,
-    failureReason: msg
-  },
-  isFailed: true,
-  shouldShowAsFailed: true,
-  failureReason: `${msg} - USER DEBITED`,
-  gateway: 'DalabaPay App',
-  userDebited: true,
-  debitConfirmed: true
-});
+    console.log(`❌ VTPASS FAILED: User already debited ₦${transactionAmount}, service not delivered`);
 
-await failedTransactionRecord.save();  // ✅ Save with NO session
-console.log(`📝 Failed transaction recorded - User debited ₦${transactionAmount}`);
+    const failedTransactionRecord = new Transaction({
+      userId,
+      amount: transactionAmount,
+      type: getDisplayType(serviceID),
+      status: 'Failed',
+      transactionId: uniqueRequestId,
+      reference: uniqueRequestId,
+      description: `${serviceID.toUpperCase()} purchase - FAILED (USER DEBITED ₦${transactionAmount})`,
+      balanceBefore,
+      balanceAfter,
+      metadata: {
+        serviceID,
+        phone,
+        billersCode,
+        variation_code,
+        type,
+        vtpassError: msg,
+        vtpassCode: errorCode,
+        vtpassResponse: vtpassResult.data,
+        userDebited: true,
+        debitAmount: transactionAmount,
+        failureReason: msg
+      },
+      isFailed: true,
+      shouldShowAsFailed: true,
+      failureReason: `${msg} - USER DEBITED`,
+      gateway: 'DalabaPay App',
+      userDebited: true,
+      debitConfirmed: true
+    });
 
-// ✅ ADMIN FCM PUSH — FAILED transaction
-try {
-  const failServiceLabel =
-    serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile'
-      ? 'Airtime Purchase'
-      : serviceID.includes('data')
-      ? 'Data Purchase'
-      : serviceID.includes('electric')
-      ? 'Electricity Purchase'
-      : serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes'
-      ? 'Cable TV Purchase'
-      : 'Transaction';
+    await failedTransactionRecord.save();
 
-  notifyAdminsOfTransaction({
-    title: `⚠️ Failed ${failServiceLabel}`,
-    message: `${user.fullName} attempted a ${failServiceLabel} of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'N/A'} — FAILED (user debited)`,
-    transactionType: failServiceLabel,
-    amount: transactionAmount,
-    userName: user.fullName,
-    userEmail: user.email,
-    reference: uniqueRequestId,
-    status: 'Failed',
-    transactionId: failedTransactionRecord._id
-  }).catch(err => console.error('⚠️ Admin fail notify error:', err.message));
-} catch (adminFailNotifErr) {
-  console.error('⚠️ Admin fail notify error:', adminFailNotifErr.message);
-}
+    try {
+      const failServiceLabel =
+        serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile'
+          ? 'Airtime Purchase'
+          : serviceID.includes('data')
+          ? 'Data Purchase'
+          : serviceID.includes('electric')
+          ? 'Electricity Purchase'
+          : serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes'
+          ? 'Cable TV Purchase'
+          : 'Transaction';
 
-// ✅ USER + ADMIN FCM PUSH — FAILED transaction
-notifyTransactionEvent({
-  status: 'Failed',
-  transaction: failedTransactionRecord,
-  user,
-  reason: msg || 'Delivery failed',
-}).catch(err => console.error('⚠️ Proxy failed notifier error:', err.message));
+      notifyAdminsOfTransaction({
+        title: `⚠️ Failed ${failServiceLabel}`,
+        message: `${user.fullName} attempted a ${failServiceLabel} of ₦${transactionAmount.toFixed(2)} to ${phone || billersCode || 'N/A'} — FAILED (user debited)`,
+        transactionType: failServiceLabel,
+        amount: transactionAmount,
+        userName: user.fullName,
+        userEmail: user.email,
+        reference: uniqueRequestId,
+        status: 'Failed',
+        transactionId: failedTransactionRecord._id
+      }).catch(err => console.error('⚠️ Admin fail notify error:', err.message));
+    } catch (adminFailNotifErr) {
+      console.error('⚠️ Admin fail notify error:', adminFailNotifErr.message);
+    }
 
-// Handle LOW WALLET BALANCE error
-if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
-  await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
-  
-  return res.status(400).json({
-    success: false,
-    message: 'Service temporarily unavailable. Your payment has been recorded and will be processed when service is restored.',
-    code: 'VTPASS_WALLET_EMPTY',
-    retryable: false,
-    adminAlerted: true,
-    userDebited: true,
-    debitAmount: transactionAmount,
-    vtpassResponse: vtpassResult.data
-  });
-}
+    notifyTransactionEvent({
+      status: 'Failed',
+      transaction: failedTransactionRecord,
+      user,
+      reason: msg || 'Delivery failed',
+    }).catch(err => console.error('⚠️ Proxy failed notifier error:', err.message));
 
-return res.status(400).json({
-  success: false,
-  message: `${msg}. Your wallet was debited ₦${transactionAmount}. Please contact support if service was not delivered.`,
-  code: errorCode,
-  userDebited: true,
-  debitAmount: transactionAmount,
-  vtpassResponse: vtpassResult.data
-});
+    if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
+      await sendAdminLowBalanceAlert(serviceID, transactionAmount, 0);
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Service temporarily unavailable. Your payment has been recorded and will be processed when service is restored.',
+        code: 'VTPASS_WALLET_EMPTY',
+        retryable: false,
+        adminAlerted: true,
+        userDebited: true,
+        debitAmount: transactionAmount,
+        vtpassResponse: vtpassResult.data
+      });
+    }
 
     return res.status(400).json({
       success: false,
@@ -19672,7 +19567,6 @@ return res.status(400).json({
     await session.abortTransaction();
     console.error('PROXY ERROR:', error);
     
-    // Handle MongoDB duplicate key error
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -20561,6 +20455,8 @@ app.post('/api/education/validate-profile', protect, [
 // @route   POST /api/education/purchase
 // @access  Private
 app.post('/api/education/purchase', protect, requireApproval, verifyTransactionAuth, 
+  preventRaceCondition({ windowMs: 60000, maxRequests: 1, keyPrefix: 'education', excludeStatuses: ['Failed'] }),
+  atomicDuplicateGuard('education', { lockMs: 60000, duplicateMs: 60000 }),
   checkGlobalPerMinuteLimit,
   smartLimitCheck,
   checkTransactionLimit('education'),
@@ -21269,6 +21165,8 @@ function getFallbackStates() {
 // @route   POST /api/insurance/purchase
 // @access  Private
 app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionAuth,
+  preventRaceCondition({ windowMs: 60000, maxRequests: 1, keyPrefix: 'insurance', excludeStatuses: ['Failed'] }),
+  atomicDuplicateGuard('insurance', { lockMs: 60000, duplicateMs: 60000 }),
   checkGlobalPerMinuteLimit,
   smartLimitCheck,
   checkTransactionLimit('insurance'),
@@ -23956,16 +23854,17 @@ app.post('/api/international-airtime/purchase',
   protect, 
   requireApproval,
   checkServiceEnabled('isAirtimeEnabled'),
-  checkGlobalPerMinuteLimit,
-  smartLimitCheck,
-  checkTransactionLimit('international_airtime'),
-  checkPerMinuteLimit('international_airtime'),
   preventRaceCondition({ 
-    windowMs: 30000,
+    windowMs: 60000,
     maxRequests: 1,
     keyPrefix: 'int_airtime',
     excludeStatuses: ['Failed']
   }),
+  atomicDuplicateGuard('int_airtime', { lockMs: 60000, duplicateMs: 60000 }),
+  checkGlobalPerMinuteLimit,
+  smartLimitCheck,
+  checkTransactionLimit('international_airtime'),
+  checkPerMinuteLimit('international_airtime'),
   userServiceRateLimiter('int_airtime', 1, 60000),
   [
     body('operatorId').notEmpty().withMessage('Operator ID is required'),
