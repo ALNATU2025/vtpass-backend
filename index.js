@@ -20514,13 +20514,24 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    if (user.walletBalance < amount) {
+       if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
         message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}` 
       });
     }
+
+    // ================================================
+    // 🔥 IMMEDIATE DEBIT — Same policy as airtime/data
+    // Debit BEFORE calling VTpass. Refund if VTpass says not processed (091).
+    // ================================================
+    const balanceBefore = user.walletBalance;
+    user.walletBalance -= amount;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+
+    console.log(`💰 [EDUCATION] IMMEDIATE DEBIT: ₦${amount} | Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
 
     // Prepare VTpass payload
     const vtpassPayload = {
@@ -20566,11 +20577,9 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-       if (interpretation.isDelivered && interpretation.status === 'Successful') {
+           if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
-      newBalance = user.walletBalance - amount;
-      user.walletBalance = newBalance;
-      await user.save({ session });
+      newBalance = balanceAfter;   // ✅ Already debited above — no second debit
 
       // ⚠️ Commission + notification will run AFTER commit — see below
     }    // ================================================
@@ -20580,14 +20589,14 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       await session.abortTransaction();
       session.endSession();
 
-      const pendingTx = new Transaction({
+           const pendingTx = new Transaction({
         userId,
         amount,
         type: 'Education Purchase',
         status: 'Pending',
         description: `${serviceID.toUpperCase()} purchase for ${phone} - PENDING`,
         balanceBefore: balanceBefore,
-        balanceAfter: balanceBefore, // NOT debited
+        balanceAfter: balanceAfter,      // ✅ User IS debited
         reference: reference,
         metadata: {
           serviceID, variationCode, phone, profileId,
@@ -20596,7 +20605,8 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
           vtpassAction: interpretation.action,
           vtpassDescription: interpretation.description,
           needsRequery: interpretation.needsRequery,
-          userDebited: false,
+          userDebited: true,             // ✅ Changed
+          debitAmount: amount,           // ✅ Added
           pendingSince: new Date(),
           vtpassResponse: vtpassResult.data
         }
@@ -20609,50 +20619,78 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
         user,
       }).catch(err => console.error('⚠️ Education pending notifier error:', err.message));
 
-      return res.status(200).json({
+           return res.status(200).json({
         success: true,
         pending: true,
         message: 'Your education purchase is being processed. We\'ll notify you once confirmed.',
         transactionId: pendingTx._id,
         status: 'Pending',
-        userDebited: false
+        newBalance: balanceAfter,
+        userDebited: true,
+        amountDebited: amount,
+        isPending: true,
+        needsRequery: interpretation.needsRequery
       });
     }
     // ================================================
     // ❌ FAILED
     // ================================================
       else {
-      await session.abortTransaction();
+      // ✅ User IS debited. Persist the failed transaction, do NOT refund here.
+      // Refunds happen only when VTpass explicitly says code 091 (transactions below).
+      transactionStatus = 'failed';
+
+      const failedTransaction = await createTransaction(
+        userId,
+        amount,
+        'Education Purchase',
+        'Failed',
+        `${serviceID.toUpperCase()} purchase for ${phone} - FAILED (USER DEBITED ₦${amount})`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        req.authenticationMethod || 'pin',
+        reference,
+        {
+          serviceID, variationCode, phone, profileId,
+          userDebited: true,
+          debitAmount: amount,
+          vtpassResponse: vtpassResult.data,
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description,
+          failureReason: `${interpretation.description} - USER DEBITED`
+        }
+      );
+
+      await session.commitTransaction();
       session.endSession();
 
       notifyTransactionEvent({
         status: 'Failed',
-        transaction: {
-          _id: null,
-          userId,
-          type: 'Education Purchase',
-          amount,
-          reference,
-        },
+        transaction: failedTransaction,
         user,
         reason: interpretation.description || 'Education delivery failed',
       }).catch(err => console.error('⚠️ Education failed notifier error:', err.message));
 
       return res.status(vtpassResult.status || 400).json({
         success: false,
-        message: interpretation.description || vtpassResult.data?.response_description || 'Education purchase failed',
+        message: `${interpretation.description || 'Education purchase failed'}. Your wallet was debited ₦${amount}. Please contact support if service was not delivered.`,
         details: vtpassResult.data,
         code: interpretation.code,
         isFailed: true,
-        userDebited: false
+        shouldShowAsFailed: true,
+        userDebited: true,
+        amountDebited: amount,
+        transactionId: failedTransaction._id
       });
     }
 
-        const newTransaction = await createTransaction(
+               const newTransaction = await createTransaction(
       userId,
       amount,
-      'debit',
-      transactionStatus,
+      'Education Purchase',
+      transactionStatus === 'successful' ? 'Successful' : transactionStatus,
       `${serviceID} education purchase for ${phone}`,
       balanceBefore,
       newBalance,
@@ -20664,9 +20702,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
        await session.commitTransaction();
     session.endSession();
 
-    if (transactionStatus === 'successful' || transactionStatus === 'failed') {
-      await releaseActiveTransactionLock(req);
-    }
+    await releaseActiveTransactionLock(req);
 
        // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
@@ -21406,6 +21442,17 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       });
     }
 
+    // ================================================
+    // 🔥 IMMEDIATE DEBIT — Same policy as airtime/data
+    // Debit BEFORE calling VTpass. Refund only if VTpass says 091.
+    // ================================================
+    const balanceBefore = user.walletBalance;
+    user.walletBalance -= amount;
+    const balanceAfter = user.walletBalance;
+    await user.save({ session });
+
+    console.log(`💰 [INSURANCE] IMMEDIATE DEBIT: ₦${amount} | Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
+
     console.log('🚀 Calling VTpass for insurance purchase...');
     
     // Prepare VTpass payload for insurance purchase
@@ -21434,10 +21481,8 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
     console.log('📦 VTpass Insurance Response:', JSON.stringify(vtpassResult, null, 2));
-
-       const balanceBefore = user.walletBalance;
     let transactionStatus = 'failed';
-    let newBalance = balanceBefore;
+    let newBalance = balanceAfter;
 
     // 🔥 FIX #7: Use master interpreter instead of raw code === '000' check
     const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
@@ -21454,11 +21499,9 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-        if (interpretation.isDelivered && interpretation.status === 'Successful') {
+             if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
-      newBalance = user.walletBalance - amount;
-      user.walletBalance = newBalance;
-      await user.save({ session });
+      newBalance = balanceAfter;   // ✅ Already debited above
       // ⚠️ Commission + notification will run AFTER commit — see below
     }
     // ================================================
@@ -21468,14 +21511,14 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       await session.abortTransaction();
       session.endSession();
 
-      const pendingTx = new Transaction({
+           const pendingTx = new Transaction({
         userId,
         amount,
         type: 'Insurance Purchase',
         status: 'Pending',
         description: `Insurance for ${plateNumber} - PENDING`,
         balanceBefore: balanceBefore,
-        balanceAfter: balanceBefore, // NOT debited
+        balanceAfter: balanceAfter,      // ✅ User IS debited
         reference: reference,
         metadata: {
           variationCode, phone, insuredName, plateNumber,
@@ -21486,7 +21529,8 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
           vtpassAction: interpretation.action,
           vtpassDescription: interpretation.description,
           needsRequery: interpretation.needsRequery,
-          userDebited: false,
+          userDebited: true,
+          debitAmount: amount,
           pendingSince: new Date(),
           vtpassResponse: vtpassResult.data
         }
@@ -21499,50 +21543,79 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         user,
       }).catch(err => console.error('⚠️ Insurance pending notifier error:', err.message));
 
-      return res.status(200).json({
+           return res.status(200).json({
         success: true,
         pending: true,
         message: 'Your insurance purchase is being processed. We\'ll notify you once confirmed.',
         transactionId: pendingTx._id,
         status: 'Pending',
-        userDebited: false
+        newBalance: balanceAfter,
+        userDebited: true,
+        amountDebited: amount,
+        isPending: true,
+        needsRequery: interpretation.needsRequery
       });
     }
     // ================================================
     // ❌ FAILED
     // ================================================
-      else {
-      await session.abortTransaction();
+          else {
+      // ✅ User IS debited. Persist failed transaction, do NOT refund here.
+      transactionStatus = 'failed';
+
+      const failedTransaction = await createTransaction(
+        userId,
+        amount,
+        'Insurance Purchase',
+        'Failed',
+        `Insurance for ${plateNumber} - FAILED (USER DEBITED ₦${amount})`,
+        balanceBefore,
+        balanceAfter,
+        session,
+        false,
+        req.authenticationMethod || 'pin',
+        reference,
+        {
+          variationCode, phone, insuredName, plateNumber,
+          vehicleMake, vehicleModel, vehicleColor, yearOfMake,
+          state, lga, engineCapacity, chasisNumber, email,
+          userDebited: true,
+          debitAmount: amount,
+          vtpassResponse: vtpassResult.data,
+          vtpassCode: interpretation.code,
+          vtpassDescription: interpretation.description,
+          failureReason: `${interpretation.description} - USER DEBITED`
+        }
+      );
+
+      await session.commitTransaction();
       session.endSession();
 
       notifyTransactionEvent({
         status: 'Failed',
-        transaction: {
-          _id: null,
-          userId,
-          type: 'Insurance Purchase',
-          amount,
-          reference,
-        },
+        transaction: failedTransaction,
         user,
         reason: interpretation.description || 'Insurance delivery failed',
       }).catch(err => console.error('⚠️ Insurance failed notifier error:', err.message));
 
       return res.status(vtpassResult.status || 400).json({
         success: false,
-        message: interpretation.description || vtpassResult.data?.response_description || 'Insurance purchase failed',
+        message: `${interpretation.description || 'Insurance purchase failed'}. Your wallet was debited ₦${amount}. Please contact support if service was not delivered.`,
         details: vtpassResult.data,
         code: interpretation.code,
         isFailed: true,
-        userDebited: false
+        shouldShowAsFailed: true,
+        userDebited: true,
+        amountDebited: amount,
+        transactionId: failedTransaction._id
       });
     }
 
        const newTransaction = await createTransaction(
       userId,
       amount,
-      'debit',
-      transactionStatus,
+      'Insurance Purchase',
+      transactionStatus === 'successful' ? 'Successful' : transactionStatus,
       `Third Party Motor Insurance for ${plateNumber}`,
       balanceBefore,
       newBalance,
@@ -21554,8 +21627,7 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         await session.commitTransaction();
     session.endSession();
 
-    if (transactionStatus === 'successful' || transactionStatus === 'failed') {
-      await releaseActiveTransactionLock(req);
+    await releaseActiveTransactionLock(req);wait releaseActiveTransactionLock(req);
     }
 
      // ✅ Commission + notification OUTSIDE transaction
