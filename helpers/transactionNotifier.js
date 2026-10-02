@@ -79,14 +79,19 @@ async function notifyTransactionEvent({
     let userMessage;
     let userType;
 
-    if (status === 'StatusChanged') {
-      const isGood = ['Successful', 'Completed'].includes(newStatus);
+       if (status === 'StatusChanged') {
+      // ✅ Safety net — fall back if oldStatus/newStatus missing
+      const safeNew = newStatus || transaction.status || 'Updated';
+      const safeOld = oldStatus || 'Previous';
+
+      const isGood = ['Successful', 'Completed', 'Success'].includes(safeNew);
       userTitle = isGood
         ? 'Good News! Transaction Successful ✅'
-        : `Transaction Update: ${newStatus}`;
+        : `Transaction Update: ${safeNew}`;
+
       userMessage =
         `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) ` +
-        `changed from ${oldStatus} to ${newStatus}.` +
+        `changed from ${safeOld} to ${safeNew}.` +
         (reason ? ` Note: ${reason}` : '');
       userType = 'transaction_status_update';
     } else if (status === 'Pending') {
@@ -111,7 +116,7 @@ async function notifyTransactionEvent({
           : '') +
         (reason ? ` Reason: ${reason}` : '');
       userType = USER_TEMPLATES.Refunded.type;
-    } else if (status === 'Successful') {
+       } else if (status === 'Successful') {
       userTitle = USER_TEMPLATES.Successful.title;
       userMessage =
         `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) is successful.` +
@@ -119,6 +124,13 @@ async function notifyTransactionEvent({
           ? ` New balance: ₦${Number(newBalance).toFixed(2)}`
           : '');
       userType = USER_TEMPLATES.Successful.type;
+    } else if (status === 'Blocked') {
+      // ✅ Optional branch — used if any caller ever passes 'Blocked'
+      userTitle = 'Transaction Blocked 🚫';
+      userMessage =
+        `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) was blocked.` +
+        (reason ? ` ${reason}` : '');
+      userType = 'transaction_blocked';
     } else {
       userTitle = `Transaction Update: ${status}`;
       userMessage = `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) status: ${status}.`;
@@ -191,8 +203,14 @@ async function notifyTransactionEvent({
         adminTitle = ADMIN_TEMPLATES.Refunded.title;
         adminMessage = `${userName} · ${txType} · ₦${txAmount.toFixed(2)} (Ref: ${txRef}) REFUNDED.`;
       } else if (status === 'Successful') {
+             } else if (status === 'Successful') {
         adminTitle = ADMIN_TEMPLATES.Successful.title;
         adminMessage = `${userName} · ${txType} · ₦${txAmount.toFixed(2)} (Ref: ${txRef}) SUCCESSFUL.`;
+      } else if (status === 'Blocked') {
+        adminTitle = '🚫 Transaction Blocked';
+        adminMessage =
+          `${userName} · ${txType} · ₦${txAmount.toFixed(2)} (Ref: ${txRef}) BLOCKED.` +
+          (reason ? ` Reason: ${reason}` : '');
       } else {
         adminTitle = `Transaction ${status}`;
         adminMessage = `${userName} · ${txType} · ₦${txAmount.toFixed(2)} (Ref: ${txRef}) → ${status}.`;
