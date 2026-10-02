@@ -16452,9 +16452,14 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
         isPackageChange: isPackageChange
       });
 
-    } catch (error) {
+       } catch (error) {
       console.error('❌ CABLE TV CRITICAL ERROR:', error.name, error.message);
       console.error('Stack:', error.stack);
+
+      try {
+        await releaseActiveTransactionLock(req);
+        await releaseLock(req, 'cable');
+      } catch (_) {}
 
       if (error.code === 11000) {
         return res.status(409).json({
@@ -17514,27 +17519,32 @@ app.post('/api/vtpass/data/purchase',
         });
       }
       
-    } catch (error) {
-      await session.abortTransaction();
+        } catch (error) {
+      try { await session.abortTransaction(); } catch (_) {}
       console.error('💥 DATA PURCHASE ERROR:', error);
-      
-      // Handle duplicate key error from MongoDB
-      if (error.code === 11000) {
+
+      // ✅ Release locks so the user isn't stuck on hard errors
+      try {
+        await releaseActiveTransactionLock(req);
+        await releaseLock(req, 'data');
+      } catch (_) {}
+
+      if (error && error.code === 11000) {
         return res.status(409).json({
           success: false,
-          message: 'This transaction was already processed.',
-          code: 'DUPLICATE_TRANSACTION',
-          alreadyProcessed: true
+          code: 'DUPLICATE_TRANSACTION_BLOCKED',
+          message: 'You already made this exact transaction. Please wait before trying again.',
+          isDuplicate: true,
         });
       }
-      
-      res.status(500).json({ 
-        success: false, 
+
+      res.status(500).json({
+        success: false,
         message: 'Service temporarily unavailable. Please try again.',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
-       } finally {
-      try { session.endSession(); } catch (e) { /* already ended */ }
+    } finally {
+      try { session.endSession(); } catch (_) {}
     }
   }
 );
@@ -18340,23 +18350,28 @@ app.post('/api/vtpass/electricity/purchase',
         });
       }
 
-    } catch (error) {
-      await session.abortTransaction();
+      } catch (error) {
+      try { await session.abortTransaction(); } catch (_) {}
       console.error('💥 ELECTRICITY PURCHASE ERROR:', error.message);
       console.error('Error stack:', error.stack);
-      
-      // Determine if user was debited before error
+
+      // ✅ Release locks so the user isn't stuck on hard errors
+      try {
+        await releaseActiveTransactionLock(req);
+        await releaseLock(req, 'electricity');
+      } catch (_) {}
+
       const wasUserDebited = error.userDebited === true;
-      
-      return res.status(500).json({ 
-        success: false, 
+
+      return res.status(500).json({
+        success: false,
         message: error.message.includes('Insufficient') ? error.message : 'Transaction failed. Please try again.',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined,
         userDebited: wasUserDebited,
         contactSupport: wasUserDebited ? true : false
       });
-       } finally {
-      try { session.endSession(); } catch (e) { /* already ended */ }
+    } finally {
+      try { session.endSession(); } catch (_) {}
     }
   }
 );
@@ -20698,11 +20713,17 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       tokens: vtpassResult.data?.content?.tokens || []
     });
 
-   } catch (error) {
+     } catch (error) {
     try {
       await session.abortTransaction();
     } catch (e) { /* ignore */ }
     console.error('❌ Error in education purchase:', error);
+
+    try {
+      await releaseActiveTransactionLock(req);
+      await releaseLock(req, 'education');
+    } catch (_) {}
+
     if (!res.headersSent) {
       res.status(500).json({ 
         success: false, 
@@ -21589,11 +21610,17 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       purchased_code: vtpassResult.data.purchased_code
     });
 
-    } catch (error) {
+       } catch (error) {
     try {
       await session.abortTransaction();
     } catch (e) { /* ignore — may already be ended */ }
     console.error('❌ Error in insurance purchase:', error);
+
+    try {
+      await releaseActiveTransactionLock(req);
+      await releaseLock(req, 'insurance');
+    } catch (_) {}
+
     if (!res.headersSent) {
       res.status(500).json({ 
         success: false, 
@@ -24435,6 +24462,11 @@ app.post('/api/international-airtime/purchase',
           alreadyProcessed: true
         });
       }
+
+            try {
+        await releaseActiveTransactionLock(req);
+        await releaseLock(req, 'intl_airtime');
+      } catch (_) {}
 
       return res.status(500).json({ 
         success: false, 
