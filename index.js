@@ -21188,28 +21188,28 @@ function getFallbackStates() {
 // @desc    Purchase insurance with correct variation codes
 // @route   POST /api/insurance/purchase
 // @access  Private
-app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionAuth, 
+app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionAuth,
   checkGlobalPerMinuteLimit,
-  smartLimitCheck, 
-  checkTransactionLimit('insurance'), 
-  checkPerMinuteLimit('insurance'), // ✅ ADD THIS
+  smartLimitCheck,
+  checkTransactionLimit('insurance'),
+  checkPerMinuteLimit('insurance'),
   [
-  body('variationCode').notEmpty().withMessage('Variation code is required'),
-  body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
-  body('insuredName').notEmpty().withMessage('Insured name is required'),
-  body('engineCapacity').notEmpty().withMessage('Engine capacity is required'),
-  body('chasisNumber').notEmpty().withMessage('Chasis number is required'),
-  body('plateNumber').notEmpty().withMessage('Plate number is required'),
-  body('vehicleMake').notEmpty().withMessage('Vehicle make is required'),
-  body('vehicleColor').notEmpty().withMessage('Vehicle color is required'),
-  body('vehicleModel').notEmpty().withMessage('Vehicle model is required'),
-  body('yearOfMake').notEmpty().withMessage('Year of make is required'),
-  body('state').notEmpty().withMessage('State is required'),
-  body('lga').notEmpty().withMessage('LGA is required'),
-  body('email').isEmail().withMessage('Please provide a valid email')
-], async (req, res) => {
+    body('variationCode').notEmpty().withMessage('Variation code is required'),
+    body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
+    body('insuredName').notEmpty().withMessage('Insured name is required'),
+    body('engineCapacity').notEmpty().withMessage('Engine capacity is required'),
+    body('chasisNumber').notEmpty().withMessage('Chasis number is required'),
+    body('plateNumber').notEmpty().withMessage('Plate number is required'),
+    body('vehicleMake').notEmpty().withMessage('Vehicle make is required'),
+    body('vehicleColor').notEmpty().withMessage('Vehicle color is required'),
+    body('vehicleModel').notEmpty().withMessage('Vehicle model is required'),
+    body('yearOfMake').notEmpty().withMessage('Year of make is required'),
+    body('state').notEmpty().withMessage('State is required'),
+    body('lga').notEmpty().withMessage('LGA is required'),
+    body('email').isEmail().withMessage('Please provide a valid email')
+  ], async (req, res) => {
   console.log('🛡️ INSURANCE PURCHASE REQUEST');
-  
+
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
@@ -21241,17 +21241,13 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Get variation details to determine amount
-      // ================================================
-    // ✅ FIX: Get variation details to determine amount
-    // Frontend sends "private", "commercial", etc.
-    // VTpass expects numeric variation codes "1", "2", etc.
     // ================================================
-    
-    // Step 1: Map frontend variation names → VTpass numeric codes
+    // Map frontend variation names → VTpass numeric codes
+    // ================================================
     const variationNameToCode = {
       'private': '1',
       'commercial': '2',
@@ -21263,37 +21259,39 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       '3': '3',
       '4': '4',
     };
-    
-    const vtpassVariationCode = variationNameToCode[variationCode.toLowerCase?.() || variationCode] || variationCode;
+
+    const vtpassVariationCode =
+      variationNameToCode[(variationCode || '').toString().toLowerCase()] || variationCode;
     console.log(`🔄 Variation code mapped: "${variationCode}" → VTpass code: "${vtpassVariationCode}"`);
-    
-    // Step 2: Fallback amount map by VTpass numeric code
+
     const fallbackAmountMap = {
-      '1': 3000, // Private
-      '2': 5000, // Commercial
-      '3': 1500, // Tricycles
-      '4': 3000, // Motorcycle
+      '1': 3000,
+      '2': 5000,
+      '3': 1500,
+      '4': 3000,
     };
-    
-    // Step 3: Try to fetch live amount from VTpass, else use fallback
+
     let amount = fallbackAmountMap[vtpassVariationCode] || 3000;
-    
+
     try {
-      const variationsResponse = await axios.get('https://vtpass.com/api/service-variations?serviceID=ui-insure', {
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': process.env.VTPASS_API_KEY,
-          'secret-key': process.env.VTPASS_SECRET_KEY,
-        },
-        timeout: 15000,
-      });
+      const variationsResponse = await axios.get(
+        'https://vtpass.com/api/service-variations?serviceID=ui-insure',
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'api-key': process.env.VTPASS_API_KEY,
+            'secret-key': process.env.VTPASS_SECRET_KEY,
+          },
+          timeout: 15000,
+        }
+      );
 
       if (variationsResponse.data.response_description === '000') {
         const variations = variationsResponse.data.content?.variations || [];
         const selectedVariation = variations.find(
           v => v.variation_code?.toString() === vtpassVariationCode.toString()
         );
-        
+
         if (selectedVariation) {
           const liveAmount = parseFloat(selectedVariation.variation_amount) || 0;
           if (liveAmount > 0) {
@@ -21311,36 +21309,34 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     } catch (error) {
       console.log(`⚠️ Could not fetch variations from VTpass: ${error.message}, using fallback: ₦${amount}`);
     }
-    
-    // Step 4: HARD SAFETY — amount must NEVER be 0
+
     if (!amount || amount <= 0) {
       amount = fallbackAmountMap[vtpassVariationCode] || 3000;
       console.log(`🛡️ Safety net: amount was 0, forced to ₦${amount}`);
     }
-    
+
     console.log(`✅ FINAL insurance amount: ₦${amount}`);
     console.log(`✅ FINAL VTpass variation_code: "${vtpassVariationCode}"`);
 
-        // ================================================
-    // ✅ FIX: EXPLICIT LIMIT CHECK BEFORE VTpass CALL
-    // We now know the real amount, so we can check limits here.
-    // If exceeded, return error WITHOUT calling VTpass.
     // ================================================
-       const customLimits = user.customLimits || {};
+    // Explicit limit check before VTpass call
+    // ================================================
+    const customLimits = user.customLimits || {};
     const serviceLimit = customLimits['insurance'] || {};
 
     const dynamicLimits = await getTransactionLimits();
 
-    // ✅ 0 means UNLIMITED — do NOT use `||` fallback
     let perTxLimit = dynamicLimits.perTransaction.insurance;
     if (perTxLimit === undefined || perTxLimit === null) perTxLimit = 50000;
 
     let dailyLimit = dynamicLimits.daily.insurance;
     if (dailyLimit === undefined || dailyLimit === null) dailyLimit = 100000;
 
-    if (serviceLimit.perTransaction !== undefined &&
-        serviceLimit.perTransaction !== null &&
-        !isNaN(parseFloat(serviceLimit.perTransaction))) {
+    if (
+      serviceLimit.perTransaction !== undefined &&
+      serviceLimit.perTransaction !== null &&
+      !isNaN(parseFloat(serviceLimit.perTransaction))
+    ) {
       perTxLimit = parseFloat(serviceLimit.perTransaction);
       console.log(
         `🔧 Custom per-tx limit for insurance: ${
@@ -21348,9 +21344,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         }`
       );
     }
-    if (serviceLimit.dailyCap !== undefined &&
-        serviceLimit.dailyCap !== null &&
-        !isNaN(parseFloat(serviceLimit.dailyCap))) {
+    if (
+      serviceLimit.dailyCap !== undefined &&
+      serviceLimit.dailyCap !== null &&
+      !isNaN(parseFloat(serviceLimit.dailyCap))
+    ) {
       dailyLimit = parseFloat(serviceLimit.dailyCap);
       console.log(
         `🔧 Custom daily limit for insurance: ${
@@ -21359,7 +21357,6 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       );
     }
 
-    // --- Per-transaction check ---
     if (perTxLimit > 0 && amount > perTxLimit) {
       await session.abortTransaction();
       session.endSession();
@@ -21377,7 +21374,6 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       console.log(`✅ Insurance per-transaction limit is UNLIMITED`);
     }
 
-    // --- Daily check ---
     if (dailyLimit > 0) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -21425,16 +21421,15 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     if (user.walletBalance < amount) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         message: `Insufficient balance. Required: ₦${amount}, Available: ₦${user.walletBalance}`,
         code: 'INSUFFICIENT_BALANCE',
       });
     }
 
     // ================================================
-    // 🔥 IMMEDIATE DEBIT — Same policy as airtime/data
-    // Debit BEFORE calling VTpass. Refund only if VTpass says 091.
+    // Immediate debit
     // ================================================
     const balanceBefore = user.walletBalance;
     user.walletBalance -= amount;
@@ -21444,9 +21439,8 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     console.log(`💰 [INSURANCE] IMMEDIATE DEBIT: ₦${amount} | Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
 
     console.log('🚀 Calling VTpass for insurance purchase...');
-    
-    // Prepare VTpass payload for insurance purchase
-       const vtpassPayload = {
+
+    const vtpassPayload = {
       request_id: reference,
       serviceID: 'ui-insure',
       billersCode: plateNumber,
@@ -21471,10 +21465,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     const vtpassResult = await callVtpassApi('/pay', vtpassPayload);
 
     console.log('📦 VTpass Insurance Response:', JSON.stringify(vtpassResult, null, 2));
+
     let transactionStatus = 'failed';
     let newBalance = balanceAfter;
+    let newTransaction = null;
 
-    // 🔥 FIX #7: Use master interpreter instead of raw code === '000' check
     const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
     console.log(`🎯 [INSURANCE] VTpass interpretation:`, {
       code: interpretation.code,
@@ -21489,26 +21484,96 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-             if (interpretation.isDelivered && interpretation.status === 'Successful') {
+    if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
-      newBalance = balanceAfter;   // ✅ Already debited above
-      // ⚠️ Commission + notification will run AFTER commit — see below
-    }
-    // ================================================
-    // 🔄 PENDING — DO NOT debit
-    // ================================================
-    else if (interpretation.isPending) {
-      await session.abortTransaction();
+      newBalance = balanceAfter;
+
+      newTransaction = await createTransaction(
+        userId,
+        amount,
+        'Insurance Purchase',
+        'Successful',
+        `Third Party Motor Insurance for ${plateNumber}`,
+        balanceBefore,
+        newBalance,
+        session,
+        false,
+        req.authenticationMethod,
+        reference,
+        {
+          variationCode, phone, insuredName, plateNumber,
+          vehicleMake, vehicleModel, vehicleColor, yearOfMake,
+          state, lga, engineCapacity, chasisNumber, email,
+          vtpassResponse: vtpassResult.data
+        }
+      );
+
+      await session.commitTransaction();
       session.endSession();
 
-           const pendingTx = new Transaction({
+      await releaseActiveTransactionLock(req);
+
+      // Commission + notification OUTSIDE transaction
+      calculateAndAddCommission(userId, amount, 'insurance')
+        .catch(err => console.log('⚠️ Insurance commission error:', err.message));
+
+      createNotificationAndSendPush({
+        recipientId: userId,
+        title: "Insurance Purchase Successful 🛡️",
+        message: `Your ${vtpassResult.data?.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
+        type: 'transaction',
+        screen: 'transaction_details',
+        metadata: {
+          transactionId: newTransaction._id.toString(),
+          plateNumber, amount,
+          status: 'Successful'
+        }
+      }).catch(err => console.error('Insurance notif error:', err.message));
+
+      notifyAdminsOfTransaction({
+        title: '🛡️ Insurance Purchase',
+        message: `${user.fullName} bought insurance for ${plateNumber} — ₦${amount}`,
+        transactionType: 'Insurance Purchase',
+        amount: amount,
+        userName: user.fullName,
+        userEmail: user.email,
+        reference: reference,
+        status: 'Successful',
+        transactionId: newTransaction._id
+      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+
+      const certUrl =
+        vtpassResult.data?.certUrl ||
+        vtpassResult.data?.purchased_code?.replace('Download Certificate : ', '') ||
+        '';
+
+      console.log('✅ Insurance purchase completed successfully');
+      console.log('📄 Certificate URL:', certUrl);
+
+      return res.json({
+        success: true,
+        message: `Insurance purchase completed successfully`,
+        transactionId: newTransaction._id,
+        newBalance: newBalance,
+        status: 'Successful',
+        vtpassResponse: vtpassResult.data,
+        certificateUrl: certUrl,
+        purchased_code: vtpassResult.data?.purchased_code
+      });
+    }
+
+    // ================================================
+    // 🔄 PENDING
+    // ================================================
+    else if (interpretation.isPending) {
+      const pendingTx = new Transaction({
         userId,
         amount,
         type: 'Insurance Purchase',
         status: 'Pending',
         description: `Insurance for ${plateNumber} - PENDING`,
         balanceBefore: balanceBefore,
-        balanceAfter: balanceAfter,      // ✅ User IS debited
+        balanceAfter: balanceAfter,
         reference: reference,
         metadata: {
           variationCode, phone, insuredName, plateNumber,
@@ -21525,15 +21590,18 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
           vtpassResponse: vtpassResult.data
         }
       });
-      await pendingTx.save();
+      await pendingTx.save({ session });
 
-          notifyTransactionEvent({
+      await session.commitTransaction();
+      session.endSession();
+
+      notifyTransactionEvent({
         status: 'Pending',
         transaction: pendingTx,
         user,
       }).catch(err => console.error('⚠️ Insurance pending notifier error:', err.message));
 
-           return res.status(200).json({
+      return res.status(200).json({
         success: true,
         pending: true,
         message: 'Your insurance purchase is being processed. We\'ll notify you once confirmed.',
@@ -21546,11 +21614,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
         needsRequery: interpretation.needsRequery
       });
     }
+
     // ================================================
     // ❌ FAILED
     // ================================================
-          else {
-      // ✅ User IS debited. Persist failed transaction, do NOT refund here.
+    else {
       transactionStatus = 'failed';
 
       const failedTransaction = await createTransaction(
@@ -21601,81 +21669,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       });
     }
 
-       const newTransaction = await createTransaction(
-      userId,
-      amount,
-      'Insurance Purchase',
-      transactionStatus === 'successful' ? 'Successful' : transactionStatus,
-      `Third Party Motor Insurance for ${plateNumber}`,
-      balanceBefore,
-      newBalance,
-      session,
-      false,
-      req.authenticationMethod
-    );
-
-        await session.commitTransaction();
-    session.endSession();
-
-       await releaseActiveTransactionLock(req);
-    }
-
-     // ✅ Commission + notification OUTSIDE transaction
-    if (transactionStatus === 'successful') {
-      calculateAndAddCommission(userId, amount, 'insurance')
-        .catch(err => console.log('⚠️ Insurance commission error:', err.message));
-
-      // ✅ USER FCM PUSH
-      createNotificationAndSendPush({
-        recipientId: userId,
-        title: "Insurance Purchase Successful 🛡️",
-        message: `Your ${vtpassResult.data.content?.product_name || 'Third Party Motor Insurance'} for ${plateNumber} was completed successfully. Premium: ₦${amount}`,
-        type: 'transaction',
-        screen: 'transaction_details',
-        metadata: {
-          transactionId: newTransaction._id.toString(),
-          plateNumber, amount,
-          status: 'Successful'
-        }
-      }).catch(err => console.error('Insurance notif error:', err.message));
-
-      // ✅ ADMIN FCM PUSH
-      notifyAdminsOfTransaction({
-        title: '🛡️ Insurance Purchase',
-        message: `${user.fullName} bought insurance for ${plateNumber} — ₦${amount}`,
-        transactionType: 'Insurance Purchase',
-        amount: amount,
-        userName: user.fullName,
-        userEmail: user.email,
-        reference: reference,
-        status: 'Successful',
-        transactionId: newTransaction._id
-      }).catch(err => console.error('⚠️ Admin notify error:', err.message));
-    }
-
-    // Extract certificate URL from response
-    const certUrl = vtpassResult.data.certUrl || 
-                   vtpassResult.data.purchased_code?.replace('Download Certificate : ', '') || 
-                   '';
-
-    console.log('✅ Insurance purchase completed successfully');
-    console.log('📄 Certificate URL:', certUrl);
-
-    res.json({
-      success: true,
-      message: `Insurance purchase completed successfully`,
-      transactionId: newTransaction._id,
-      newBalance: newBalance,
-      status: newTransaction.status,
-      vtpassResponse: vtpassResult.data,
-      certificateUrl: certUrl,
-      purchased_code: vtpassResult.data.purchased_code
-    });
-
-       } catch (error) {
+  } catch (error) {
     try {
       await session.abortTransaction();
-    } catch (e) { /* ignore — may already be ended */ }
+    } catch (e) { /* ignore */ }
+
     console.error('❌ Error in insurance purchase:', error);
 
     try {
@@ -21684,18 +21682,18 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     } catch (_) {}
 
     if (!res.headersSent) {
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         message: 'Insurance purchase failed',
-        error: error.message 
+        error: error.message
       });
     }
   } finally {
     try {
       await session.endSession();
     } catch (e) { /* ignore — may already be ended */ }
-  }});
-
+  }
+});
 
 
 
