@@ -1,6 +1,7 @@
 // middleware/rateLimiter.js
 const mongoose = require('mongoose');
 const Transaction = mongoose.model('Transaction');
+const { sendBlockedNotification } = require('../helpers/blockedNotifier');
 
 // ============================================================
 // IN-MEMORY STORES
@@ -62,11 +63,25 @@ const preventRaceCondition = (options = {}) => {
       // ============================================================
       // LAYER 1 — PER-USER GATE (60 seconds, all services)
       // ============================================================
-      const gate = userGateCache.get(userGateKey);
+          const gate = userGateCache.get(userGateKey);
       if (gate && (now - gate.timestamp) < windowMs) {
         const elapsedMs = now - gate.timestamp;
         const waitSec = Math.ceil((windowMs - elapsedMs) / 1000);
         console.log(`🚫 [60s GATE] User ${userId} blocked — wait ${waitSec}s (last attempt ${Math.round(elapsedMs / 1000)}s ago)`);
+
+        // ✅ Notify the user that they were blocked
+        sendBlockedNotification({
+          userId,
+          reason: 'rate_limit',
+          service: serviceType || 'transaction',
+          retryAfterSeconds: waitSec,
+          metadata: {
+            gateType: 'user-60s',
+            elapsedSeconds: Math.round(elapsedMs / 1000),
+            serviceType: serviceType || 'transaction'
+          }
+        }).catch(() => {});
+
         return res.status(429).json({
           success: false,
           code: 'TRANSACTION_IN_PROGRESS',
@@ -101,8 +116,23 @@ const preventRaceCondition = (options = {}) => {
         if (!blockOnFailure && (status === 'failed' || status === 'cancelled')) {
           console.log(`✅ [60s GATE] Previous txn FAILED — allowing immediate retry`);
           // fall through to next()
-        } else {
+              } else {
           console.log(`🚫 [60s GATE-DB] User ${userId} has recent txn (${status}) ${Math.round(ageMs / 1000)}s ago — wait ${waitSec}s`);
+
+          // ✅ Notify the user that they were blocked
+          sendBlockedNotification({
+            userId,
+            reason: 'in_progress',
+            service: serviceType || 'transaction',
+            retryAfterSeconds: waitSec,
+            metadata: {
+              gateType: 'db-60s',
+              previousStatus: recentTx.status,
+              previousTransactionId: recentTx._id?.toString() || null,
+              previousAgeSeconds: Math.round(ageMs / 1000)
+            }
+          }).catch(() => {});
+
           return res.status(429).json({
             success: false,
             code: 'TRANSACTION_IN_PROGRESS',
@@ -128,10 +158,25 @@ const preventRaceCondition = (options = {}) => {
       const variationCode = req.body.variationCode || req.body.variation_code || '';
 
       const fingerprint = `${keyPrefix}_${userId}_${serviceType}_${phone}_${variationCode}_${amount}`;
-      const cached = requestCache.get(fingerprint);
+          const cached = requestCache.get(fingerprint);
       if (cached && (now - cached.timestamp) < windowMs) {
         const waitSec = Math.ceil((windowMs - (now - cached.timestamp)) / 1000);
         console.log(`🚫 [60s GATE-PAYLOAD] Duplicate payload — wait ${waitSec}s`);
+
+        // ✅ Notify the user that they were blocked
+        sendBlockedNotification({
+          userId,
+          reason: 'duplicate',
+          service: serviceType || 'transaction',
+          retryAfterSeconds: waitSec,
+          metadata: {
+            gateType: 'exact-payload',
+            serviceType: serviceType || 'transaction',
+            recipient: phone || null,
+            amount: amount || 0
+          }
+        }).catch(() => {});
+
         return res.status(429).json({
           success: false,
           code: 'DUPLICATE_TRANSACTION_CACHE',
