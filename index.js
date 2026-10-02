@@ -39,6 +39,8 @@ const Referral = require('./models/Referral');
 const AdminNotification = require('./models/AdminNotification');
 const AdminAuditLog = require('./models/AdminAuditLog');
 
+const { atomicDuplicateGuard, releaseLock, releaseActiveTransactionLock } = require('./middleware/atomicDuplicateGuard');
+
 
 
 
@@ -351,6 +353,7 @@ async function logAdminAction({
 
 const adminExportRoutes = require('./routes/adminExportRoutes');
 const { createNotificationAndSendPush } = require('./helpers/notificationHelper');
+const { notifyTransactionEvent } = require('./helpers/transactionNotifier');
 const { sendPushNotification, sendPushNotificationToMultiple } = require('./firebaseAdmin');
 console.log('🔍 firebaseAdmin loaded. sendPushNotification type:', typeof sendPushNotification);
 
@@ -2488,13 +2491,12 @@ const smartLimitCheck = async (req, res, next) => {
         'insurance', 'wallet'
       ];
       
-      if (validServiceTypes.includes(normalizedServiceType)) {
+           if (validServiceTypes.includes(normalizedServiceType)) {
         limitService = normalizedServiceType;
         console.log(`🔍 [SMART LIMIT] Explicit serviceType: "${serviceType}" → Limit Key: ${limitService}`);
         
         // Execute the limit check and return immediately
-        await checkTransactionLimit(limitService)(req, res, next);
-        return;
+        return checkTransactionLimit(limitService)(req, res, next);
       }
     }
     
@@ -2607,7 +2609,8 @@ const smartLimitCheck = async (req, res, next) => {
     console.log(`🔍 [SMART LIMIT] Final limit key: ${limitService}`);
     
     // Execute the limit check with the determined service
-    await checkTransactionLimit(limitService)(req, res, next);
+    // Execute the limit check with the determined service
+    return checkTransactionLimit(limitService)(req, res, next);
     
   } catch (error) {
     console.error('❌ Smart limit check error:', error);
@@ -2928,21 +2931,24 @@ const startBackgroundRequeryService = () => {
                 .trim();
             }
 
-            await transaction.save();
+                       await transaction.save();
             console.log(`✅ [BG-REQUERY] ${requestId} → Successful`);
 
             try {
-              await Notification.create({
-                recipient: transaction.userId,
-                title: "Transaction Completed ✅",
-                message: `Your ${transaction.type} of ₦${transaction.amount} has been confirmed.`,
-                type: 'transaction',
-                isRead: false,
-                metadata: { transactionId: transaction._id, requeryConfirmed: true }
+              const IdempotencyLock = require('./models/IdempotencyLock');
+              await IdempotencyLock.deleteOne({
+                key: `ACTIVE_USER:${transaction.userId}`,
+                lockType: 'ACTIVE_TRANSACTION'
               });
-            } catch (notifError) {
-              console.error('Notification error:', notifError.message);
+            } catch (releaseErr) {
+              console.error('⚠️ [BG-REQUERY] Active lock release failed:', releaseErr.message);
             }
+
+                       notifyTransactionEvent({
+              status: 'Successful',
+              transaction,
+              reason: 'Confirmed via VTpass requery',
+            }).catch(err => console.error('⚠️ Requery success notifier error:', err.message));
           } else {
             // Already Successful and confirmed by VTpass → mark finalized (stop rechecking)
             transaction.metadata = transaction.metadata || {};
@@ -2968,18 +2974,11 @@ const startBackgroundRequeryService = () => {
           transaction.metadata.requiresAdminReview = true;
           await transaction.save();
 
-          try {
-            await Notification.create({
-              recipient: transaction.userId,
-              title: "Transaction Under Review ⏳",
-              message: `Your ${transaction.type} of ₦${transaction.amount} is being re-verified. We'll update you shortly.`,
-              type: 'transaction_pending',
-              isRead: false,
-              metadata: { transactionId: transaction._id, downgraded: true }
-            });
-          } catch (notifError) {
-            console.error('Notification error:', notifError.message);
-          }
+                   notifyTransactionEvent({
+            status: 'Pending',
+            transaction,
+            reason: 'Re-verification by provider',
+          }).catch(err => console.error('⚠️ Requery pending notifier error:', err.message));
         }
 
         // ================================================
@@ -3021,16 +3020,12 @@ const startBackgroundRequeryService = () => {
 
               await session2.commitTransaction();
 
-              try {
-                await Notification.create({
-                  recipient: transaction.userId,
-                  title: "Transaction Reversed — Refunded 💰",
-                  message: `Your ${transaction.type} of ₦${transaction.amount} was reversed. Amount refunded to wallet.`,
-                  type: 'transaction',
-                  isRead: false,
-                  metadata: { transactionId: transaction._id, refunded: true }
-                });
-              } catch (e) { console.error('Notif error:', e.message); }
+                           notifyTransactionEvent({
+                status: 'Refunded',
+                transaction,
+                reason: 'Transaction reversed by provider',
+                newBalance: u.walletBalance,
+              }).catch(err => console.error('⚠️ Requery refund notifier error:', err.message));
             } else {
               await session2.abortTransaction();
             }
@@ -3079,15 +3074,12 @@ const startBackgroundRequeryService = () => {
 
               await session3.commitTransaction();
 
-              try {
-                await Notification.create({
-                  recipient: transaction.userId,
-                  title: "Transaction Refunded 💰",
-                  message: `Your ${transaction.type} of ₦${transaction.amount} failed. Refund credited to your wallet.`,
-                  type: 'transaction',
-                  isRead: false
-                });
-              } catch (e) { console.error('Notif error:', e.message); }
+                            notifyTransactionEvent({
+                status: 'Refunded',
+                transaction,
+                reason: interp.description || 'Delivery failed',
+                newBalance: u.walletBalance,
+              }).catch(err => console.error('⚠️ Requery refund notifier error:', err.message));
 
               console.log(`✅ [BG-REQUERY] ${requestId} → Refunded user`);
             } else {
@@ -9645,53 +9637,20 @@ app.post('/api/admin/transaction/:id/update-status', adminProtect, async (req, r
         Resolved: `Your ${transaction.type} of ₦${Number(transaction.amount).toFixed(2)} has been RESOLVED. Ref: ${transaction.reference}`
       };
 
-      const notifTitle = userFriendlyTitles[normalizedStatus] || `Transaction Status: ${normalizedStatus}`;
-      const notifMessage = userFriendlyMessages[normalizedStatus]
-        || `Your transaction (Ref: ${transaction.reference}) status updated to ${normalizedStatus}.${adminNote ? ' Note: ' + adminNote : ''}`;
-
-      await createNotificationAndSendPush({
-        recipientId: transaction.userId,
-        title: notifTitle,
-        message: notifMessage,
-        type: 'transaction_status_update',
-        screen: 'transaction_details',
-        metadata: {
-          transactionId: transaction._id.toString(),
-          oldStatus,
-          newStatus: normalizedStatus,
-          adminNote: adminNote || '',
-          amount: Number(transaction.amount),
-          reference: transaction.reference,
-        },
-      });
+           notifyTransactionEvent({
+        status: 'StatusChanged',
+        transaction,
+        oldStatus,
+        newStatus: normalizedStatus,
+        reason: adminNote || '',
+      }).catch(err => console.error('⚠️ Status-change notifier error:', err.message));
 
       console.log(`   ✅ User notified via FCM + DB: ${oldStatus} → ${normalizedStatus}`);
     } catch (notifErr) {
       console.error('   ⚠️ User status-change notification error:', notifErr.message);
     }
 
-    // ✅ NOTIFY ADMINS ABOUT STATUS CHANGE
-    notifyAdmins({
-      type: 'transaction_status_change',
-      title: `🔄 Transaction ${normalizedStatus}`,
-      message: `Transaction ${transaction.reference} (${transaction.type} · ₦${transaction.amount}) changed from ${oldStatus} to ${normalizedStatus}.`,
-      severity: normalizedStatus === 'Successful' || normalizedStatus === 'Completed'
-        ? 'success'
-        : (normalizedStatus === 'Failed' ? 'warning' : 'info'),
-      userId: transaction.userId,
-      transactionId: transaction._id,
-      transactionReference: transaction.reference,
-      transactionType: transaction.type,
-      amount: transaction.amount,
-      status: normalizedStatus,
-      metadata: {
-        oldStatus,
-        newStatus: normalizedStatus,
-        adminNote: adminNote || '',
-        changedBy: req.user._id,
-        changedByName: req.user.fullName,
-      }
-    }).catch(err => console.error('⚠️ Admin status notify error:', err.message));
+    
 
     // ============================================
     // 7. RESPOND WITH FULL DATA
@@ -13204,6 +13163,8 @@ checkPerMinuteLimit('transfer'), // ✅ Service-specific limit
           await session.commitTransaction();
       await session.endSession();
 
+      await releaseActiveTransactionLock(req);
+
       // ✅ NOTIFY ADMINS
       notifyAdminsOfTransaction({
         title: '💸 Wallet Transfer',
@@ -16247,6 +16208,8 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
           }
         });
 
+          await releaseActiveTransactionLock(req);
+
         // ⚡ Fire-and-forget: commission (outside any transaction)
         calculateAndAddCommission(userId, totalAmount, 'tv')
           .catch(err => console.log('⚠️ Commission error:', err.message));
@@ -16336,13 +16299,11 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
           }
         });
 
-        Notification.create({
-          recipient: userId,
-          title: 'TV Purchase Pending ⏳',
-          message: `Your ${serviceID.toUpperCase()} purchase is being processed. We'll confirm shortly.`,
-          type: 'transaction_pending',
-          isRead: false
-        }).catch(() => {});
+                notifyTransactionEvent({
+          status: 'Pending',
+          transaction: pendingTx,
+          user,
+        }).catch(err => console.error('⚠️ Cable pending notifier error:', err.message));
 
         console.log(`🔄 CABLE TV PENDING: ${reference}`);
         return res.status(200).json({
@@ -16405,13 +16366,13 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
           metadata: { originalTransactionId: failedTx._id, autoRefund: true }
         });
 
-        Notification.create({
-          recipient: userId,
-          title: 'TV Purchase Failed — Refunded 💰',
-          message: `Your TV purchase of ₦${totalAmount} failed. Refund credited to your wallet.`,
-          type: 'transaction',
-          isRead: false
-        }).catch(() => {});
+                notifyTransactionEvent({
+          status: 'Refunded',
+          transaction: failedTx || { _id: null, userId, type: 'Cable TV Subscription', amount: totalAmount, reference },
+          user,
+          reason: interpretation.description || 'Delivery failed',
+          newBalance: refundedBalance,
+        }).catch(err => console.error('⚠️ Cable refund notifier error:', err.message));
 
         console.log(`💰 CABLE TV REFUNDED: ${reference}`);
         return res.status(400).json({
@@ -16464,6 +16425,13 @@ console.log('📤 VTpass Payload:', JSON.stringify(vtpassPayload, null, 2));
       } else if (desc.includes('invalid smartcard') || desc.includes('invalid billerscode')) {
         userMessage = 'Invalid smartcard number. Please check and try again.';
       }
+
+         notifyTransactionEvent({
+        status: 'Failed',
+        transaction: failedTx,
+        user,
+        reason: interpretation.description || 'Cable TV delivery failed',
+      }).catch(err => console.error('⚠️ Cable failed notifier error:', err.message));
 
       console.log(`❌ CABLE TV FAILED: ${reference} - ${code}`);
 
@@ -16668,7 +16636,8 @@ app.post('/api/vtpass/airtime/purchase',
     keyPrefix: 'airtime',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('airtime', 1, 60000), // Max 1 airtime purchases per minute
+   userServiceRateLimiter('airtime', 1, 60000),
+  atomicDuplicateGuard('airtime', { windowMs: 60000, maxPerMinute: 3 }),
   [
     body('network').isIn(['mtn', 'airtel', 'glo', 'etisalat']).withMessage('Network must be one of: mtn, airtel, glo, 9mobile'),
     body('phone').isMobilePhone().withMessage('Please provide a valid phone number'),
@@ -16825,38 +16794,21 @@ app.post('/api/vtpass/airtime/purchase',
         
         console.log(`💰 [AIRTIME] REFUNDED ₦${refundAmount} to user (VTpass code 091)`);
         
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Airtime Purchase Failed — Refunded 💰",
-            message: `Your airtime purchase of ₦${amount} failed. ₦${refundAmount} has been refunded to your wallet.`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phone, amount, network, refunded: true }
-          });
-        } catch (notificationError) {
-          console.error('Error creating refund notification:', notificationError);
-        }
+               notifyTransactionEvent({
+          status: 'Refunded',
+          transaction: newTransaction || { _id: null, userId, type: 'Airtime Purchase', amount, reference },
+          user,
+          reason: interpretation.description || 'Delivery failed',
+          newBalance: newBalance,
+        }).catch(err => console.error('⚠️ Airtime refund notifier error:', err.message));
       }
       // ================================================
       // ⚠️ EXPLICIT FAILURE (VTpass failed, user was debited, no refund)
       // ================================================
-      else {
+           else {
         transactionStatus = 'Failed';
         console.log(`❌ [AIRTIME] FAILED: User debited ₦${amount}, code ${interpretation.code}: ${interpretation.description}`);
-        
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Airtime Purchase Issue ⚠️",
-            message: `Your wallet was debited ₦${amount} for airtime to ${phone}, but delivery failed. Our team will investigate.`,
-            type: 'transaction_issue',
-            isRead: false,
-            metadata: { phone, amount, network, vtpassCode: interpretation.code }
-          });
-        } catch (notificationError) {
-          console.error('Error creating notification:', notificationError);
-        }
+        // Notification fires after commit — see below.
       }
       
       // ================================================
@@ -16890,8 +16842,12 @@ app.post('/api/vtpass/airtime/purchase',
         }
       );
       
-                 await session.commitTransaction();
-      session.endSession();
+        await session.commitTransaction();
+        session.endSession();
+
+              if (transactionStatus === 'Successful' || transactionStatus === 'Failed') {
+          await releaseActiveTransactionLock(req);
+        }
 
                  // ✅ COMMISSION + NOTIFICATION NOW RUN OUTSIDE THE TRANSACTION
       if (transactionStatus === 'Successful') {
@@ -16914,37 +16870,22 @@ app.post('/api/vtpass/airtime/purchase',
           }
         }).catch(err => console.error('Airtime notif error:', err.message));
 
-      } else if (transactionStatus === 'Pending') {
-        // ✅ USER FCM PUSH (PENDING)
-        createNotificationAndSendPush({
-          recipientId: userId,
-          title: "Airtime Purchase Pending ⏳",
-          message: `Your airtime purchase of ₦${amount} for ${phone} is being processed. We'll notify you once confirmed.`,
-          type: 'transaction_pending',
-          screen: 'transaction_details',
-          metadata: {
-            transactionId: newTransaction._id.toString(),
-            phone, amount, network,
-            vtpassCode: interpretation.code,
-            action: interpretation.action,
-            status: 'Pending'
-          }
-        }).catch(err => console.error('Airtime pending notif error:', err.message));
+            } else if (transactionStatus === 'Pending') {
+        // ✅ USER + ADMIN FCM PUSH (PENDING)
+        notifyTransactionEvent({
+          status: 'Pending',
+          transaction: newTransaction,
+          user,
+        }).catch(err => console.error('⚠️ Pending notifier error:', err.message));
 
       } else if (transactionStatus === 'Failed') {
         // ✅ USER FCM PUSH (FAILED)
-        createNotificationAndSendPush({
-          recipientId: userId,
-          title: "Airtime Purchase Failed ❌",
-          message: `Your airtime purchase of ₦${amount} for ${phone} failed. Please contact support if debited.`,
-          type: 'transaction_failed',
-          screen: 'transaction_details',
-          metadata: {
-            transactionId: newTransaction._id.toString(),
-            phone, amount, network,
-            status: 'Failed'
-          }
-        }).catch(err => console.error('Airtime failed notif error:', err.message));
+              notifyTransactionEvent({
+          status: 'Failed',
+          transaction: newTransaction,
+          user,
+          reason: interpretation.description || 'Delivery failed',
+        }).catch(err => console.error('⚠️ Airtime failed notifier error:', err.message));
       }
       
       console.log(`✅ [AIRTIME] COMPLETE: ${network} - ₦${amount} → Status: ${transactionStatus} | VTpass: ${interpretation.code}/${interpretation.innerStatus}`);
@@ -17011,16 +16952,32 @@ app.post('/api/vtpass/airtime/purchase',
         });
       }
       
-    } catch (error) {
-      await session.abortTransaction();
+      } catch (error) {
+      try { await session.abortTransaction(); } catch (_) {}
       console.error('Error in airtime purchase:', error);
+
+      // ✅ Release lock on hard failure so user is not stuck
+      try {
+        await releaseActiveTransactionLock(req);
+        await releaseLock(req, 'airtime');
+      } catch (_) {}
+
+      if (error && error.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_TRANSACTION_BLOCKED',
+          message: 'You already made this exact transaction. Please wait before trying again.',
+          isDuplicate: true,
+        });
+      }
+
       res.status(500).json({ 
         success: false, 
         message: 'Internal Server Error',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     } finally {
-      session.endSession();
+      try { session.endSession(); } catch (_) {}
     }
   }
 );
@@ -17065,7 +17022,8 @@ app.post('/api/vtpass/data/purchase',
     keyPrefix: 'data',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('data', 1, 60000), // Max 1 data purchases per minute
+  userServiceRateLimiter('data', 1, 60000),
+  atomicDuplicateGuard('data', { windowMs: 60000, maxPerMinute: 3 }),
   [
     body('network').isIn(['mtn', 'airtel', 'glo', '9mobile']).withMessage('Network must be mtn, airtel, glo, or 9mobile'),
     body('phone').isMobilePhone('en-NG').withMessage('Please enter a valid Nigerian phone number'),
@@ -17243,8 +17201,10 @@ app.post('/api/vtpass/data/purchase',
           }
         );
 
-        await session.commitTransaction();
+             await session.commitTransaction();
         session.endSession();
+
+        await releaseActiveTransactionLock(req);
 
                 // ✅ Commission + notification OUTSIDE transaction
         calculateAndAddCommission(userId, amount, serviceID)
@@ -17360,15 +17320,12 @@ app.post('/api/vtpass/data/purchase',
                 await session.commitTransaction();
                console.log(`🔄 [DATA] PENDING: ${network} - ${planName} to ${phone} | code=${interpretation.code} inner=${interpretation.innerStatus}`);
 
-        // ✅ Notification fires AFTER commit
-        Notification.create({
-          recipient: userId,
-          title: "Data Purchase Pending ⏳",
-          message: `Your ${planName} data purchase for ${phone} is being processed. We'll confirm shortly.`,
-          type: 'transaction_pending',
-          isRead: false,
-          metadata: { phone, amount, network, planName, action: interpretation.action }
-        }).catch(err => console.error('Data pending notif error:', err.message));
+                // ✅ USER + ADMIN FCM PUSH (PENDING)
+        notifyTransactionEvent({
+          status: 'Pending',
+          transaction: pendingTx,
+          user,
+        }).catch(err => console.error('⚠️ Data pending notifier error:', err.message));
 
         return res.status(200).json({
           success: true,
@@ -17487,18 +17444,13 @@ app.post('/api/vtpass/data/purchase',
           metadata: { originalTransactionId: refundedTx._id, requeryRefund: true }
         }], { session });
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Data Purchase Failed — Refunded 💰",
-            message: `Your data purchase of ₦${amount} failed. Refund credited to your wallet.`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { phone, amount, network, refunded: true }
-          });
-        } catch (notificationError) {
-          console.error('Error creating refund notification:', notificationError);
-        }
+               notifyTransactionEvent({
+          status: 'Refunded',
+          transaction: refundedTx || { _id: null, userId, type: 'Data Purchase', amount, reference: requestId },
+          user,
+          reason: interpretation.description || 'Delivery failed',
+          newBalance: finalBalance,
+        }).catch(err => console.error('⚠️ Data refund notifier error:', err.message));
 
         await session.commitTransaction();
         console.log(`💰 [DATA] REFUNDED ₦${amount} to user (code 091)`);
@@ -17540,18 +17492,12 @@ app.post('/api/vtpass/data/purchase',
           }
         );
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Data Purchase Issue ⚠️",
-            message: `Your wallet was debited ₦${amount} for data to ${phone}, but delivery failed. Our team will investigate.`,
-            type: 'transaction_issue',
-            isRead: false,
-            metadata: { phone, amount, network, vtpassCode: interpretation.code }
-          });
-        } catch (notificationError) {
-          console.error('Error creating notification:', notificationError);
-        }
+               notifyTransactionEvent({
+          status: 'Failed',
+          transaction: failedTransaction,
+          user,
+          reason: interpretation.description || 'Data delivery failed',
+        }).catch(err => console.error('⚠️ Data failed notifier error:', err.message));
 
         await session.commitTransaction();
         console.log(`❌ [DATA] FAILED: ${interpretation.code} - ${interpretation.description} | User debited ₦${amount}`);
@@ -17808,7 +17754,8 @@ app.post('/api/vtpass/electricity/purchase',
     keyPrefix: 'electricity',
     excludeStatuses: ['Failed']
   }),
-  userServiceRateLimiter('electricity', 1, 60000), // Max 1 purchases per minute
+  userServiceRateLimiter('electricity', 1, 60000),
+  atomicDuplicateGuard('electricity', { windowMs: 60000, maxPerMinute: 3 }),
   [
     body('serviceID').notEmpty().withMessage('Provider required'),
     body('billersCode').isLength({ min: 11, max: 13 }).withMessage('Meter number must be 11-13 digits'),
@@ -18098,10 +18045,10 @@ app.post('/api/vtpass/electricity/purchase',
           userDebited: true, debitConfirmed: true
         });
 
-                await transaction.save({ session });
-
-        await session.commitTransaction();
+                       await session.commitTransaction();
         session.endSession();
+
+        await releaseActiveTransactionLock(req);
 
         // ✅ Commission OUTSIDE transaction
         calculateAndAddCommission(userId, amount, serviceID)
@@ -18192,19 +18139,12 @@ app.post('/api/vtpass/electricity/purchase',
 
         console.log(`🔄 [ELECTRICITY] PENDING: code=${interpretation.code} inner=${interpretation.innerStatus}`);
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Electricity Purchase Pending ⏳",
-            message: `Your electricity purchase of ₦${amount} for meter ${billersCode} is being processed. We'll confirm shortly.`,
-            type: 'transaction_pending',
-            isRead: false,
-            metadata: { meterNumber: billersCode, amount }
-          });
-        } catch (notifError) {
-          console.error('Notification error:', notifError.message);
-        }
-
+               notifyTransactionEvent({
+          status: 'Pending',
+          transaction: pendingTx,
+          user,
+        }).catch(err => console.error('⚠️ Electricity pending notifier error:', err.message));
+        
         return res.status(200).json({
           success: true,
           pending: true,
@@ -18324,18 +18264,13 @@ app.post('/api/vtpass/electricity/purchase',
 
         await session.commitTransaction();
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Electricity Purchase Failed — Refunded 💰",
-            message: `Your electricity purchase of ₦${amount} failed. ₦${amount} has been refunded to your wallet.`,
-            type: 'transaction',
-            isRead: false,
-            metadata: { meterNumber: billersCode, amount, refunded: true }
-          });
-        } catch (notifError) {
-          console.error('Notification error:', notifError.message);
-        }
+                notifyTransactionEvent({
+          status: 'Refunded',
+          transaction: refundedTx || { _id: null, userId, type: 'Electricity Purchase', amount, reference: requestId },
+          user,
+          reason: interpretation.description || 'Delivery failed',
+          newBalance: user.walletBalance,
+        }).catch(err => console.error('⚠️ Electricity refund notifier error:', err.message));
 
         return res.json({
           success: false,
@@ -18384,18 +18319,12 @@ app.post('/api/vtpass/electricity/purchase',
           errorMsg = `Amount below minimum allowed. Minimum electricity purchase: ₦2000`;
         }
 
-        try {
-          await Notification.create({
-            recipient: userId,
-            title: "Electricity Purchase Issue ⚠️",
-            message: `Your wallet was debited ₦${amount} for electricity but delivery failed. Our team will investigate.`,
-            type: 'transaction_issue',
-            isRead: false,
-            metadata: { meterNumber: billersCode, amount, vtpassCode: interpretation.code }
-          });
-        } catch (notifError) {
-          console.error('Notification error:', notifError.message);
-        }
+               notifyTransactionEvent({
+          status: 'Failed',
+          transaction: failedTransaction,
+          user,
+          reason: interpretation.description || 'Electricity delivery failed',
+        }).catch(err => console.error('⚠️ Electricity failed notifier error:', err.message));
 
         console.log(`❌ [ELECTRICITY] FAILED: ${interpretation.code} - ${interpretation.description} | User debited ₦${amount}`);
 
@@ -19381,6 +19310,8 @@ if (vtpassResult.success && vtpassResult.data?.code === '000') {
   await session.commitTransaction();
   session.endSession();
 
+  await releaseActiveTransactionLock(req);
+
   // ✅ Commission + referral (fire-and-forget, OUTSIDE transaction)
   if (transactionAmount > 0 && !isUsingCommission) {
     const commissionServiceType = getCommissionServiceType(serviceID);
@@ -19603,34 +19534,13 @@ try {
   console.error('⚠️ Admin fail notify error:', adminFailNotifErr.message);
 }
 
-// ✅ USER FCM PUSH — FAILED transaction
-try {
-  const userFailTitle =
-    serviceID === 'mtn' || serviceID === 'airtel' || serviceID === 'glo' || serviceID === 'etisalat' || serviceID === '9mobile'
-      ? 'Airtime Purchase Failed ❌'
-      : serviceID.includes('data')
-      ? 'Data Purchase Failed ❌'
-      : serviceID.includes('electric')
-      ? 'Electricity Purchase Failed ❌'
-      : serviceID === 'dstv' || serviceID === 'gotv' || serviceID === 'startimes'
-      ? 'TV Subscription Failed ❌'
-      : 'Transaction Failed ❌';
-
-  createNotificationAndSendPush({
-    recipientId: userId,
-    title: userFailTitle,
-    message: `Your transaction of ₦${transactionAmount.toFixed(2)} failed. Our team has been notified.`,
-    type: 'transaction_failed',
-    screen: 'transaction_details',
-    metadata: {
-      transactionId: failedTransactionRecord._id.toString(),
-      serviceID,
-      status: 'Failed'
-    }
-  }).catch(err => console.error('⚠️ User fail notify error:', err.message));
-} catch (userFailNotifErr) {
-  console.error('⚠️ User fail notify error:', userFailNotifErr.message);
-}
+// ✅ USER + ADMIN FCM PUSH — FAILED transaction
+notifyTransactionEvent({
+  status: 'Failed',
+  transaction: failedTransactionRecord,
+  user,
+  reason: msg || 'Delivery failed',
+}).catch(err => console.error('⚠️ Proxy failed notifier error:', err.message));
 
 // Handle LOW WALLET BALANCE error
 if (errorCode === '018' || msg.includes('LOW WALLET BALANCE')) {
@@ -20678,14 +20588,11 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       });
       await pendingTx.save();
 
-      try {
-        await Notification.create({
-          recipientId: userId,
-          title: "Education Purchase Pending ⏳",
-          message: `Your ${serviceID.toUpperCase()} purchase is being processed. We'll notify you once confirmed.`,
-          isRead: false
-        });
-      } catch (e) { console.error('Notif error:', e.message); }
+            notifyTransactionEvent({
+        status: 'Pending',
+        transaction: pendingTx,
+        user,
+      }).catch(err => console.error('⚠️ Education pending notifier error:', err.message));
 
       return res.status(200).json({
         success: true,
@@ -20699,9 +20606,23 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ❌ FAILED
     // ================================================
-    else {
+      else {
       await session.abortTransaction();
       session.endSession();
+
+      notifyTransactionEvent({
+        status: 'Failed',
+        transaction: {
+          _id: null,
+          userId,
+          type: 'Education Purchase',
+          amount,
+          reference,
+        },
+        user,
+        reason: interpretation.description || 'Education delivery failed',
+      }).catch(err => console.error('⚠️ Education failed notifier error:', err.message));
+
       return res.status(vtpassResult.status || 400).json({
         success: false,
         message: interpretation.description || vtpassResult.data?.response_description || 'Education purchase failed',
@@ -20725,8 +20646,12 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       req.authenticationMethod
     );
 
-    await session.commitTransaction();
+       await session.commitTransaction();
     session.endSession();
+
+    if (transactionStatus === 'successful' || transactionStatus === 'failed') {
+      await releaseActiveTransactionLock(req);
+    }
 
        // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
@@ -21547,14 +21472,11 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       });
       await pendingTx.save();
 
-      try {
-        await Notification.create({
-          recipientId: userId,
-          title: "Insurance Purchase Pending ⏳",
-          message: `Your insurance purchase for ${plateNumber} is being processed. We'll notify you once confirmed.`,
-          isRead: false
-        });
-      } catch (e) { console.error('Notif error:', e.message); }
+          notifyTransactionEvent({
+        status: 'Pending',
+        transaction: pendingTx,
+        user,
+      }).catch(err => console.error('⚠️ Insurance pending notifier error:', err.message));
 
       return res.status(200).json({
         success: true,
@@ -21568,9 +21490,23 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ❌ FAILED
     // ================================================
-    else {
+      else {
       await session.abortTransaction();
       session.endSession();
+
+      notifyTransactionEvent({
+        status: 'Failed',
+        transaction: {
+          _id: null,
+          userId,
+          type: 'Insurance Purchase',
+          amount,
+          reference,
+        },
+        user,
+        reason: interpretation.description || 'Insurance delivery failed',
+      }).catch(err => console.error('⚠️ Insurance failed notifier error:', err.message));
+
       return res.status(vtpassResult.status || 400).json({
         success: false,
         message: interpretation.description || vtpassResult.data?.response_description || 'Insurance purchase failed',
@@ -21594,8 +21530,12 @@ app.post('/api/insurance/purchase', protect, requireApproval, verifyTransactionA
       req.authenticationMethod
     );
 
-    await session.commitTransaction();
+        await session.commitTransaction();
     session.endSession();
+
+    if (transactionStatus === 'successful' || transactionStatus === 'failed') {
+      await releaseActiveTransactionLock(req);
+    }
 
      // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
@@ -24199,9 +24139,11 @@ app.post('/api/international-airtime/purchase',
           }
         });
 
-                await newTransaction.save({ session });
+            await newTransaction.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        await releaseActiveTransactionLock(req);
 
         // ✅ Commission (fire-and-forget, outside session)
         calculateAndAddCommission(userId, debitAmountNaira, 'airtime')
@@ -24299,32 +24241,11 @@ app.post('/api/international-airtime/purchase',
         await session.commitTransaction();
         session.endSession();
 
-               // ✅ USER FCM PUSH (PENDING)
-        createNotificationAndSendPush({
-          recipientId: userId,
-          title: "International Airtime Pending ⏳",
-          message: `Your international airtime purchase of ${currency} ${amount} for ${phoneNumber} is being processed. We'll confirm shortly.`,
-          type: 'transaction_pending',
-          screen: 'transaction_details',
-          metadata: {
-            transactionId: pendingTx._id.toString(),
-            phoneNumber, amount, currency, countryCode,
-            status: 'Pending'
-          }
-        }).catch(err => console.error('Intl-Airtime pending notif error:', err.message));
-
-        // ✅ ADMIN FCM PUSH
-        notifyAdminsOfTransaction({
-          title: '🌍 Intl Airtime Pending',
-          message: `${user.fullName}'s ${currency} ${amount} intl airtime to ${phoneNumber} (${countryCode}) is pending — ₦${debitAmountNaira.toFixed(2)}`,
-          transactionType: 'International Airtime Purchase',
-          amount: debitAmountNaira,
-          userName: user.fullName,
-          userEmail: user.email,
-          reference: requestId,
+        notifyTransactionEvent({
           status: 'Pending',
-          transactionId: pendingTx._id
-        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+          transaction: pendingTx,
+          user,
+        }).catch(err => console.error('⚠️ Intl pending notifier error:', err.message));
 
         console.log(`🔄 [INTL-AIRTIME] PENDING: code=${interpretation.code} inner=${interpretation.innerStatus}`);
 
@@ -24465,35 +24386,13 @@ app.post('/api/international-airtime/purchase',
         await session.commitTransaction();
         session.endSession();
 
-        // Notification
-              // ✅ USER FCM PUSH (FAILED + REFUNDED)
-        createNotificationAndSendPush({
-          recipientId: userId,
-          title: "International Airtime Failed — Refunded 💰",
-          message: `Your international airtime purchase of ${currency} ${amount} failed. ₦${debitAmountNaira.toFixed(2)} has been refunded to your wallet.`,
-          type: 'transaction_failed',
-          screen: 'transaction_details',
-          metadata: {
-            transactionId: failedTx._id.toString(),
-            phoneNumber, amount, currency, countryCode,
-            refunded: true,
-            refundAmount: debitAmountNaira,
-            status: 'Failed'
-          }
-        }).catch(err => console.error('Intl-Airtime failed notif error:', err.message));
-
-        // ✅ ADMIN FCM PUSH
-        notifyAdminsOfTransaction({
-          title: '🌍 Intl Airtime Failed — Refunded',
-          message: `${user.fullName}'s ${currency} ${amount} intl airtime to ${phoneNumber} failed. ₦${debitAmountNaira.toFixed(2)} refunded.`,
-          transactionType: 'International Airtime Purchase',
-          amount: debitAmountNaira,
-          userName: user.fullName,
-          userEmail: user.email,
-          reference: requestId,
-          status: 'Failed',
-          transactionId: failedTx._id
-        }).catch(err => console.error('⚠️ Admin notify error:', err.message));
+               notifyTransactionEvent({
+          status: 'Refunded',
+          transaction: failedTx,
+          user,
+          reason: interpretation.description || 'Delivery failed',
+          newBalance: refundedBalance,
+        }).catch(err => console.error('⚠️ Intl refund notifier error:', err.message));
 
         console.log(`❌ [INTL-AIRTIME] FAILED: ${interpretation.code} - ${interpretation.description} | REFUNDED`);
 
