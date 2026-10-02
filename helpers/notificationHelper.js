@@ -1,3 +1,5 @@
+//helpers/notificationHelper.js
+
 const Notification = require('../models/Notification');
 const { sendPushNotification } = require('../firebaseAdmin');
 const User = require('../models/User');
