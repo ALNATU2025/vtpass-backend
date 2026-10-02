@@ -20484,7 +20484,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
   checkGlobalPerMinuteLimit,
   smartLimitCheck,
   checkTransactionLimit('education'),
-  checkPerMinuteLimit('education'), // ✅ ADD THIS
+  checkPerMinuteLimit('education'),
   [
   body('serviceID').notEmpty().withMessage('Service ID is required'),
   body('variationCode').notEmpty().withMessage('Variation code is required'),
@@ -20514,7 +20514,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-       if (user.walletBalance < amount) {
+    if (user.walletBalance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
@@ -20524,7 +20524,6 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
 
     // ================================================
     // 🔥 IMMEDIATE DEBIT — Same policy as airtime/data
-    // Debit BEFORE calling VTpass. Refund if VTpass says not processed (091).
     // ================================================
     const balanceBefore = user.walletBalance;
     user.walletBalance -= amount;
@@ -20533,7 +20532,6 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
 
     console.log(`💰 [EDUCATION] IMMEDIATE DEBIT: ₦${amount} | Before: ₦${balanceBefore.toFixed(2)} → After: ₦${balanceAfter.toFixed(2)}`);
 
-    // Prepare VTpass payload
     const vtpassPayload = {
       request_id: reference,
       serviceID,
@@ -20543,7 +20541,6 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       quantity: quantity.toString()
     };
 
-    // Add profile ID for JAMB
     if (profileId && serviceID === 'jamb') {
       vtpassPayload.billersCode = profileId;
     }
@@ -20558,11 +20555,10 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       message: vtpassResult.data?.response_description
     });
 
-       const balanceBefore = user.walletBalance;
+    // ✅ FIX: No duplicate balanceBefore declaration here
     let transactionStatus = 'failed';
-    let newBalance = balanceBefore;
+    let newBalance = balanceAfter;
 
-    // 🔥 FIX #6: Use master interpreter instead of raw code === '000' check
     const interpretation = interpretVtpassResponse(vtpassResult.data, 'purchase');
     console.log(`🎯 [EDUCATION] VTpass interpretation:`, {
       code: interpretation.code,
@@ -20577,26 +20573,25 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ✅ DELIVERED
     // ================================================
-           if (interpretation.isDelivered && interpretation.status === 'Successful') {
+    if (interpretation.isDelivered && interpretation.status === 'Successful') {
       transactionStatus = 'successful';
-      newBalance = balanceAfter;   // ✅ Already debited above — no second debit
-
-      // ⚠️ Commission + notification will run AFTER commit — see below
-    }    // ================================================
-    // 🔄 PENDING — DO NOT debit, create pending record
+      newBalance = balanceAfter;
+    }
+    // ================================================
+    // 🔄 PENDING
     // ================================================
     else if (interpretation.isPending) {
       await session.abortTransaction();
       session.endSession();
 
-           const pendingTx = new Transaction({
+      const pendingTx = new Transaction({
         userId,
         amount,
         type: 'Education Purchase',
         status: 'Pending',
         description: `${serviceID.toUpperCase()} purchase for ${phone} - PENDING`,
         balanceBefore: balanceBefore,
-        balanceAfter: balanceAfter,      // ✅ User IS debited
+        balanceAfter: balanceAfter,
         reference: reference,
         metadata: {
           serviceID, variationCode, phone, profileId,
@@ -20605,21 +20600,21 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
           vtpassAction: interpretation.action,
           vtpassDescription: interpretation.description,
           needsRequery: interpretation.needsRequery,
-          userDebited: true,             // ✅ Changed
-          debitAmount: amount,           // ✅ Added
+          userDebited: true,
+          debitAmount: amount,
           pendingSince: new Date(),
           vtpassResponse: vtpassResult.data
         }
       });
       await pendingTx.save();
 
-            notifyTransactionEvent({
+      notifyTransactionEvent({
         status: 'Pending',
         transaction: pendingTx,
         user,
       }).catch(err => console.error('⚠️ Education pending notifier error:', err.message));
 
-           return res.status(200).json({
+      return res.status(200).json({
         success: true,
         pending: true,
         message: 'Your education purchase is being processed. We\'ll notify you once confirmed.',
@@ -20635,9 +20630,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
     // ================================================
     // ❌ FAILED
     // ================================================
-      else {
-      // ✅ User IS debited. Persist the failed transaction, do NOT refund here.
-      // Refunds happen only when VTpass explicitly says code 091 (transactions below).
+    else {
       transactionStatus = 'failed';
 
       const failedTransaction = await createTransaction(
@@ -20686,7 +20679,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       });
     }
 
-               const newTransaction = await createTransaction(
+    const newTransaction = await createTransaction(
       userId,
       amount,
       'Education Purchase',
@@ -20699,17 +20692,16 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       req.authenticationMethod
     );
 
-       await session.commitTransaction();
+    await session.commitTransaction();
     session.endSession();
 
     await releaseActiveTransactionLock(req);
 
-       // ✅ Commission + notification OUTSIDE transaction
+    // ✅ Commission + notification OUTSIDE transaction
     if (transactionStatus === 'successful') {
       calculateAndAddCommission(userId, amount, serviceID)
         .catch(err => console.log('⚠️ Education commission error:', err.message));
 
-      // ✅ USER FCM PUSH
       createNotificationAndSendPush({
         recipientId: userId,
         title: "Education Purchase Successful 🎓",
@@ -20723,7 +20715,6 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
         }
       }).catch(err => console.error('Education notif error:', err.message));
 
-      // ✅ ADMIN FCM PUSH
       notifyAdminsOfTransaction({
         title: '🎓 Education Purchase',
         message: `${user.fullName} bought ${serviceID.toUpperCase()} for ${phone} — ₦${amount}`,
@@ -20749,7 +20740,7 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
       tokens: vtpassResult.data?.content?.tokens || []
     });
 
-     } catch (error) {
+  } catch (error) {
     try {
       await session.abortTransaction();
     } catch (e) { /* ignore */ }
@@ -20766,13 +20757,12 @@ app.post('/api/education/purchase', protect, requireApproval, verifyTransactionA
         message: 'Education purchase failed' 
       });
     }
-   } finally {
+  } finally {
     try {
       await session.endSession();
     } catch (e) { /* already ended */ }
   }
 });
-
 
 
 // @desc    Get insurance variations automatically from VTpass
