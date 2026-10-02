@@ -50,8 +50,8 @@ function buildMessage(reason, retryAfterSeconds) {
     case 'rate_limit':
       return `You already made a transaction in the last minute. Only one transaction per minute is allowed. Please wait ${wait} seconds.`;
 
-    case 'in_progress':
-      return `Your previous transaction is still being processed. Please wait ${wait} seconds before starting another.`;
+     case 'in_progress':
+      return `You can only make one transaction per minute. You have ${wait} seconds left before you can try again.`;
 
     case 'velocity':
       return `You are transacting too frequently. Please wait ${wait} seconds.`;
