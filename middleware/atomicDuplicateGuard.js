@@ -113,9 +113,9 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
 
       if (activeTransaction) {
         const retryAfterSeconds = getRetryAfterSeconds(activeTransaction.expiresAt, lockMs);
-        console.warn(`🚫 [ACTIVE-TXN] User ${userId} blocked — ${retryAfterSeconds}s remaining`);
+        console.warn(`🚫 [ACTIVE-TXN] User ${userId} blocked — 60s window active, ${retryAfterSeconds}s remaining`);
 
-        // ✅ Notify the user that they were blocked
+                // ✅ Notify the user that they were blocked
         sendBlockedNotification({
           userId,
           reason: 'in_progress',
@@ -123,6 +123,7 @@ function atomicDuplicateGuard(serviceKey, opts = {}) {
           retryAfterSeconds,
           metadata: {
             gateType: 'active-lock',
+            totalWindowSeconds: 60,
             previousService: activeTransaction.serviceKey || null,
             previousLockId: activeTransaction._id?.toString() || null
           }
