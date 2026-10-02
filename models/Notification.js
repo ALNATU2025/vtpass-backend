@@ -60,12 +60,13 @@ const notificationSchema = new mongoose.Schema({
       'payment_success',
       'payment_failed',
 
-      // ---- Money movement ----
+          // ---- Money movement ----
       'wallet_funded',
       'wallet_funding',
       'wallet_debited',
       'refund',
       'refund_credited',
+      'transaction_refunded',
       'transfer_sent',
       'transfer_received',
 
@@ -115,6 +116,22 @@ notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
 notificationSchema.index({ type: 1, createdAt: -1 });
 notificationSchema.index({ isGeneral: 1, createdAt: -1 });
 notificationSchema.index({ createdAt: -1 });
+
+// ==================== SYNC HOOK ====================
+// Keeps top-level pushSent/pushError synced with metadata.pushSent/pushError.
+// The helper writes to metadata (Mixed field); this mirrors it upward so
+// admin queries on the top-level field get accurate data.
+notificationSchema.pre('save', function(next) {
+  if (this.metadata && typeof this.metadata === 'object') {
+    if (typeof this.metadata.pushSent === 'boolean') {
+      this.pushSent = this.metadata.pushSent;
+    }
+    if (this.metadata.pushError !== undefined) {
+      this.pushError = this.metadata.pushError;
+    }
+  }
+  next();
+});
 
 // ==================== INSTANCE METHODS ====================
 
@@ -186,10 +203,8 @@ notificationSchema.methods.isForUser = function(userId) {
  */
 notificationSchema.statics.getUnreadCount = async function(userId) {
   return await this.countDocuments({
-    $or: [
-      { recipient: userId, isRead: false },
-      { recipient: null, readBy: { $ne: userId } }
-    ]
+    recipient: userId,
+    isRead: false
   });
 };
 
