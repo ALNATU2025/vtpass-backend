@@ -1,88 +1,43 @@
 // helpers/transactionNotifier.js
 // ============================================================
 // SINGLE SOURCE OF TRUTH for transaction notifications.
+//
 // Fires HIGH-PRIORITY FCM push + DB row + Socket.IO for:
 //   - PENDING
 //   - FAILED
 //   - REFUND
 //   - STATUS CHANGE (admin overrides)
-// to BOTH the affected user AND every admin.
+//   - SUCCESSFUL
 //
-// Called from every transaction route. Never fires twice.
-// Never throws — always returns a result object.
+// to BOTH the affected user AND every admin.
+// Never fires twice. Never throws.
 // ============================================================
 
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { createNotificationAndSendPush } = require('./notificationHelper');
 
-// ---------- Message + title templates per status ----------
+// ---------- USER TITLE TEMPLATES ----------
 const USER_TEMPLATES = {
-  Pending: {
-    title: 'Transaction Pending ⏳',
-    type: 'transaction_pending',
-  },
-  Failed: {
-    title: 'Transaction Failed ❌',
-    type: 'transaction_failed',
-  },
-  Refunded: {
-    title: 'Transaction Refunded 💰',
-    type: 'transaction_refunded',
-  },
-  Successful: {
-    title: 'Transaction Successful ✅',
-    type: 'transaction',
-  },
-  StatusChanged: {
-    title: 'Transaction Status Updated 🔄',
-    type: 'transaction_status_update',
-  },
+  Pending: { title: 'Transaction Pending ⏳', type: 'transaction_pending' },
+  Failed: { title: 'Transaction Failed ❌', type: 'transaction_failed' },
+  Refunded: { title: 'Transaction Refunded 💰', type: 'transaction_refunded' },
+  Successful: { title: 'Transaction Successful ✅', type: 'transaction' },
+  StatusChanged: { title: 'Transaction Status Updated 🔄', type: 'transaction_status_update' },
 };
 
+// ---------- ADMIN TITLE TEMPLATES ----------
 const ADMIN_TEMPLATES = {
-  Pending: {
-    title: '⏳ Pending Transaction',
-    type: 'admin_activity',
-    severity: 'info',
-  },
-  Failed: {
-    title: '❌ Failed Transaction',
-    type: 'admin_activity',
-    severity: 'warning',
-  },
-  Refunded: {
-    title: '💰 Refund Issued',
-    type: 'admin_refund',
-    severity: 'warning',
-  },
-  Successful: {
-    title: '✅ Successful Transaction',
-    type: 'admin_transaction',
-    severity: 'success',
-  },
-  StatusChanged: {
-    title: '🔄 Status Changed (Admin)',
-    type: 'admin_activity',
-    severity: 'info',
-  },
+  Pending: { title: '⏳ Pending Transaction' },
+  Failed: { title: '❌ Failed Transaction' },
+  Refunded: { title: '💰 Refund Issued' },
+  Successful: { title: '✅ Successful Transaction' },
+  StatusChanged: { title: '🔄 Status Changed (Admin)' },
 };
 
 // ============================================================
 // MAIN FUNCTION
 // ============================================================
-/**
- * Notify user AND all admins about a transaction event.
- *
- * @param {Object} opts
- * @param {String} opts.status           'Pending' | 'Failed' | 'Refunded' | 'Successful' | 'StatusChanged'
- * @param {Object} opts.transaction      The Mongoose Transaction doc OR a plain object with _id, userId, type, amount, reference
- * @param {String} [opts.oldStatus]      For StatusChanged only
- * @param {String} [opts.newStatus]      For StatusChanged only
- * @param {String} [opts.reason]         Free-form reason (refund reason, admin note, failure reason)
- * @param {Object} [opts.user]           Optional pre-loaded user object (avoids extra DB hit)
- * @param {Number} [opts.newBalance]     Optional post-event wallet balance to include in message
- */
 async function notifyTransactionEvent({
   status,
   transaction,
@@ -100,7 +55,7 @@ async function notifyTransactionEvent({
       return result;
     }
 
-    // ---------------- Load user if not provided ----------------
+    // ---------- Load user if not provided ----------
     let txnUser = user;
     if (!txnUser) {
       try {
@@ -119,14 +74,16 @@ async function notifyTransactionEvent({
     const txRef = transaction.reference || transaction.transactionId || '';
     const txId = transaction._id?.toString() || '';
 
-    // ---------------- Build USER message ----------------
+    // ---------- Build USER message ----------
     let userTitle;
     let userMessage;
     let userType;
 
     if (status === 'StatusChanged') {
       const isGood = ['Successful', 'Completed'].includes(newStatus);
-      userTitle = isGood ? 'Good News! Transaction Successful ✅' : `Transaction Update: ${newStatus}`;
+      userTitle = isGood
+        ? 'Good News! Transaction Successful ✅'
+        : `Transaction Update: ${newStatus}`;
       userMessage =
         `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) ` +
         `changed from ${oldStatus} to ${newStatus}.` +
@@ -149,14 +106,18 @@ async function notifyTransactionEvent({
       userMessage =
         `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) ` +
         `has been refunded to your wallet.` +
-        (newBalance !== null ? ` New balance: ₦${Number(newBalance).toFixed(2)}` : '') +
+        (newBalance !== null
+          ? ` New balance: ₦${Number(newBalance).toFixed(2)}`
+          : '') +
         (reason ? ` Reason: ${reason}` : '');
       userType = USER_TEMPLATES.Refunded.type;
     } else if (status === 'Successful') {
       userTitle = USER_TEMPLATES.Successful.title;
       userMessage =
         `Your ${txType} of ₦${txAmount.toFixed(2)} (Ref: ${txRef}) is successful.` +
-        (newBalance !== null ? ` New balance: ₦${Number(newBalance).toFixed(2)}` : '');
+        (newBalance !== null
+          ? ` New balance: ₦${Number(newBalance).toFixed(2)}`
+          : '');
       userType = USER_TEMPLATES.Successful.type;
     } else {
       userTitle = `Transaction Update: ${status}`;
@@ -164,7 +125,7 @@ async function notifyTransactionEvent({
       userType = 'transaction_status_update';
     }
 
-    // ---------------- Notify USER ----------------
+    // ---------- Notify USER ----------
     try {
       const userResult = await createNotificationAndSendPush({
         recipientId: transaction.userId,
@@ -184,13 +145,15 @@ async function notifyTransactionEvent({
         },
       });
       result.userNotified = userResult?.success === true;
-      console.log(`📨 [TXN-NOTIFY] User ${userEmail} notified (${status}) → pushSent=${userResult?.pushSent}`);
+      console.log(
+        `📨 [TXN-NOTIFY] User ${userEmail} notified (${status}) → pushSent=${userResult?.pushSent}`
+      );
     } catch (e) {
       console.error('❌ [TXN-NOTIFY] User notify failed:', e.message);
       result.errors.push(`user: ${e.message}`);
     }
 
-    // ---------------- Notify ADMINS ----------------
+    // ---------- Notify ADMINS ----------
     try {
       const adminUsers = await User.find({
         $or: [
@@ -259,11 +222,16 @@ async function notifyTransactionEvent({
           });
           adminsNotified += 1;
         } catch (adminErr) {
-          console.error(`⚠️ [TXN-NOTIFY] Admin ${admin.email} notify failed:`, adminErr.message);
+          console.error(
+            `⚠️ [TXN-NOTIFY] Admin ${admin.email} notify failed:`,
+            adminErr.message
+          );
         }
       }
       result.adminsNotified = adminsNotified;
-      console.log(`📨 [TXN-NOTIFY] Notified ${adminsNotified}/${adminUsers.length} admins (${status})`);
+      console.log(
+        `📨 [TXN-NOTIFY] Notified ${adminsNotified}/${adminUsers.length} admins (${status})`
+      );
     } catch (e) {
       console.error('❌ [TXN-NOTIFY] Admin notify loop failed:', e.message);
       result.errors.push(`admins: ${e.message}`);
