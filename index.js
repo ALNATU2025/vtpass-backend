@@ -4133,21 +4133,21 @@ const createTransaction = async (
       ...additionalData
     };
 
-    const newTransaction = new Transaction({
-      transactionId: txReference, // Use same as reference for consistency
-      userId,
-      type,
-      amount,
-      status, // Should be 'Successful', 'Failed', 'Pending', etc.
-      description,
-      balanceBefore,
-      balanceAfter,
-      reference: txReference, // Single source of truth
-      isCommission,
-      authenticationMethod,
-      metadata: fullMetadata,
-      // Remove timestamp since Transaction model has timestamps: true
-    });
+  const newTransaction = new Transaction({
+  transactionId: txReference,
+  userId,
+  type,
+  amount,
+  status,
+  description,
+  balanceBefore,
+  balanceAfter,
+  reference: txReference,
+  isCommission,
+  authenticationMethod,
+  gateway: 'DalabaPay App',          // ✅ Explicit — never falls back to old default
+  metadata: fullMetadata,
+});
 
     // Save with session if provided
     let savedTransaction;
