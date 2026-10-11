@@ -17,7 +17,7 @@ const metadataSchema = new mongoose.Schema({
     customerAddress: { type: String },
     exchangeReference: { type: String },
     vtpassResponse: { type: mongoose.Schema.Types.Mixed },
-    paystackData: { type: mongoose.Schema.Types.Mixed },
+    gatewayData: { type: mongoose.Schema.Types.Mixed },
 
     // ✅ NEW: Admin wallet action audit fields
     // Must be declared here or Mongoose will drop them silently.
@@ -180,11 +180,11 @@ resolutionNote: String,
     isCommission: { type: Boolean, default: false, index: true },
     service: { type: String, default: '', index: true },
         authenticationMethod: {
-        type: String,
-        enum: ['pin', 'biometric', 'none', 'paystack', 'manual', 'admin'],
-        default: 'none'
-    },
-    gateway: { type: String, default: 'paystack' },
+    type: String,
+    enum: ['pin', 'biometric', 'none', 'manual', 'admin'],
+    default: 'none'
+},
+    gateway: { type: String, default: 'DalabaPay App' },
     gatewayResponse: { type: mongoose.Schema.Types.Mixed },
     gatewayReference: { type: String, index: true },
     retryCount: { type: Number, default: 0, max: 3 },
