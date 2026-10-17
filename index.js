@@ -835,6 +835,14 @@ dotenv.config();
 // ==================== INITIALIZE EXPRESS APP FIRST ====================
 const app = express();
 
+// ==================== DEBUG ROUTE GUARD ====================
+// Debug/diagnostic endpoints leak secrets and data. They are switched off
+// unless ENABLE_DEBUG_ROUTES=true is set (never set this in production).
+app.use(['/api/debug', '/api/international-airtime/public-debug'], (req, res, next) => {
+  if (process.env.ENABLE_DEBUG_ROUTES === 'true') return next();
+  return res.status(404).json({ success: false, message: 'Not found' });
+});
+
 // ==================== TEMPORARY FIREBASE KEY DIAGNOSTIC ====================
 app.get('/api/debug/firebase-key', (req, res) => {
   try {
@@ -1271,6 +1279,14 @@ app.use(userActivityTracker);
 // MUST BE REGISTERED BEFORE ANY OTHER ROUTES THAT MIGHT MATCH
 
 // Block ALL funding endpoints that are not the dedicated virtual account
+// Test endpoints that could credit a wallet without payment are disabled.
+['/api/wallet/quick-test', '/api/wallet/test-top-up', '/api/wallet/debug'].forEach((p) => {
+  app.all(p, (req, res) => {
+    console.warn(`🚨 [SECURITY] Blocked test wallet endpoint ${p} from IP ${req.ip}`);
+    return res.status(404).json({ success: false, message: 'Not found' });
+  });
+});
+
 app.all('/api/wallet/top-up', (req, res) => {
   console.warn(`🚨 [SECURITY] Unauthorized top-up attempt from IP ${req.ip}`);
   console.warn(`🔍 Headers: ${JSON.stringify(req.headers)}`);
@@ -13099,7 +13115,11 @@ checkPerMinuteLimit('transfer'),
   
   const { receiverEmail, amount, senderId } = req.body;
   const userId = req.user._id;
-  const actualSenderId = senderId || userId;
+  // Always debit the authenticated user. Never trust a senderId from the body.
+  if (senderId && String(senderId) !== String(userId)) {
+    console.warn(`⚠️ /api/transfer: ignoring mismatched senderId ${senderId} for user ${userId}`);
+  }
+  const actualSenderId = userId;
   
   const maxRetries = 3;
   let retryCount = 0;
@@ -22099,8 +22119,8 @@ const calculateAndAddReferralCommission = async (purchaserUserId, amount, servic
 
 // @desc    Find user by email
 // @route   GET /api/users/find-by-email/:email
-// @access  Public (for virtual account backend integration)
-app.get('/api/users/find-by-email/:email', async (req, res) => {
+// @access  Private (balance is never returned)
+app.get('/api/users/find-by-email/:email', protect, async (req, res) => {
   try {
     const { email } = req.params;
     
@@ -22119,8 +22139,7 @@ app.get('/api/users/find-by-email/:email', async (req, res) => {
       user: {
         _id: user._id,
         email: user.email,
-        fullName: user.fullName,
-        walletBalance: user.walletBalance
+        fullName: user.fullName
       }
     });
   } catch (error) {
@@ -22444,9 +22463,14 @@ app.get('/api/transactions/check-reference/:reference', protect, async (req, res
 
 
 // Add this route to your main backend (index.js)
-app.post('/api/transactions/record', async (req, res) => {
+app.post('/api/transactions/record', protect, async (req, res) => {
   try {
-    const { userId, amount, reference, type, status, description, service, metadata } = req.body;
+    const { amount, reference, type, status, description, service, metadata } = req.body;
+    // Records are always created for the signed-in user.
+    const userId = req.user._id;
+    if (!reference) {
+      return res.status(400).json({ success: false, message: 'reference is required' });
+    }
     
     // Check if transaction already exists
     const existingTransaction = await Transaction.findOne({ reference, userId });
