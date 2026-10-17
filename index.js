@@ -1465,6 +1465,7 @@ app.use(async (req, res, next) => {
       '/api/users/balance',
       '/api/users/commission-balance',
       '/api/commission/balance',
+      '/api/commission/rates',
       '/api/transactions',
       '/api/commission/transactions',
       '/api/commission/stats',
@@ -4885,6 +4886,76 @@ const awardIndirectReferralBonus = async (referredUserId, mongooseSession = null
 
 
 
+// Resolve the commission rate for a service type string exactly as
+// calculateAndAddCommission does. Shared with GET /api/commission/rates so
+// the app's "estimated commission" always matches what is credited.
+function resolveCommissionRate(lowerType, settings) {
+  let rate = 0.003; // default 0.3%
+
+  if (settings) {
+    // 1. AIRTIME — 0.5%
+    if (
+      (lowerType.includes('mtn') ||
+        lowerType.includes('airtel') ||
+        lowerType.includes('glo') ||
+        lowerType.includes('etisalat') ||
+        lowerType.includes('9mobile')) &&
+      !lowerType.includes('data')
+    ) {
+      rate = settings.airtimeCommissionRate || 0.005;
+      console.log('✅ Airtime rate:', rate);
+    }
+    // 2. DATA — 0.5%
+    else if (lowerType.includes('data')) {
+      rate = typeof settings.dataCommissionRate !== 'undefined'
+        ? settings.dataCommissionRate
+        : 0.005;
+      console.log('✅ Data rate:', rate);
+    }
+    // 3. ELECTRICITY — 0.4%
+    else if (
+      lowerType.includes('electric') ||
+      lowerType.includes('ikeja') ||
+      lowerType.includes('eko') ||
+      lowerType.includes('abuja') ||
+      lowerType.includes('ibadan') ||
+      lowerType.includes('enugu') ||
+      lowerType.includes('kano') ||
+      lowerType.includes('ph')
+    ) {
+      rate = settings.electricityCommissionRate || 0.004;
+      console.log('✅ Electricity rate:', rate);
+    }
+    // 4. CABLE TV — 0.5%
+    else if (
+      lowerType.includes('dstv') ||
+      lowerType.includes('gotv') ||
+      lowerType.includes('startimes') ||
+      lowerType === 'tv'
+    ) {
+      rate = settings.cableTvCommissionRate || 0.005;
+      console.log('✅ Cable TV rate:', rate);
+    }
+    // 5. EDUCATION — 0.5%
+    else if (lowerType.includes('education')) {
+      rate = settings.educationCommissionRate || 0.005;
+      console.log('✅ Education rate:', rate);
+    }
+    // 6. INSURANCE — 0.4%
+    else if (lowerType.includes('insurance')) {
+      rate = settings.insuranceCommissionRate || 0.004;
+      console.log('✅ Insurance rate:', rate);
+    }
+    // 7. DEFAULT — 0.3%
+    else {
+      rate = settings.commissionRate || 0.003;
+      console.log('✅ Default rate:', rate);
+    }
+  }
+
+  return rate;
+}
+
 // CALCULATE COMMISSION - UPDATED RATES PER SERVICE TYPE
 // ==================== CALCULATE COMMISSION - NO SESSION, FIRE-AND-FORGET NOTIFICATIONS ====================
 // ✅ CRITICAL: This function must NEVER be called inside a MongoDB transaction.
@@ -4928,69 +4999,8 @@ const calculateAndAddCommission = async (userId, amount, serviceType, isUsingCom
     // Load settings (NO session)
     const settings = await Settings.findOne();
 
-    // Determine rate
-    let rate = 0.003; // default 0.3%
-
-    if (settings) {
-      // 1. AIRTIME — 0.5%
-      if (
-        (lowerType.includes('mtn') ||
-          lowerType.includes('airtel') ||
-          lowerType.includes('glo') ||
-          lowerType.includes('etisalat') ||
-          lowerType.includes('9mobile')) &&
-        !lowerType.includes('data')
-      ) {
-        rate = settings.airtimeCommissionRate || 0.005;
-        console.log('✅ Airtime rate:', rate);
-      }
-      // 2. DATA — 0.5%
-      else if (lowerType.includes('data')) {
-        rate = typeof settings.dataCommissionRate !== 'undefined'
-          ? settings.dataCommissionRate
-          : 0.005;
-        console.log('✅ Data rate:', rate);
-      }
-      // 3. ELECTRICITY — 0.4%
-      else if (
-        lowerType.includes('electric') ||
-        lowerType.includes('ikeja') ||
-        lowerType.includes('eko') ||
-        lowerType.includes('abuja') ||
-        lowerType.includes('ibadan') ||
-        lowerType.includes('enugu') ||
-        lowerType.includes('kano') ||
-        lowerType.includes('ph')
-      ) {
-        rate = settings.electricityCommissionRate || 0.004;
-        console.log('✅ Electricity rate:', rate);
-      }
-      // 4. CABLE TV — 0.5%
-      else if (
-        lowerType.includes('dstv') ||
-        lowerType.includes('gotv') ||
-        lowerType.includes('startimes') ||
-        lowerType === 'tv'
-      ) {
-        rate = settings.cableTvCommissionRate || 0.005;
-        console.log('✅ Cable TV rate:', rate);
-      }
-      // 5. EDUCATION — 0.5%
-      else if (lowerType.includes('education')) {
-        rate = settings.educationCommissionRate || 0.005;
-        console.log('✅ Education rate:', rate);
-      }
-      // 6. INSURANCE — 0.4%
-      else if (lowerType.includes('insurance')) {
-        rate = settings.insuranceCommissionRate || 0.004;
-        console.log('✅ Insurance rate:', rate);
-      }
-      // 7. DEFAULT — 0.3%
-      else {
-        rate = settings.commissionRate || 0.003;
-        console.log('✅ Default rate:', rate);
-      }
-    }
+    // Determine rate (shared resolver — see resolveCommissionRate)
+    let rate = resolveCommissionRate(lowerType, settings);
 
     const cleanAmount = parseFloat(amount);
     if (isNaN(cleanAmount) || cleanAmount <= 0) {
@@ -6033,11 +6043,35 @@ app.post('/api/auth/check-duplicates', [
   }
 });
 
+// ==================== LOGIN IDENTIFIER HELPERS ====================
+// Nigerian numbers may be stored as 0803..., 234803..., +234803... or 803...
+function nigerianPhoneVariants(raw) {
+  const digits = String(raw || '').replace(/[^\d]/g, '');
+  let local = digits;
+  if (local.startsWith('234')) local = local.slice(3);
+  if (local.startsWith('0')) local = local.slice(1);
+  if (!/^\d{10}$/.test(local)) return [String(raw || '').trim()];
+  return [`0${local}`, `234${local}`, `+234${local}`, local];
+}
+
+function isEmailOrPhoneIdentifier(value) {
+  const v = String(value || '').trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return true;
+  const compact = v.replace(/[\s-]/g, '');
+  return /^(\+?234|0)[789][01]\d{8}$/.test(compact);
+}
+
 // @desc    Authenticate a user - IMPROVED VERSION with detailed validation
 // @route   POST /api/users/login
 // @access  Public
 app.post('/api/users/login', [
-  body('email').isEmail().withMessage('Please provide a valid email'),
+  // Accepts an email address OR a phone number in the `email` field
+  // (the redesigned app lets users log in with either).
+  body('email')
+    .isString().withMessage('Please provide your email or phone number')
+    .bail()
+    .custom((value) => isEmailOrPhoneIdentifier(value))
+    .withMessage('Please provide a valid email address or phone number'),
   body('password').notEmpty().withMessage('Password is required')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -6052,21 +6086,34 @@ app.post('/api/users/login', [
   try {
     console.log(`🔐 LOGIN ATTEMPT: ${email}`);
     
-    // First check if user exists by email
-    const user = await User.findOne({ 
-      email: email.toLowerCase().trim() 
-    });
+    // Look the user up by email, or by phone number when a phone was entered
+    let user = null;
+    const loginIdentifier = String(email).trim();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginIdentifier)) {
+      user = await User.findOne({ email: loginIdentifier.toLowerCase() });
+    } else {
+      const phoneMatches = await User.find({
+        phone: { $in: nigerianPhoneVariants(loginIdentifier) }
+      }).limit(2);
+      if (phoneMatches.length > 1) {
+        await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `Ambiguous phone login: ${loginIdentifier}`);
+        return res.status(400).json({
+          success: false,
+          message: 'This phone number is linked to more than one account. Please log in with your email address.'
+        });
+      }
+      user = phoneMatches[0] || null;
+    }
     
     if (!user) {
       console.log(`❌ USER NOT FOUND: ${email}`);
       await logAuthAttempt(null, 'login', ipAddress, userAgent, false, `User not found: ${email}`);
       
-      // Check if it might be a phone number login attempt
-      const phoneUser = await User.findOne({ phone: email.trim() });
-      if (phoneUser) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Email not found, but this phone number is registered. Please use your registered email to login.' 
+      // Phone number entered but no account uses it
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginIdentifier)) {
+        return res.status(400).json({
+          success: false,
+          message: 'No account found with this phone number. Please check it or log in with your email.'
         });
       }
       
@@ -13079,6 +13126,109 @@ app.get('/api/transactions/statistics', adminProtect, [
 
 
 
+// ==================== REDESIGN SUPPORT ENDPOINTS ====================
+
+// @desc    Commission rate per service, as applied by calculateAndAddCommission.
+//          The app shows "Estimated commission" before the user pays.
+// @route   GET /api/commission/rates
+// @access  Private
+app.get('/api/commission/rates', protect, async (req, res) => {
+  try {
+    const settings = await Settings.findOne();
+    // Service-type strings the purchase endpoints actually pass to
+    // calculateAndAddCommission for each app service.
+    const sampleServiceTypes = {
+      airtime: 'mtn',
+      data: 'mtn-data',
+      electricity: 'ikeja-electric',
+      cable: 'tv',
+      education: 'waec',
+      insurance: 'insurance',
+      international: 'airtime',
+      default: 'other',
+    };
+    const rates = {};
+    for (const [key, serviceType] of Object.entries(sampleServiceTypes)) {
+      let rate = resolveCommissionRate(serviceType, settings);
+      // Same guard as calculateAndAddCommission against a 100% misconfiguration
+      if (rate === 1 || Math.abs(rate - 1) < 0.00001) rate = 0.005;
+      rates[key] = Number(rate) || 0;
+    }
+    res.set('Cache-Control', 'private, max-age=300');
+    return res.json({ success: true, rates });
+  } catch (error) {
+    console.error('❌ Commission rates error:', error.message);
+    return res.status(500).json({ success: false, message: 'Could not load commission rates' });
+  }
+});
+
+// Simple per-user throttle for recipient lookups (prevents email enumeration)
+const recipientLookupHits = new Map();
+const RECIPIENT_LOOKUP_WINDOW_MS = 10 * 60 * 1000;
+const RECIPIENT_LOOKUP_MAX = 20;
+
+// @desc    Confirm who a wallet transfer will go to before sending
+//          (the "TOBI ADEYEMI" check on the Send money screen).
+// @route   POST /api/transfer/lookup   body: { email }
+// @access  Private
+app.post('/api/transfer/lookup', protect, [
+  body('email').isEmail().withMessage('Enter a valid email address')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: errors.array()[0].msg });
+  }
+
+  const requesterId = String(req.user._id);
+  const now = Date.now();
+  const recent = (recipientLookupHits.get(requesterId) || []).filter(
+    (t) => now - t < RECIPIENT_LOOKUP_WINDOW_MS
+  );
+  if (recent.length >= RECIPIENT_LOOKUP_MAX) {
+    return res.status(429).json({
+      success: false,
+      message: 'Too many lookups. Please wait a few minutes and try again.'
+    });
+  }
+  recent.push(now);
+  recipientLookupHits.set(requesterId, recent);
+
+  try {
+    const email = String(req.body.email).toLowerCase().trim();
+    const recipient = await User.findOne({ email }).select('fullName email isActive');
+
+    if (!recipient) {
+      return res.status(404).json({
+        success: false,
+        message: 'We couldn\'t find a Dalabapay account with that email.'
+      });
+    }
+    if (String(recipient._id) === requesterId) {
+      return res.status(400).json({
+        success: false,
+        message: 'You can\'t send money to yourself.'
+      });
+    }
+    if (recipient.isActive === false) {
+      return res.status(400).json({
+        success: false,
+        message: 'This account can\'t receive transfers right now.'
+      });
+    }
+
+    return res.json({
+      success: true,
+      recipient: {
+        fullName: recipient.fullName || '',
+        email: recipient.email,
+      }
+    });
+  } catch (error) {
+    console.error('❌ Recipient lookup error:', error.message);
+    return res.status(500).json({ success: false, message: 'Could not check this recipient' });
+  }
+});
+
 // @desc    Transfer funds between users
 // @route   POST /api/transfer
 // @access  Private
@@ -13099,7 +13249,17 @@ checkPerMinuteLimit('transfer'),
   
   const { receiverEmail, amount, senderId } = req.body;
   const userId = req.user._id;
-  const actualSenderId = senderId || userId;
+
+  // SECURITY: money can only leave the logged-in user's own wallet.
+  // The PIN/biometric check above is for req.user, so a different senderId
+  // must never be honoured (older app builds send senderId = own id).
+  if (senderId && String(senderId) !== String(userId)) {
+    return res.status(403).json({
+      success: false,
+      message: 'You can only send money from your own wallet.'
+    });
+  }
+  const actualSenderId = userId;
   
   const maxRetries = 3;
   let retryCount = 0;
