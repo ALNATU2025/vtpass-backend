@@ -6054,6 +6054,20 @@ function nigerianPhoneVariants(raw) {
   return [`0${local}`, `234${local}`, `+234${local}`, local];
 }
 
+// Finds the one user with this Nigerian phone number.
+// Returns { user, ambiguous } — ambiguous when several accounts share it.
+async function findUserByPhone(raw, select) {
+  let q = User.find({ phone: { $in: nigerianPhoneVariants(raw) } }).limit(2);
+  if (select) q = q.select(select);
+  const matches = await q;
+  return { user: matches.length === 1 ? matches[0] : null, ambiguous: matches.length > 1 };
+}
+
+function isNigerianPhone(value) {
+  const compact = String(value || '').trim().replace(/[\s-]/g, '');
+  return /^(\+?234|0)[789][01]\d{8}$/.test(compact);
+}
+
 function isEmailOrPhoneIdentifier(value) {
   const v = String(value || '').trim();
   if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return true;
@@ -13169,10 +13183,22 @@ const RECIPIENT_LOOKUP_MAX = 20;
 
 // @desc    Confirm who a wallet transfer will go to before sending
 //          (the "TOBI ADEYEMI" check on the Send money screen).
-// @route   POST /api/transfer/lookup   body: { email }
+// @route   POST /api/transfer/lookup   body: { email } or { phone }
 // @access  Private
 app.post('/api/transfer/lookup', protect, [
-  body('email').isEmail().withMessage('Enter a valid email address')
+  body().custom((b) => {
+    if (b && b.email) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(b.email).trim())) {
+        throw new Error('Enter a valid email address');
+      }
+      return true;
+    }
+    if (b && b.phone) {
+      if (!isNigerianPhone(b.phone)) throw new Error('Enter a valid phone number');
+      return true;
+    }
+    throw new Error('Enter the recipient\'s phone number or email');
+  })
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -13194,13 +13220,28 @@ app.post('/api/transfer/lookup', protect, [
   recipientLookupHits.set(requesterId, recent);
 
   try {
-    const email = String(req.body.email).toLowerCase().trim();
-    const recipient = await User.findOne({ email }).select('fullName email isActive');
+    const byPhone = !req.body.email;
+    let recipient = null;
+    if (byPhone) {
+      const found = await findUserByPhone(req.body.phone, 'fullName email phone isActive');
+      if (found.ambiguous) {
+        return res.status(400).json({
+          success: false,
+          message: 'This phone number is linked to more than one account. Please use their email instead.'
+        });
+      }
+      recipient = found.user;
+    } else {
+      const email = String(req.body.email).toLowerCase().trim();
+      recipient = await User.findOne({ email }).select('fullName email phone isActive');
+    }
 
     if (!recipient) {
       return res.status(404).json({
         success: false,
-        message: 'We couldn\'t find a Dalabapay account with that email.'
+        message: byPhone
+          ? 'We couldn\'t find a Dalabapay account with that phone number.'
+          : 'We couldn\'t find a Dalabapay account with that email.'
       });
     }
     if (String(recipient._id) === requesterId) {
@@ -13216,12 +13257,12 @@ app.post('/api/transfer/lookup', protect, [
       });
     }
 
+    // A phone lookup returns the name only — never the email behind it.
     return res.json({
       success: true,
-      recipient: {
-        fullName: recipient.fullName || '',
-        email: recipient.email,
-      }
+      recipient: byPhone
+        ? { fullName: recipient.fullName || '', phone: recipient.phone }
+        : { fullName: recipient.fullName || '', email: recipient.email }
     });
   } catch (error) {
     console.error('❌ Recipient lookup error:', error.message);
@@ -13239,7 +13280,18 @@ checkGlobalPerMinuteLimit,
 checkTransactionLimit('transfer'),
 checkPerMinuteLimit('transfer'),
          [
-  body('receiverEmail').isEmail().withMessage('Please provide a valid email'),
+  // Recipient by email, or by phone number (redesigned app)
+  body('receiverEmail').optional({ checkFalsy: true }).isEmail().withMessage('Please provide a valid email'),
+  body('receiverPhone').optional({ checkFalsy: true }).custom((v) => {
+    if (!isNigerianPhone(v)) throw new Error('Please provide a valid phone number');
+    return true;
+  }),
+  body().custom((b) => {
+    if (!b || (!b.receiverEmail && !b.receiverPhone)) {
+      throw new Error('Please provide the recipient\'s email or phone number');
+    }
+    return true;
+  }),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -13247,7 +13299,24 @@ checkPerMinuteLimit('transfer'),
     return res.status(400).json({ success: false, message: errors.array()[0].msg });
   }
   
-  const { receiverEmail, amount, senderId } = req.body;
+  const { amount, senderId } = req.body;
+  let { receiverEmail } = req.body;
+  if (!receiverEmail) {
+    const found = await findUserByPhone(req.body.receiverPhone, 'email');
+    if (found.ambiguous) {
+      return res.status(400).json({
+        success: false,
+        message: 'This phone number is linked to more than one account. Please use their email instead.'
+      });
+    }
+    if (!found.user) {
+      return res.status(404).json({
+        success: false,
+        message: 'We couldn\'t find a Dalabapay account with that phone number.'
+      });
+    }
+    receiverEmail = found.user.email;
+  }
   const userId = req.user._id;
 
   // SECURITY: money can only leave the logged-in user's own wallet.
