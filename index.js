@@ -3989,6 +3989,16 @@ const verifyTransactionAuth = async (req, res, next) => {
     return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
+// ==================== BANK TRANSFERS (wallet -> bank) ====================
+// Off unless BANK_TRANSFER_ENABLED=true. See routes/bankTransferRoutes.js.
+app.use('/api/bank-transfer', require('./routes/bankTransferRoutes')({
+  protect,
+  requireApproval,
+  verifyTransactionAuth,
+  checkTransactionLimit,
+  checkPerMinuteLimit,
+}));
+
 // VTPass API Helper
 const vtpassConfig = {
   apiKey: process.env.VTPASS_API_KEY,

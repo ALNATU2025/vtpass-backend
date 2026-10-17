@@ -61,6 +61,7 @@ const transactionSchema = new mongoose.Schema({
             'Wallet Funding',
             'Transfer Sent',
             'Transfer Received',
+            'Bank Transfer',                    // Wallet -> bank payout (Paystack)
             'International Airtime Purchase',  // ✅ ADD THIS
             'International Data Purchase',     // ✅ ADD THIS
             
